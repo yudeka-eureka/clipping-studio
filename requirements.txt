@@ -1,0 +1,13 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+google-genai>=1.0
+yt-dlp>=2025.1.1
+imageio-ffmpeg>=0.5
+python-dotenv>=1.0
+pydantic>=2.7
+# Deteksi wajah untuk tata letak "Fokus wajah" (versi ini masih membawa model BlazeFace & FaceMesh)
+mediapipe==0.10.21
+opencv-python-headless>=4.9,<5
+# Subtitle yang pas dengan suara (timestamp per kata, jalan lokal)
+faster-whisper>=1.1

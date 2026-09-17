@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Clipping Studio</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✂️</text></svg>" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">✂️ Clipping Studio <span class="muted">lokal · Gemini API</span></div>
+    <div class="topbar-right">
+      <span id="conn" class="pill off" title="Koneksi realtime ke server lokal">● offline</span>
+      <button id="btn-settings" class="ghost">⚙ Pengaturan</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <button id="btn-new" class="primary block">+ Proyek baru</button>
+      <div id="job-list" class="job-list"></div>
+    </aside>
+
+    <main id="main">
+      <!-- Form proyek baru -->
+      <section id="view-new" class="card narrow">
+        <h1>Buat klip dari video panjang</h1>
+        <p class="muted">AI Gemini menonton video, memilih momen terbaik, lalu klip dirender di komputer ini. Progres tampil realtime.</p>
+
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-src="file">📁 File lokal</button>
+          <button class="tab" data-src="url">🔗 Link video</button>
+        </div>
+
+        <form id="form-new">
+          <label id="drop" class="drop" data-src-pane="file">
+            <input type="file" id="in-file" accept="video/*" hidden />
+            <div class="drop-inner">
+              <div class="big">⬆</div>
+              <div id="drop-label">Tarik video ke sini atau klik untuk memilih</div>
+              <div class="muted small">MP4, MOV, MKV, WEBM</div>
+            </div>
+          </label>
+          <div data-src-pane="url" hidden>
+            <input type="url" id="in-url" placeholder="https://www.youtube.com/watch?v=…" />
+            <p class="muted small">Hanya untuk video milik sendiri atau yang sudah mendapat izin untuk dipakai ulang.</p>
+          </div>
+
+          <div class="grid">
+            <label>Jumlah klip<input type="number" id="in-num" min="1" max="15" value="3" /></label>
+            <label>Durasi min (dtk)<input type="number" id="in-min" min="5" value="30" /></label>
+            <label>Durasi maks (dtk)<input type="number" id="in-max" min="10" value="90" /></label>
+            <label>Rasio
+              <select id="in-aspect">
+                <option value="9:16">9:16 · TikTok/Reels/Shorts</option>
+                <option value="1:1">1:1 · Feed persegi</option>
+                <option value="4:5">4:5 · Feed Instagram</option>
+                <option value="16:9">16:9 · YouTube</option>
+                <option value="original">Asli</option>
+              </select>
+            </label>
+            <label>Tata letak
+              <select id="in-layout">
+                <option value="face">Fokus wajah (ikuti pembicara)</option>
+                <option value="crop">Crop tengah</option>
+                <option value="blur">Utuh + latar blur</option>
+              </select>
+            </label>
+            <label class="check"><input type="checkbox" id="in-subs" checked /> Subtitle otomatis</label>
+          </div>
+          <label>Instruksi tambahan untuk AI <span class="muted">(opsional)</span>
+            <textarea id="in-instr" rows="2" placeholder="Contoh: fokus pada tips praktis tentang keuangan, hindari bagian iklan"></textarea>
+          </label>
+
+          <div id="upload-bar" class="bar" hidden><div></div></div>
+          <div class="row end">
+            <span id="form-msg" class="muted small"></span>
+            <button type="submit" class="primary" id="btn-submit">✨ Mulai proses</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Detail proyek -->
+      <section id="view-job" hidden>
+        <div class="job-head">
+          <div>
+            <h1 id="job-title"></h1>
+            <div id="job-sub" class="muted small"></div>
+          </div>
+          <button id="btn-delete-job" class="ghost danger">Hapus proyek</button>
+        </div>
+
+        <div id="job-status" class="card status">
+          <div class="row between">
+            <strong id="job-stage"></strong>
+            <span id="job-pct" class="muted"></span>
+          </div>
+          <div class="bar"><div id="job-bar"></div></div>
+          <details>
+            <summary class="muted small">Log realtime</summary>
+            <pre id="job-log"></pre>
+          </details>
+        </div>
+
+        <div id="job-summary" class="card" hidden></div>
+
+        <div id="job-format" class="card" hidden>
+          <div class="row wrap">
+            <h2 class="grow">Format klip</h2>
+            <select id="fmt-aspect" class="auto">
+              <option value="9:16">9:16</option><option value="1:1">1:1</option><option value="4:5">4:5</option>
+              <option value="16:9">16:9</option><option value="original">Asli</option>
+            </select>
+            <select id="fmt-layout" class="auto">
+              <option value="face">Fokus wajah</option><option value="crop">Crop tengah</option><option value="blur">Utuh + latar blur</option>
+            </select>
+            <label class="check inline"><input type="checkbox" id="fmt-subs" /> Subtitle</label>
+            <button class="primary" id="btn-rerender-all">↻ Render ulang semua</button>
+          </div>
+        </div>
+
+        <div id="editor" class="card" hidden>
+          <div class="row between">
+            <h2>Video sumber</h2>
+            <span class="muted small">Tekan <kbd>I</kbd> / <kbd>O</kbd> untuk set awal / akhir</span>
+          </div>
+          <video id="src-video" controls preload="metadata"></video>
+          <div class="timeline" id="timeline"><div class="range" id="tl-range"></div><div class="head" id="tl-head"></div></div>
+          <div class="row wrap">
+            <button class="ghost" id="btn-in">⟦ Set awal</button>
+            <input type="text" id="man-start" class="time" value="00:00.0" />
+            <span class="muted">→</span>
+            <input type="text" id="man-end" class="time" value="00:30.0" />
+            <button class="ghost" id="btn-out">Set akhir ⟧</button>
+            <button class="ghost" id="btn-preview">▶ Putar rentang</button>
+            <input type="text" id="man-title" placeholder="Judul klip" class="grow" />
+            <button class="primary" id="btn-add-clip">+ Buat klip</button>
+          </div>
+        </div>
+
+        <div id="clips" class="clips"></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="dlg-settings">
+    <form method="dialog" id="form-settings">
+      <h2>Pengaturan</h2>
+      <label>Gemini API key
+        <input type="password" id="set-key" placeholder="AIza…" autocomplete="off" />
+        <span class="muted small" id="set-key-hint"></span>
+      </label>
+      <p class="muted small">Buat gratis di <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>. Disimpan di file <code>.env</code> di komputer ini.</p>
+      <label>Model
+        <div class="row">
+          <select id="set-model" class="grow"></select>
+          <button type="button" class="ghost" id="btn-load-models">↻ Muat daftar</button>
+        </div>
+      </label>
+      <h2 class="section">Subtitle</h2>
+      <p class="muted small">Waktu subtitle diselaraskan per kata dengan suara memakai Whisper di komputer ini. Model diunduh sekali dari Hugging Face saat pertama dipakai.</p>
+      <div class="grid two">
+        <label>Model transkripsi<select id="set-whisper"></select></label>
+        <label>Bahasa<select id="set-lang"></select></label>
+      </div>
+      <p class="muted small" id="set-info"></p>
+      <div class="row end">
+        <button value="cancel" class="ghost">Tutup</button>
+        <button id="btn-save-settings" class="primary" value="default">Simpan</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>
