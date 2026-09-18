@@ -70,6 +70,7 @@ function handleEvent(ev) {
       else if (state.current) showNew();
       break;
     case "job":
+      if ((ev.job.usage || []).length !== (state.jobs[ev.job.id]?.usage || []).length) scheduleUsageRefresh();
       state.jobs[ev.job.id] = ev.job;
       renderJobList();
       if (ev.job.id === state.current) renderJob();
@@ -83,7 +84,15 @@ function handleEvent(ev) {
           clip.progress = ev.progress;
           if (ev.stage) clip.stage = ev.stage;
         }
-        if (ev.job_id === state.current) updateClipProgress(ev.clip_id, ev.progress, ev.stage);
+        if (ev.job_id === state.current) {
+          if (clip?.publish?.status === "uploading") {
+            clip.publish.progress = ev.progress;
+            const card = $(`#clips [data-id="${ev.clip_id}"]`);
+            if (card) renderPublishState(job, clip, card);
+          } else {
+            updateClipProgress(ev.clip_id, ev.progress, ev.stage);
+          }
+        }
       } else {
         job.progress = ev.progress;
         if (ev.stage) job.stage = ev.stage;
@@ -106,6 +115,201 @@ function handleEvent(ev) {
   }
 }
 
+// ---------- Pemakaian & biaya AI ----------
+const nf = new Intl.NumberFormat("id-ID");
+function fmtTokens(n) {
+  return n >= 1e6 ? `${(n / 1e6).toLocaleString("id-ID", { maximumFractionDigits: 2 })} jt` : nf.format(n || 0);
+}
+function fmtMoney(usd, short = false) {
+  if (usd == null) return "—";
+  const rate = state.config?.pricing?.usd_idr;
+  const dollars = `$${usd < 0.01 && usd > 0 ? usd.toFixed(4) : usd.toFixed(usd < 1 ? 3 : 2)}`;
+  if (!rate) return dollars;
+  const rupiah = `Rp${nf.format(Math.round(usd * rate))}`;
+  return short ? rupiah : `${rupiah} (${dollars})`;
+}
+function jobCost(job) {
+  const entries = job.usage || [];
+  if (!entries.length) return null;
+  return entries.reduce((a, e) => a + (e.cost_usd || 0), 0);
+}
+
+function renderJobUsage(job) {
+  const card = $("#job-usage");
+  const entries = job.usage || [];
+  const aiClips = job.clips.filter((c) => c.score != null).length;
+  if (!entries.length) {
+    // Proyek lama yang sudah dianalisis sebelum pencatatan token ada.
+    card.hidden = !(job.summary && job.status === "done");
+    card.innerHTML = `<h2>🤖 Pemakaian AI</h2><p class="muted small">Tidak tercatat: proyek ini dianalisis sebelum fitur pencatatan token ditambahkan.</p>`;
+    return;
+  }
+  const sum = (k) => entries.reduce((a, e) => a + (e[k] || 0), 0);
+  const usd = jobCost(job);
+  const unpriced = entries.some((e) => e.cost_usd == null);
+  const tier = entries[entries.length - 1].tier;
+  const models = [...new Set(entries.map((e) => e.model))].join(", ");
+  const perClip = aiClips && usd != null ? fmtMoney(usd / aiClips) : "—";
+  const item = (k, v) => `<div><div class="k">${k}</div><div class="v">${v}</div></div>`;
+  card.hidden = false;
+  card.innerHTML = `
+    <div class="row between"><h2>🤖 Pemakaian AI</h2><span class="muted small">${esc(models)} · ${entries.length} panggilan</span></div>
+    <div class="usage-grid">
+      ${item("Biaya", unpriced ? "harga model belum diatur" : tier === "free" ? "Gratis (tier Free)" : fmtMoney(usd))}
+      ${item("Per klip AI", tier === "free" ? "—" : perClip)}
+      ${item("Token input", fmtTokens(sum("prompt_tokens")))}
+      ${item("↳ video / audio / teks", `${fmtTokens(sum("video_tokens"))} / ${fmtTokens(sum("audio_tokens"))} / ${fmtTokens(sum("text_tokens"))}`)}
+      ${item("Token output", fmtTokens(sum("output_tokens")))}
+      ${item("↳ thinking", fmtTokens(sum("thoughts_tokens")))}
+    </div>
+    <p class="muted small">Subtitle (Whisper), deteksi wajah, pemotongan jeda, dan render berjalan lokal: Rp0.</p>`;
+}
+
+let usageTimer;
+function scheduleUsageRefresh() {
+  clearTimeout(usageTimer);
+  usageTimer = setTimeout(loadUsage, 800);
+}
+
+async function loadUsage() {
+  try {
+    const data = await api("/api/usage");
+    state.usage = data;
+    state.config && (state.config.pricing = data.pricing);
+    $("#usage-month").textContent = data.month.calls ? `· ${fmtMoney(data.month.usd, true)} bln ini` : "";
+    if (!$("#view-usage").hidden) renderUsage();
+  } catch (err) {
+    console.warn(err);
+  }
+}
+
+function renderUsage() {
+  const d = state.usage;
+  if (!d) return;
+  const tile = (label, value, sub) => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`;
+  const free = d.pricing.tier === "free";
+  $("#usage-tiles").innerHTML = [
+    tile("Biaya bulan ini", free ? "Rp0" : fmtMoney(d.month.usd, true), `${d.month.calls} analisis · ${fmtTokens(d.month.total_tokens)} token`),
+    tile("Total biaya", free ? "Rp0" : fmtMoney(d.total.usd, true), state.config?.pricing?.usd_idr ? `$${d.total.usd.toFixed(3)}` : "isi kurs untuk Rupiah"),
+    tile("Total token", fmtTokens(d.total.total_tokens), `${fmtTokens(d.total.prompt_tokens)} input · ${fmtTokens(d.total.output_tokens)} output`),
+    tile("Rata-rata per analisis", d.total.calls ? fmtMoney(d.total.usd / d.total.calls, true) : "—",
+      d.untracked_projects ? `${d.untracked_projects} proyek lama tidak tercatat` : `${d.total.calls} analisis tercatat`),
+  ].join("");
+
+  const days = Object.entries(d.per_day);
+  const max = Math.max(...days.map(([, v]) => v.usd), 0.000001);
+  $("#usage-days").innerHTML = days.length
+    ? days.map(([day, v]) => `<div class="day" title="${new Date(day).toLocaleDateString("id-ID", { day: "numeric", month: "short" })}: ${fmtMoney(v.usd)} · ${fmtTokens(v.total_tokens)} token">
+        <div class="fill" style="height:${(v.usd / max) * 100}%"></div></div>`).join("")
+    : `<p class="muted small">Belum ada pemakaian tercatat.</p>`;
+
+  $("#usage-projects").innerHTML = `<tr><th>Proyek</th><th>Tanggal</th><th class="num">Durasi video</th><th class="num">Klip</th><th class="num">Token</th><th class="num">Biaya</th></tr>` +
+    d.projects.map((p) => `<tr class="link" data-id="${p.id}">
+      <td>${esc(p.name.length > 48 ? p.name.slice(0, 47) + "…" : p.name)}</td>
+      <td>${new Date(p.created_at * 1000).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })}</td>
+      <td class="num">${p.video_seconds ? fmt(p.video_seconds) : "—"}</td>
+      <td class="num">${p.clips}</td>
+      <td class="num">${p.tracked ? fmtTokens(p.total_tokens) : "—"}</td>
+      <td class="num">${!p.tracked ? '<span class="muted">tidak tercatat</span>' : p.unpriced ? "—" : fmtMoney(p.usd)}</td></tr>`).join("");
+
+  const models = Object.entries(d.per_model);
+  $("#usage-models").innerHTML = models.length
+    ? `<tr><th>Model</th><th class="num">Analisis</th><th class="num">Input</th><th class="num">Output</th><th class="num">Biaya</th></tr>` +
+      models.map(([m, v]) => `<tr><td>${esc(m)}</td><td class="num">${v.calls}</td><td class="num">${fmtTokens(v.prompt_tokens)}</td><td class="num">${fmtTokens(v.output_tokens)}</td><td class="num">${v.unpriced ? "—" : fmtMoney(v.usd)}</td></tr>`).join("")
+    : `<tr><td class="muted">Belum ada.</td></tr>`;
+
+  const pr = d.pricing;
+  const p = pr.price;
+  $("#price-info").innerHTML = p
+    ? `Model aktif <b>${esc(pr.model)}</b>: input $${p.input} · audio $${p.audio} · output $${p.output} per 1 juta token ` +
+      (p.source === "manual" ? "(harga manual)." : `(harga resmi berlaku sejak ${p.effective_from === "2000-01-01" ? "awal" : p.effective_from}, <a href="${pr.source_url}" target="_blank" rel="noopener">sumber</a>).`)
+    : `Harga untuk <b>${esc(pr.model)}</b> belum ada di tabel. Isi harga manual supaya biaya bisa dihitung.`;
+  $("#price-tier").value = pr.tier;
+  if (document.activeElement !== $("#price-rate")) $("#price-rate").value = pr.usd_idr || "";
+  const o = pr.override || {};
+  $("#price-input").value = o.input ?? "";
+  $("#price-audio").value = o.audio ?? "";
+  $("#price-output").value = o.output ?? "";
+}
+
+function showUsage() {
+  state.current = null;
+  $("#view-new").hidden = true;
+  $("#view-job").hidden = true;
+  $("#view-usage").hidden = false;
+  $("#src-video").removeAttribute("src");
+  renderJobList();
+  renderUsage();
+  loadUsage();
+}
+$("#btn-usage").onclick = showUsage;
+$("#usage-projects").addEventListener("click", (e) => {
+  const row = e.target.closest("tr[data-id]");
+  if (row && state.jobs[row.dataset.id]) openJob(row.dataset.id);
+});
+
+async function savePricing(extra = {}) {
+  const num = (id) => ($(id).value === "" ? null : Number($(id).value));
+  const body = { tier: $("#price-tier").value, usd_idr: num("#price-rate") ?? 0, ...extra };
+  if (!extra.clear_override && num("#price-input") != null && num("#price-output") != null) {
+    Object.assign(body, { input: num("#price-input"), audio: num("#price-audio"), output: num("#price-output") });
+  }
+  const info = await api("/api/pricing", { method: "POST", body: JSON.stringify(body) });
+  state.config.pricing = info;
+}
+$("#btn-price-save").onclick = async () => {
+  try {
+    await savePricing();
+    await loadUsage();
+    renderJobList();
+    toast("Pengaturan harga disimpan. Berlaku untuk analisis berikutnya.");
+  } catch (err) {
+    toast(err.message, true);
+  }
+};
+$("#btn-price-reset").onclick = async () => {
+  try {
+    await savePricing({ clear_override: true });
+    await loadUsage();
+    toast("Kembali memakai harga resmi.");
+  } catch (err) {
+    toast(err.message, true);
+  }
+};
+$("#btn-recalc").onclick = async () => {
+  if (!confirm("Hitung ulang biaya semua riwayat dengan tier & harga saat ini?")) return;
+  try {
+    await savePricing();
+    const r = await api("/api/usage/recalculate", { method: "POST" });
+    await loadUsage();
+    toast(`${r.recalculated} catatan dihitung ulang.`);
+  } catch (err) {
+    toast(err.message, true);
+  }
+};
+
+// Perkiraan biaya sebelum proses dimulai.
+let estimateTimer;
+function updateEstimate() {
+  clearTimeout(estimateTimer);
+  estimateTimer = setTimeout(async () => {
+    const box = $("#estimate");
+    const duration = state.src === "file" ? state.fileDuration : null;
+    if (!duration) return (box.hidden = true);
+    const q = new URLSearchParams({ duration, num_clips: $("#in-num").value, max_len: $("#in-max").value, subtitles: $("#in-subs").checked });
+    try {
+      const e = await api(`/api/estimate?${q}`);
+      const money = e.tier === "free" ? "gratis (tier Free)" : e.usd == null ? "harga model belum diatur" : `≈ ${fmtMoney(e.usd)}`;
+      box.innerHTML = `🤖 Perkiraan pemakaian AI (${esc(e.model)}): ~${fmtTokens(e.prompt_tokens)} token input + ~${fmtTokens(e.output_tokens)} output → <b>${money}</b>` +
+        (e.low_res ? ` <span class="muted">· video &gt; 20 menit dianalisis resolusi rendah</span>` : "");
+      box.hidden = false;
+    } catch {
+      box.hidden = true;
+    }
+  }, 250);
+}
+["#in-num", "#in-max", "#in-subs"].forEach((sel) => $(sel).addEventListener("input", updateEstimate));
+
 // ---------- Sidebar ----------
 function renderJobList() {
   const jobs = Object.values(state.jobs).sort((a, b) => b.created_at - a.created_at);
@@ -113,9 +317,10 @@ function renderJobList() {
     ? jobs.map((j) => {
         const dot = RUNNING.has(j.status) ? "run" : j.status;
         const ready = j.clips.filter((c) => c.status === "ready").length;
+        const usd = jobCost(j);
         return `<div class="job-item ${j.id === state.current ? "active" : ""}" data-id="${j.id}">
           <div class="name" title="${esc(j.name)}">${esc(j.name)}</div>
-          <div class="meta"><span class="dot ${dot}"></span>${STATUS_LABEL[j.status] || j.status} · ${ready} klip</div>
+          <div class="meta"><span class="dot ${dot}"></span>${STATUS_LABEL[j.status] || j.status} · ${ready} klip${usd != null ? `<span class="cost">${fmtMoney(usd, true)}</span>` : ""}</div>
         </div>`;
       }).join("")
     : `<p class="muted small">Belum ada proyek.</p>`;
@@ -130,6 +335,7 @@ function showNew() {
   state.current = null;
   $("#view-new").hidden = false;
   $("#view-job").hidden = true;
+  $("#view-usage").hidden = true;
   $("#src-video").removeAttribute("src");
   renderJobList();
 }
@@ -138,6 +344,7 @@ $("#btn-new").onclick = showNew;
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.onclick = () => {
     state.src = tab.dataset.src;
+    updateEstimate();
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
     document.querySelectorAll("[data-src-pane]").forEach((p) => (p.hidden = p.dataset.srcPane !== state.src));
   };
@@ -145,6 +352,18 @@ document.querySelectorAll(".tab").forEach((tab) => {
 
 function setFile(file) {
   state.file = file;
+  state.fileDuration = null;
+  updateEstimate();
+  if (file) {
+    const probe = document.createElement("video");
+    probe.preload = "metadata";
+    probe.onloadedmetadata = () => {
+      state.fileDuration = probe.duration;
+      URL.revokeObjectURL(probe.src);
+      updateEstimate();
+    };
+    probe.src = URL.createObjectURL(file);
+  }
   $("#drop-label").textContent = file ? `${file.name} · ${(file.size / 1e6).toFixed(1)} MB` : "Tarik video ke sini atau klik untuk memilih";
 }
 $("#in-file").onchange = (e) => setFile(e.target.files[0]);
@@ -176,7 +395,8 @@ $("#form-new").onsubmit = (e) => {
   fd.append("options", JSON.stringify({
     num_clips: +$("#in-num").value, min_len: +$("#in-min").value, max_len: +$("#in-max").value,
     aspect: $("#in-aspect").value, layout: $("#in-layout").value,
-    subtitles: $("#in-subs").checked, instructions: $("#in-instr").value,
+    subtitles: $("#in-subs").checked, remove_silence: $("#in-trim").checked,
+    show_title: $("#in-title").checked, instructions: $("#in-instr").value,
   }));
 
   // XHR supaya progres upload file besar terlihat realtime.
@@ -216,6 +436,7 @@ function openJob(id) {
   state.current = id;
   $("#view-new").hidden = true;
   $("#view-job").hidden = false;
+  $("#view-usage").hidden = true;
   $("#clips").innerHTML = "";
   delete $("#job-format").dataset.job;
   $("#src-video").removeAttribute("src");
@@ -255,6 +476,8 @@ function renderJob() {
     m ? `${fmt(m.duration)} · ${m.width}×${m.height}` : null,
     `${o.num_clips} klip · ${o.min_len}–${o.max_len} dtk · ${o.aspect} · ${LAYOUT_LABEL[o.layout] || o.layout}`,
     o.subtitles ? "subtitle" : null,
+    o.remove_silence ? "tanpa jeda" : null,
+    o.show_title ? "judul" : null,
   ].filter(Boolean).join("  ·  ");
   renderStatus(job);
   renderLog(job);
@@ -263,6 +486,8 @@ function renderJob() {
   sum.hidden = !job.summary;
   if (job.summary) sum.innerHTML = `<h2>Ringkasan AI</h2><p class="muted">${esc(job.summary)}</p>`;
 
+  renderJobUsage(job);
+
   const fmtCard = $("#job-format");
   fmtCard.hidden = !job.clips.length;
   if (fmtCard.dataset.job !== job.id) {
@@ -270,6 +495,8 @@ function renderJob() {
     $("#fmt-aspect").value = o.aspect;
     $("#fmt-layout").value = o.layout;
     $("#fmt-subs").checked = o.subtitles;
+    $("#fmt-trim").checked = !!o.remove_silence;
+    $("#fmt-title").checked = !!o.show_title;
   }
   $("#btn-rerender-all").disabled = job.clips.some((c) => c.status === "queued" || c.status === "rendering");
 
@@ -301,7 +528,7 @@ function renderClips(job) {
       card.innerHTML = `
         <div class="player r-${job.options.aspect.replace(":", "-")}"></div>
         <div class="body">
-          <div class="row between"><span class="title"></span><span class="score" hidden></span></div>
+          <div class="row between"><input class="title grow" title="Judul yang tampil di atas video" /><span class="score" hidden></span></div>
           <div class="hook small"></div>
           <div class="reason muted small"></div>
           <div class="tags"></div>
@@ -310,10 +537,12 @@ function renderClips(job) {
             <span class="dur muted small"></span>
           </div>
           <div class="err" hidden></div>
+          <div class="pubstate" hidden></div>
           <div class="actions">
             <button data-act="rerender">↻ Render ulang</button>
             <button data-act="load">✎ Edit di sumber</button>
             <button data-act="copy">📋 Caption</button>
+            <button data-act="publish">📤 Posting</button>
             <a class="btn dl" data-kind="mp4" hidden>⬇ MP4</a>
             <a class="btn dl-srt" hidden>⬇ SRT</a>
             <button data-act="delete" class="ghost danger">🗑</button>
@@ -326,7 +555,8 @@ function renderClips(job) {
 }
 
 function updateCard(job, clip, card) {
-  $(".title", card).textContent = clip.title;
+  const titleInput = $(".title", card);
+  if (document.activeElement !== titleInput) titleInput.value = clip.title;
   const score = $(".score", card);
   score.hidden = clip.score == null;
   score.textContent = `🔥 ${clip.score}`;
@@ -336,13 +566,19 @@ function updateCard(job, clip, card) {
   const s = $(".c-start", card), e = $(".c-end", card);
   if (document.activeElement !== s) s.value = fmt(clip.start);
   if (document.activeElement !== e) e.value = fmt(clip.end);
-  $(".dur", card).textContent = `${(clip.end - clip.start).toFixed(1)} dtk`;
+  const span = clip.end - clip.start;
+  const out = clip.duration_out;
+  $(".dur", card).textContent = out && out < span - 0.2 ? `${span.toFixed(1)} → ${out.toFixed(1)} dtk` : `${span.toFixed(1)} dtk`;
+  $(".dur", card).title = out && out < span - 0.2 ? "Durasi setelah jeda diam dibuang" : "";
   const err = $(".err", card);
   err.hidden = clip.status !== "error";
   err.textContent = clip.error || "";
 
   const busy = clip.status === "queued" || clip.status === "rendering";
   card.querySelectorAll("button[data-act=rerender], button[data-act=delete]").forEach((b) => (b.disabled = busy));
+  const posting = ["uploading", "posting"].includes(clip.publish?.status);
+  $("button[data-act=publish]", card).disabled = clip.status !== "ready" || posting;
+  renderPublishState(job, clip, card);
 
   const player = $(".player", card);
   player.className = `player r-${job.options.aspect.replace(":", "-")}`;
@@ -369,6 +605,120 @@ function updateCard(job, clip, card) {
   }
 }
 
+const SERVICE_LABEL = { instagram: "Instagram", tiktok: "TikTok", youtube: "YouTube", facebook: "Facebook",
+  linkedin: "LinkedIn", twitter: "X", threads: "Threads", bluesky: "Bluesky", mastodon: "Mastodon",
+  pinterest: "Pinterest", googlebusiness: "Google Business" };
+const POST_STATUS = { scheduled: "terjadwal", sending: "sedang dikirim", sent: "terkirim", error: "gagal",
+  draft: "draf", needs_approval: "menunggu persetujuan" };
+
+function renderPublishState(job, clip, card) {
+  const box = $(".pubstate", card);
+  const pub = clip.publish;
+  box.hidden = !pub;
+  if (!pub) return;
+  let head = "";
+  if (pub.status === "uploading") head = `☁️ Mengunggah video… ${Math.round((pub.progress || 0) * 100)}%`;
+  else if (pub.status === "posting") head = "📤 Mengirim ke Buffer…";
+  else if (pub.status === "error" && !pub.results.length) head = `<span class="bad">❌ ${esc(pub.error)}</span>`;
+  else head = `📤 Posting · <button type="button" class="ghost small-btn" data-act="pubrefresh">↻ Cek status</button>`;
+  const when = (iso) => (iso ? new Date(iso).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" }) : "");
+  const rows = pub.results.map((r) => {
+    const name = `${SERVICE_LABEL[r.service] || r.service} · ${esc(r.channel)}`;
+    if (!r.ok) return `<div class="bad">✗ ${name}: ${esc(r.error)}</div>`;
+    const status = POST_STATUS[r.status] || r.status || "terkirim";
+    const extra = r.error ? ` — ${esc(r.error)}` : r.link ? ` — <a href="${esc(r.link)}" target="_blank" rel="noopener">lihat</a>` : r.due_at && r.status === "scheduled" ? ` ${when(r.due_at)}` : "";
+    return `<div class="${r.status === "error" ? "bad" : "ok"}">✓ ${name}: ${status}${extra}</div>`;
+  });
+  box.innerHTML = `<div>${head}</div>${rows.join("")}`;
+}
+
+// ---------- Posting via Buffer ----------
+const pub = { job: null, clip: null, channels: [] };
+
+function clipCaption(clip) {
+  const tags = (clip.hashtags || []).map((t) => (t.startsWith("#") ? t : `#${t}`)).join(" ");
+  return [clip.title, clip.hook, tags].filter(Boolean).join("\n\n");
+}
+
+async function loadChannels(refresh = false) {
+  const box = $("#pub-channels");
+  box.innerHTML = `<p class="muted small">Memuat channel…</p>`;
+  try {
+    const { channels } = await api(`/api/buffer/channels${refresh ? "?refresh=true" : ""}`);
+    pub.channels = channels;
+    if (!channels.length) {
+      box.innerHTML = `<p class="muted small">Belum ada channel di Buffer. Hubungkan akun sosial media di publish.buffer.com.</p>`;
+      return;
+    }
+    let remembered = [];
+    try { remembered = JSON.parse(localStorage.getItem("pubChannels") || "[]"); } catch {}
+    box.innerHTML = channels.map((c) => {
+      const off = c.isDisconnected || c.isLocked || !c.supportsVideo;
+      const why = c.isDisconnected ? "terputus" : c.isLocked ? "terkunci" : !c.supportsVideo ? "tidak mendukung video" : "";
+      return `<label class="channel ${off ? "off" : ""}">
+        <input type="checkbox" value="${esc(c.id)}" ${off ? "disabled" : ""} ${!off && remembered.includes(c.id) ? "checked" : ""} />
+        ${c.avatar ? `<img src="${esc(c.avatar)}" alt="" referrerpolicy="no-referrer" />` : ""}
+        <span>${esc(c.displayName || c.name)}</span>
+        <span class="svc">${SERVICE_LABEL[c.service] || esc(c.service)}${why ? ` · ${why}` : ""}</span>
+      </label>`;
+    }).join("");
+  } catch (err) {
+    box.innerHTML = `<p class="err">${esc(err.message)}</p>`;
+  }
+}
+
+function updateCount() {
+  const n = $("#pub-text").value.length;
+  const selected = [...$("#pub-channels").querySelectorAll("input:checked")].map((i) => pub.channels.find((c) => c.id === i.value));
+  const warn = selected.some((c) => c?.service === "twitter") && n > 280 ? " · melebihi 280 karakter untuk X" : "";
+  $("#pub-count").textContent = `${n} karakter${warn}`;
+}
+
+function openPublish(job, clip) {
+  pub.job = job;
+  pub.clip = clip;
+  $("#pub-clip").textContent = `“${clip.title}” · ${(clip.duration_out || clip.end - clip.start).toFixed(1)} dtk`;
+  $("#pub-text").value = clipCaption(clip);
+  $("#pub-mode").value = "addToQueue";
+  $("#pub-when-wrap").hidden = true;
+  updateCount();
+  $("#dlg-publish").showModal();
+  loadChannels();
+}
+
+$("#pub-text").addEventListener("input", updateCount);
+$("#pub-channels").addEventListener("change", updateCount);
+$("#btn-pub-refresh").onclick = () => loadChannels(true);
+$("#pub-mode").onchange = () => ($("#pub-when-wrap").hidden = $("#pub-mode").value !== "customScheduled");
+$("#form-publish").onsubmit = async (e) => {
+  e.preventDefault();
+  const ids = [...$("#pub-channels").querySelectorAll("input:checked")].map((i) => i.value);
+  if (!ids.length) return toast("Pilih minimal satu channel.", true);
+  const mode = $("#pub-mode").value;
+  let due_at = null;
+  if (mode === "customScheduled") {
+    if (!$("#pub-when").value) return toast("Isi tanggal & jam jadwal.", true);
+    due_at = new Date($("#pub-when").value).toISOString();
+  }
+  const names = ids.map((id) => pub.channels.find((c) => c.id === id)).map((c) => c.displayName || c.name).join(", ");
+  const verb = mode === "shareNow" ? "langsung dipublikasikan" : "dijadwalkan";
+  if (!confirm(`Klip akan ${verb} ke: ${names}. Lanjutkan?`)) return;
+  const btn = $("#btn-pub-send");
+  btn.disabled = true;
+  try {
+    await api(`/api/jobs/${pub.job.id}/clips/${pub.clip.id}/publish`, {
+      method: "POST", body: JSON.stringify({ channel_ids: ids, text: $("#pub-text").value, mode, due_at }),
+    });
+    try { localStorage.setItem("pubChannels", JSON.stringify(ids)); } catch {}
+    $("#dlg-publish").close();
+    toast("Sedang mengunggah & mengirim ke Buffer…");
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+};
+
 function updateClipProgress(clipId, p, stage) {
   const card = $(`#clips [data-id="${clipId}"]`);
   if (!card) return;
@@ -392,7 +742,8 @@ $("#clips").addEventListener("click", async (e) => {
     if (btn.dataset.act === "rerender") {
       const start = parseTime($(".c-start", card).value), end = parseTime($(".c-end", card).value);
       if (isNaN(start) || isNaN(end)) return toast("Format waktu salah. Gunakan mm:ss.s", true);
-      await api(`/api/jobs/${job.id}/clips/${clip.id}`, { method: "PATCH", body: JSON.stringify({ start, end }) });
+      const title = $(".title", card).value.trim() || null;
+      await api(`/api/jobs/${job.id}/clips/${clip.id}`, { method: "PATCH", body: JSON.stringify({ start, end, title }) });
     } else if (btn.dataset.act === "load") {
       $("#man-start").value = fmt(clip.start);
       $("#man-end").value = fmt(clip.end);
@@ -405,6 +756,11 @@ $("#clips").addEventListener("click", async (e) => {
       const tags = (clip.hashtags || []).map((t) => (t.startsWith("#") ? t : `#${t}`)).join(" ");
       await navigator.clipboard.writeText([clip.title, clip.hook, tags].filter(Boolean).join("\n\n"));
       toast("Caption disalin.");
+    } else if (btn.dataset.act === "publish") {
+      openPublish(job, clip);
+    } else if (btn.dataset.act === "pubrefresh") {
+      await api(`/api/jobs/${job.id}/clips/${clip.id}/publish/refresh`, { method: "POST" });
+      toast("Status posting diperbarui.");
     } else if (btn.dataset.act === "delete") {
       if (!confirm(`Hapus klip “${clip.title}”?`)) return;
       await api(`/api/jobs/${job.id}/clips/${clip.id}`, { method: "DELETE" });
@@ -491,7 +847,10 @@ $("#btn-rerender-all").onclick = async () => {
   try {
     await api(`/api/jobs/${state.current}/rerender`, {
       method: "POST",
-      body: JSON.stringify({ aspect: $("#fmt-aspect").value, layout: $("#fmt-layout").value, subtitles: $("#fmt-subs").checked }),
+      body: JSON.stringify({
+        aspect: $("#fmt-aspect").value, layout: $("#fmt-layout").value, subtitles: $("#fmt-subs").checked,
+        remove_silence: $("#fmt-trim").checked, show_title: $("#fmt-title").checked,
+      }),
     });
     toast("Semua klip sedang dirender ulang…");
   } catch (err) {
@@ -512,30 +871,94 @@ $("#btn-delete-job").onclick = async () => {
 // ---------- Pengaturan ----------
 async function loadConfig() {
   state.config = await api("/api/config");
-  const sel = $("#set-model");
-  if (![...sel.options].some((o) => o.value === state.config.model)) {
-    sel.add(new Option(state.config.model, state.config.model));
-  }
-  sel.value = state.config.model;
-  const wsel = $("#set-whisper");
-  wsel.innerHTML = "";
-  for (const [name, desc] of Object.entries(state.config.whisper_models)) {
-    const ready = state.config.whisper_downloaded[name] ? "✓ " : "";
-    wsel.add(new Option(`${ready}${name} — ${desc}`, name));
-  }
-  wsel.value = state.config.whisper_model;
-  const lsel = $("#set-lang");
-  lsel.innerHTML = "";
-  for (const [code, label] of Object.entries(state.config.whisper_languages)) lsel.add(new Option(label, code));
-  lsel.value = state.config.whisper_language;
-  $("#set-key-hint").textContent = state.config.has_key ? `Tersimpan (${state.config.key_hint}). Kosongkan jika tidak ingin mengganti.` : "Belum diisi.";
-  $("#set-info").textContent = `ffmpeg: ${state.config.ffmpeg.split("/").pop()} · subtitle: ${state.config.subtitles_supported ? "didukung" : "tidak didukung"} · deteksi wajah: ${state.config.face_tracking ? "aktif" : "tidak tersedia"}`;
+  fillSettings();
   if (!state.config.has_key) openSettings();
 }
-function openSettings() {
-  if (!$("#dlg-settings").open) $("#dlg-settings").showModal();
+
+// Isian yang sedang diedit (belum disimpan) tidak boleh tertimpa saat konfigurasi dimuat ulang.
+const settingsForm = $("#form-settings");
+settingsForm.addEventListener("input", (e) => (e.target.dataset.dirty = "1"));
+// Enter di kolom isian = Simpan (bukan menutup dialog).
+settingsForm.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.tagName === "INPUT" && !e.isComposing) {
+    e.preventDefault();
+    settingsForm.requestSubmit();
+  }
+});
+function clearDirty() {
+  settingsForm.querySelectorAll("[data-dirty]").forEach((el) => delete el.dataset.dirty);
 }
+function setField(el, value) {
+  if (!el.dataset.dirty) el.value = value;
+}
+
+function fillSettings() {
+  const cfg = state.config;
+  const sel = $("#set-model");
+  if (![...sel.options].some((o) => o.value === cfg.model)) sel.add(new Option(cfg.model, cfg.model));
+  setField(sel, cfg.model);
+  const wsel = $("#set-whisper");
+  const wval = wsel.dataset.dirty ? wsel.value : cfg.whisper_model;
+  wsel.innerHTML = "";
+  for (const [name, desc] of Object.entries(cfg.whisper_models)) {
+    wsel.add(new Option(`${cfg.whisper_downloaded[name] ? "✓ " : ""}${name} — ${desc}`, name));
+  }
+  wsel.value = wval;
+  const lsel = $("#set-lang");
+  const lval = lsel.dataset.dirty ? lsel.value : cfg.whisper_language;
+  lsel.innerHTML = "";
+  for (const [code, label] of Object.entries(cfg.whisper_languages)) lsel.add(new Option(label, code));
+  lsel.value = lval;
+  $("#set-buffer-hint").textContent = cfg.buffer_key_hint ? `Tersimpan (${cfg.buffer_key_hint}).` : "Belum diisi.";
+  setField($("#set-host"), cfg.media_host);
+  showHostFields();
+  document.querySelectorAll("[data-env]").forEach((input) => {
+    const value = cfg.media[input.dataset.env] || "";
+    if (input.type === "password") {
+      setField(input, "");
+      input.placeholder = value ? `Tersimpan (${value})` : "Belum diisi";
+    } else {
+      setField(input, value);
+    }
+  });
+  const missing = $("#host-missing");
+  const sameHost = $("#set-host").value === cfg.media_host;
+  missing.hidden = !(sameHost && cfg.media_missing.length);
+  missing.textContent = `⚠️ Belum tersimpan: ${cfg.media_missing.join(", ")}. Isi lalu klik Simpan.`;
+  $("#set-key-hint").textContent = cfg.has_key ? `Tersimpan (${cfg.key_hint}). Kosongkan jika tidak ingin mengganti.` : "Belum diisi.";
+  $("#set-info").textContent = `ffmpeg: ${cfg.ffmpeg.split("/").pop()} · subtitle: ${cfg.subtitles_supported ? "didukung" : "tidak didukung"} · deteksi wajah: ${cfg.face_tracking ? "aktif" : "tidak tersedia"}`;
+}
+
+function openSettings() {
+  if ($("#dlg-settings").open) return;
+  clearDirty();
+  if (state.config) fillSettings();
+  $("#host-test").textContent = "";
+  $("#buffer-test").textContent = "";
+  $("#dlg-settings").showModal();
+}
+document.querySelectorAll("[data-close]").forEach((btn) => (btn.onclick = () => $(`#${btn.dataset.close}`).close()));
 $("#btn-settings").onclick = openSettings;
+function showHostFields() {
+  document.querySelectorAll("[data-host]").forEach((el) => (el.hidden = el.dataset.host !== $("#set-host").value));
+}
+$("#set-host").onchange = showHostFields;
+$("#btn-test-buffer").onclick = async () => {
+  const out = $("#buffer-test");
+  out.textContent = "Menghubungkan…";
+  try {
+    const key = $("#set-buffer").value.trim();
+    if (key) await api("/api/config", { method: "POST", body: JSON.stringify({ buffer_api_key: key }) });
+    const { channels } = await api("/api/buffer/channels?refresh=true");
+    out.textContent = `✓ Terhubung · ${channels.length} channel`;
+    $("#set-buffer").value = "";
+    delete $("#set-buffer").dataset.dirty;
+    state.config = await api("/api/config");
+    fillSettings();
+  } catch (err) {
+    out.textContent = `✗ ${err.message}`;
+  }
+};
 $("#btn-load-models").onclick = async () => {
   const btn = $("#btn-load-models");
   btn.disabled = true;
@@ -549,31 +972,71 @@ $("#btn-load-models").onclick = async () => {
     models.forEach((m) => sel.add(new Option(m, m)));
     if (models.includes(current)) sel.value = current;
     toast(`Terhubung ke Gemini · ${models.length} model tersedia`);
-    await loadConfig();
+    $("#set-key").value = "";
+    delete $("#set-key").dataset.dirty;
+    state.config = await api("/api/config");
+    fillSettings();
   } catch (err) {
     toast(err.message, true);
   } finally {
     btn.disabled = false;
   }
 };
-$("#btn-save-settings").onclick = async (e) => {
+function hostFields() {
+  return Object.fromEntries([...document.querySelectorAll(`[data-host="${$("#set-host").value}"] [data-env]`)]
+    .map((i) => [i.dataset.env, i.value.trim()]));
+}
+async function saveSettings() {
+  await api("/api/config", {
+    method: "POST",
+    body: JSON.stringify({
+      api_key: $("#set-key").value.trim() || null, model: $("#set-model").value,
+      whisper_model: $("#set-whisper").value, whisper_language: $("#set-lang").value,
+      buffer_api_key: $("#set-buffer").value.trim() || null,
+      media_host: $("#set-host").value, media: hostFields(),
+    }),
+  });
+  $("#set-key").value = "";
+  $("#set-buffer").value = "";
+  clearDirty();
+  state.config = await api("/api/config");
+  fillSettings();
+}
+// Tombol Simpan maupun Enter di kolom isian sama-sama menyimpan.
+settingsForm.addEventListener("submit", async (e) => {
   e.preventDefault();
+  const btn = $("#btn-save-settings");
+  btn.disabled = true;
   try {
-    await api("/api/config", {
-      method: "POST",
-      body: JSON.stringify({
-        api_key: $("#set-key").value.trim() || null, model: $("#set-model").value,
-        whisper_model: $("#set-whisper").value, whisper_language: $("#set-lang").value,
-      }),
-    });
-    $("#set-key").value = "";
-    await loadConfig();
-    $("#dlg-settings").close();
-    toast("Pengaturan disimpan.");
+    await saveSettings();
+    if (state.config.media_missing.length) {
+      toast(`Tersimpan, tapi hosting video belum lengkap: ${state.config.media_missing.join(", ")}.`, true);
+    } else {
+      $("#dlg-settings").close();
+      toast("Pengaturan disimpan.");
+    }
   } catch (err) {
     toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+$("#btn-test-host").onclick = async () => {
+  const out = $("#host-test");
+  out.textContent = "Mengecek…";
+  try {
+    // Simpan dulu isian hosting yang baru diketik supaya yang dites adalah nilai terbaru.
+    await api("/api/config", { method: "POST", body: JSON.stringify({ media_host: $("#set-host").value, media: hostFields() }) });
+    document.querySelectorAll("[data-env]").forEach((el) => delete el.dataset.dirty);
+    delete $("#set-host").dataset.dirty;
+    state.config = await api("/api/config");
+    fillSettings();
+    const r = await api("/api/mediahost/test", { method: "POST" });
+    out.textContent = `✓ ${r.message}`;
+  } catch (err) {
+    out.textContent = `✗ ${err.message}`;
   }
 };
 
-loadConfig().catch((err) => toast(err.message, true));
+loadConfig().then(loadUsage).catch((err) => toast(err.message, true));
 connect();

@@ -101,9 +101,11 @@ def build_captions(words: list[dict], max_chars: int = 30, max_dur: float = 2.2,
         if cur:
             text_len = len(" ".join(x["word"] for x in cur)) + 1 + len(w["word"])
             prev = cur[-1]
+            # Kata penutup kalimat boleh sedikit melebihi batas supaya tidak tertinggal sendirian.
+            closes = w["word"][-1] in ".?!,"
             breaks = (
-                text_len > max_chars
-                or w["end"] - cur[0]["start"] > max_dur
+                text_len > max_chars + (8 if closes else 0)
+                or w["end"] - cur[0]["start"] > max_dur + (0.7 if closes else 0)
                 or w["start"] - prev["end"] > max_gap
                 or prev["word"][-1] in ".?!"
                 or (prev["word"][-1] in ",;:" and len(cur) >= 3)
@@ -125,9 +127,9 @@ def build_captions(words: list[dict], max_chars: int = 30, max_dur: float = 2.2,
     return captions
 
 
-def captions_for_clip(src: Path, clip: dict, cache_dir: Path,
-                      on_progress: Callable[[float], None] | None = None) -> list[dict]:
-    """Caption akurat untuk klip, di-cache per rentang waktu + model + bahasa."""
+def words_for_clip(src: Path, clip: dict, cache_dir: Path,
+                   on_progress: Callable[[float], None] | None = None) -> list[dict]:
+    """Kata bertimestamp absolut untuk klip, di-cache per rentang waktu + model + bahasa."""
     hint = " ".join(c["text"] for c in clip.get("ai_captions") or [])
     key = {"start": clip["start"], "end": clip["end"], "model": model_name(), "lang": language()}
     cache = cache_dir / f"clip_{clip['id']}.words.json"
@@ -142,7 +144,7 @@ def captions_for_clip(src: Path, clip: dict, cache_dir: Path,
     if words is None:
         words = transcribe_words(src, clip["start"], clip["end"], hint, on_progress)
         cache.write_text(json.dumps({"key": key, "words": words}, ensure_ascii=False))
-    return build_captions(words)
+    return words
 
 
 def model_downloaded_or_loading() -> bool:

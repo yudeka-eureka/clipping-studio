@@ -11,3 +11,5 @@ mediapipe==0.10.21
 opencv-python-headless>=4.9,<5
 # Subtitle yang pas dengan suara (timestamp per kata, jalan lokal)
 faster-whisper>=1.1
+# Posting ke media sosial via Buffer: video di-host di Cloudflare R2 (Cloudinary cukup httpx)
+boto3>=1.34

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Callable
@@ -10,7 +11,7 @@ from typing import Callable
 import yt_dlp
 from google.genai import errors as genai_errors
 
-from . import facetrack, gemini, media, transcribe
+from . import buffer, facetrack, gemini, media, mediahost, pricing, silence, transcribe
 from .jobs import store
 
 # Satu analisis penuh sekaligus; render klip boleh paralel terbatas.
@@ -131,21 +132,16 @@ def _wants_face(job: dict) -> bool:
             and size != (meta["width"], meta["height"]) and facetrack.available())
 
 
-async def _captions(job: dict, clip: dict, src: Path, clips_dir: Path, prog: ClipProgress) -> list[dict]:
-    """Subtitle dengan timestamp per kata dari Whisper lokal; kalau gagal, pakai perkiraan Gemini."""
+async def _words(job: dict, clip: dict, src: Path, clips_dir: Path, prog: ClipProgress) -> list[dict] | None:
+    """Kata bertimestamp dari Whisper lokal, atau None kalau gagal (lalu dipakai perkiraan Gemini)."""
     clip.setdefault("ai_captions", clip.get("captions") or [])
-    if not job["meta"]["has_audio"]:
-        return []
     if not transcribe.model_downloaded_or_loading():
         await store.log(job, f"⬇️ Mengunduh model Whisper “{transcribe.model_name()}” (sekali saja)…")
     try:
-        captions = await asyncio.to_thread(
-            transcribe.captions_for_clip, src, clip, clips_dir, prog.threadsafe("subs"))
-        await store.log(job, f"💬 “{clip['title']}”: {len(captions)} baris subtitle diselaraskan dengan suara.")
-        return captions
+        return await asyncio.to_thread(transcribe.words_for_clip, src, clip, clips_dir, prog.threadsafe("subs"))
     except Exception as e:  # noqa: BLE001
         await store.log(job, f"⚠️ Transkripsi lokal gagal ({e}). Memakai waktu perkiraan dari Gemini.")
-        return clip["ai_captions"]
+        return None
 
 
 async def render(job: dict, clip: dict) -> None:
@@ -160,11 +156,17 @@ async def render(job: dict, clip: dict) -> None:
             base = f"clip_{clip['id']}"
             src = store.dir(job["id"]) / job["source"]
             out = clips_dir / f"{base}.mp4"
-            srt_path = clips_dir / f"{base}.srt"
+            srt_path, ass_path = clips_dir / f"{base}.srt", clips_dir / f"{base}.ass"
             srt_path.unlink(missing_ok=True)
+            ass_path.unlink(missing_ok=True)
+            meta = job["meta"]
+            if "fps" not in meta:  # proyek lama
+                meta.update(await media.probe(src))
+            duration = clip["end"] - clip["start"]
 
             face = _wants_face(job)
-            subs = bool(opts.get("subtitles"))
+            subs = bool(opts.get("subtitles")) and meta["has_audio"]
+            trim = bool(opts.get("remove_silence")) and meta["has_audio"]
             stages = {}
             if face:
                 stages["face"] = ("Mendeteksi wajah…", 0.3)
@@ -174,23 +176,107 @@ async def render(job: dict, clip: dict) -> None:
             prog = ClipProgress(job, clip, stages)
 
             face_crop = await _face_crop(job, clip, src, clips_dir, prog) if face else None
+            words = await _words(job, clip, src, clips_dir, prog) if subs else None
+
+            # Jeda diam dibuang: pakai celah antar kata kalau ada, kalau tidak dari energi audio.
+            segments = None
+            if trim:
+                audio = None if words else await asyncio.to_thread(
+                    silence.load_clip_audio, src, clip["start"], clip["end"])
+                segments = media.snap_segments(
+                    silence.keep_segments(duration, words, clip["start"], audio), meta["fps"])
+            out_duration = sum(e - s for s, e in segments) if segments else duration
+            if segments:
+                await store.log(job, f"✂️ “{clip['title']}”: {len(segments) - 1} jeda dibuang, "
+                                     f"{duration:.1f} → {out_duration:.1f} dtk.")
+
+            captions = []
             if subs:
-                clip["captions"] = await _captions(job, clip, src, clips_dir, prog)
-            has_srt = subs and media.write_srt(clip["captions"], clip["start"], clip["end"], srt_path)
-            burn = has_srt and media.SUBTITLES_SUPPORTED
+                if words is not None:
+                    captions = transcribe.build_captions(silence.remap_items(words, segments, clip["start"]))
+                    await store.log(job, f"💬 “{clip['title']}”: {len(captions)} baris subtitle diselaraskan dengan suara.")
+                else:
+                    captions = silence.remap_items(clip["ai_captions"], segments, clip["start"])
+            clip["captions"] = captions
+            has_srt = subs and media.write_srt(captions, srt_path)
+
+            width, height = media.output_size(meta["width"], meta["height"], opts["aspect"])
+            title = clip["title"] if opts.get("show_title") else None
+            has_ass = media.write_ass(ass_path, width, height, out_duration, title, captions)
 
             await media.render_clip(
-                src, out, clip["start"], clip["end"],
-                opts["aspect"], opts["layout"], job["meta"]["has_audio"],
-                srt_path if burn else None, lambda p: prog.set("render", p), face_crop,
+                src, out, clip["start"], clip["end"], opts["aspect"], opts["layout"],
+                meta["has_audio"], meta["fps"], ass_path if has_ass else None,
+                lambda p: prog.set("render", p), face_crop, segments,
             )
             clip.update(status="ready", progress=1.0, stage=None, file=f"clips/{out.name}",
                         srt=f"clips/{srt_path.name}" if has_srt else None,
-                        version=clip.get("version", 0) + 1)
+                        duration_out=round(out_duration, 2), version=clip.get("version", 0) + 1)
             await store.log(job, f"✅ Klip siap: {clip['title']}")
         except Exception as e:  # noqa: BLE001
             clip.update(status="error", error=str(e), stage=None)
             await store.log(job, f"❌ Gagal render “{clip['title']}”: {e}")
+    await store.publish(job)
+
+
+async def publish(job: dict, clip: dict, channels: list[dict], text: str, mode: str,
+                  due_at: str | None) -> None:
+    """Unggah klip ke hosting publik (sekali per versi klip), lalu buat post di tiap channel Buffer."""
+    loop = asyncio.get_running_loop()
+    state = {"status": "uploading", "progress": 0.0, "error": None, "results": [],
+             "mode": mode, "due_at": due_at, "started_at": time.time()}
+    clip["publish"] = state
+    await store.publish(job)
+    try:
+        hosted = clip.get("hosted") or {}
+        if hosted.get("version") != clip["version"] or hosted.get("provider") != mediahost.provider():
+            await store.log(job, f"☁️ Mengunggah “{clip['title']}” ke {mediahost.provider()}…")
+
+            def on_progress(p: float) -> None:
+                state["progress"] = p
+                asyncio.run_coroutine_threadsafe(
+                    store.progress(job, p, stage="Mengunggah video…", clip_id=clip["id"]), loop)
+
+            url = await asyncio.to_thread(
+                mediahost.upload, store.dir(job["id"]) / clip["file"],
+                f"{job['id']}-{clip['id']}-v{clip['version']}", on_progress)
+            clip["hosted"] = {"version": clip["version"], "provider": mediahost.provider(), "url": url}
+        state["status"] = "posting"
+        await store.publish(job)
+
+        title = clip["title"]
+        for ch in channels:
+            label = ch.get("displayName") or ch["name"]
+            try:
+                post = await asyncio.to_thread(
+                    buffer.create_video_post, ch, text, clip["hosted"]["url"], title, mode, due_at)
+                state["results"].append({"channel_id": ch["id"], "channel": label, "service": ch["service"],
+                                         "ok": True, "post_id": post["id"], "status": post.get("status"),
+                                         "due_at": post.get("dueAt"), "link": post.get("externalLink")})
+                await store.log(job, f"📤 “{title}” → {ch['service']} ({label}): {post.get('status', 'terkirim')}")
+            except Exception as e:  # noqa: BLE001
+                state["results"].append({"channel_id": ch["id"], "channel": label, "service": ch["service"],
+                                         "ok": False, "error": str(e)})
+                await store.log(job, f"❌ “{title}” → {ch['service']} ({label}): {e}")
+            await store.publish(job)
+        state["status"] = "done" if any(r["ok"] for r in state["results"]) else "error"
+        if state["status"] == "error":
+            state["error"] = "Tidak ada channel yang berhasil."
+    except Exception as e:  # noqa: BLE001
+        state.update(status="error", error=str(e))
+        await store.log(job, f"❌ Gagal posting “{clip['title']}”: {e}")
+    await store.publish(job)
+
+
+async def record_usage(job: dict, usage: dict) -> None:
+    entry = pricing.with_cost(usage)
+    job.setdefault("usage", []).append(entry)
+    usd = entry["cost_usd"]
+    rate = pricing.usd_idr()
+    money = ("gratis (tier Free)" if entry["tier"] == "free" else "harga model belum diatur" if usd is None
+             else f"≈ ${usd:.4f}" + (f" (Rp{usd * rate:,.0f})".replace(",", ".") if rate else ""))
+    await store.log(job, f"🤖 Token Gemini: {entry['prompt_tokens']:,} input + "
+                         f"{entry['output_tokens'] + entry['thoughts_tokens']:,} output — {money}".replace(",", "."))
     await store.publish(job)
 
 
@@ -236,7 +322,12 @@ async def run(job: dict, upload_path: Path | None, url: str | None) -> None:
             uploaded = await asyncio.to_thread(gemini.upload_video, key, proxy, on_state)
             await store.log(job, f"Video diterima Gemini. Menganalisis dengan {model}…")
             await store.update(job, stage=f"AI ({model}) sedang menonton & memilih momen…", progress=0)
-            analysis = await asyncio.to_thread(gemini.analyze, key, model, uploaded, opts, meta["duration"])
+            try:
+                analysis, usage = await asyncio.to_thread(gemini.analyze, key, model, uploaded, opts, meta["duration"])
+            except gemini.AnalysisError as e:
+                await record_usage(job, e.usage)
+                raise
+            await record_usage(job, usage)
             suggestions = _sanitize(analysis.clips, meta["duration"], opts)
             if not suggestions:
                 raise RuntimeError("AI tidak menemukan momen yang cocok. Coba ubah instruksi atau durasi klip.")

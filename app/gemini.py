@@ -9,6 +9,8 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 
+from . import pricing
+
 
 class CaptionLine(BaseModel):
     start: float = Field(description="Detik absolut dari awal video")
@@ -17,7 +19,7 @@ class CaptionLine(BaseModel):
 
 
 class ClipSuggestion(BaseModel):
-    title: str = Field(description="Judul klip yang menarik, maks 70 karakter")
+    title: str = Field(description="Judul yang ditempel di atas video: menjelaskan konteks klip, maks 60 karakter")
     start: float = Field(description="Detik mulai, dihitung dari awal video")
     end: float = Field(description="Detik selesai, dihitung dari awal video")
     hook: str = Field(description="Kalimat pembuka/hook untuk caption media sosial")
@@ -88,19 +90,31 @@ Pilih {opts['num_clips']} momen terbaik untuk dijadikan klip pendek yang berdiri
 - Klip tidak boleh saling tumpang tindih.
 - Semua waktu dalam DETIK (angka desimal) dihitung dari awal video, bukan format MM:SS.
 - Judul, hook, alasan, dan hashtag ditulis dalam Bahasa Indonesia.
+- Judul akan ditempel di bagian atas video. Buat judul yang langsung menjelaskan konteks
+  (siapa/apa yang dibahas) bagi penonton yang tidak menonton video aslinya, maks 60 karakter,
+  tanpa emoji dan tanpa tanda kutip.
 {captions}{extra}
 
 Urutkan dari skor tertinggi."""
 
 
-def analyze(api_key: str, model: str, source: types.File, opts: dict, duration: float) -> Analysis:
+class AnalysisError(RuntimeError):
+    """Jawaban Gemini tidak bisa dipakai, tapi token tetap terpakai (dibawa di .usage)."""
+
+    def __init__(self, message: str, usage: dict) -> None:
+        super().__init__(message)
+        self.usage = usage
+
+
+def analyze(api_key: str, model: str, source: types.File, opts: dict, duration: float) -> tuple[Analysis, dict]:
     video_part = types.Part.from_uri(file_uri=source.uri, mime_type=source.mime_type or "video/mp4")
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema=Analysis,
         temperature=0.4,
     )
-    if duration > 20 * 60:
+    low_res = duration > 20 * 60
+    if low_res:
         # Video panjang: resolusi rendah supaya muat di context window dan lebih murah.
         config.media_resolution = types.MediaResolution.MEDIA_RESOLUTION_LOW
     c = client(api_key)
@@ -109,8 +123,12 @@ def analyze(api_key: str, model: str, source: types.File, opts: dict, duration: 
         contents=[video_part, build_prompt(opts, duration)],
         config=config,
     )
+    usage = pricing.usage_from_response(resp, model, duration, low_res)
     if isinstance(resp.parsed, Analysis):
-        return resp.parsed
+        return resp.parsed, usage
     if not resp.text:
-        raise RuntimeError("Gemini tidak mengembalikan jawaban (mungkin diblokir filter keamanan).")
-    return Analysis.model_validate_json(resp.text)
+        raise AnalysisError("Gemini tidak mengembalikan jawaban (mungkin diblokir filter keamanan).", usage)
+    try:
+        return Analysis.model_validate_json(resp.text), usage
+    except ValueError as e:
+        raise AnalysisError(f"Jawaban Gemini tidak sesuai format: {e}", usage) from e

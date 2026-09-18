@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv, set_key
@@ -15,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from google.genai import errors as genai_errors
 from pydantic import BaseModel
 
-from . import facetrack, gemini, media, pipeline, transcribe
+from . import buffer, facetrack, gemini, media, mediahost, pipeline, pricing, transcribe
 from .jobs import hub, store
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -46,6 +47,27 @@ class ConfigIn(BaseModel):
     model: str | None = None
     whisper_model: str | None = None
     whisper_language: str | None = None
+    buffer_api_key: str | None = None
+    media_host: str | None = None
+    media: dict[str, str] | None = None  # CLOUDINARY_* / R2_*; secret kosong = tidak diubah
+
+
+def _hint(env: str) -> str:
+    value = os.environ.get(env, "")
+    return f"…{value[-4:]}" if value else ""
+
+
+def _set_env(name: str, value: str) -> None:
+    os.environ[name] = value
+    set_key(str(ENV_FILE), name, value)
+
+
+def _pricing_info() -> dict:
+    cfg = pricing.settings()
+    model = pipeline.model_name()
+    return {"tier": cfg["tier"], "usd_idr": pricing.usd_idr(), "model": model,
+            "price": pricing.price_for(model), "override": cfg["overrides"].get(model),
+            "source_url": pricing.SOURCE_URL}
 
 
 @app.get("/api/config")
@@ -63,6 +85,13 @@ def get_config():
         "whisper_downloaded": {m: transcribe.is_downloaded(m) for m in transcribe.MODELS},
         "whisper_language": transcribe.language(),
         "whisper_languages": transcribe.LANGUAGES,
+        "pricing": _pricing_info(),
+        "buffer_key_hint": _hint("BUFFER_API_KEY"),
+        "media_host": mediahost.provider(),
+        "media_missing": [mediahost.LABELS[f] for f in mediahost.missing()],
+        # Nilai non-rahasia dikirim apa adanya; rahasia hanya petunjuk 4 karakter terakhir.
+        "media": {f: (_hint(f) if f in mediahost.SECRET_FIELDS else os.environ.get(f, ""))
+                  for fields in mediahost.FIELDS.values() for f in fields},
         "aspects": list(media.ASPECTS),
     }
 
@@ -80,8 +109,17 @@ def save_config(cfg: ConfigIn):
                                 ("whisper_language", "WHISPER_LANGUAGE", transcribe.LANGUAGES)):
         value = getattr(cfg, field)
         if value in allowed:
-            os.environ[env] = value
-            set_key(str(ENV_FILE), env, value)
+            _set_env(env, value)
+    if cfg.buffer_api_key and cfg.buffer_api_key.strip():
+        _set_env("BUFFER_API_KEY", cfg.buffer_api_key.strip())
+    if cfg.media_host in mediahost.FIELDS:
+        _set_env("MEDIA_HOST", cfg.media_host)
+    allowed = {f for fields in mediahost.FIELDS.values() for f in fields}
+    for name, value in (cfg.media or {}).items():
+        value = (value or "").strip()
+        # Isian kosong tidak menimpa nilai tersimpan (mencegah kredensial terhapus tanpa sengaja).
+        if name in allowed and value:
+            _set_env(name, value)
     return get_config()
 
 
@@ -116,6 +154,8 @@ async def create_job(
         "aspect": raw.get("aspect") if raw.get("aspect") in media.ASPECTS else "9:16",
         "layout": raw.get("layout") if raw.get("layout") in ("face", "crop", "blur") else "face",
         "subtitles": bool(raw.get("subtitles", True)),
+        "remove_silence": bool(raw.get("remove_silence", True)),
+        "show_title": bool(raw.get("show_title", True)),
         "instructions": str(raw.get("instructions", ""))[:1000],
     }
     opts["max_len"] = max(opts["max_len"], opts["min_len"] + 5)
@@ -144,6 +184,8 @@ class RerenderIn(BaseModel):
     aspect: str
     layout: str
     subtitles: bool
+    remove_silence: bool = True
+    show_title: bool = True
 
 
 @app.post("/api/jobs/{job_id}/rerender")
@@ -155,7 +197,8 @@ async def rerender_all(job_id: str, body: RerenderIn):
         raise HTTPException(400, "Opsi tidak valid.")
     if any(c["status"] in ("queued", "rendering") for c in job["clips"]):
         raise HTTPException(409, "Tunggu sampai semua klip selesai dirender.")
-    job["options"].update(aspect=body.aspect, layout=body.layout, subtitles=body.subtitles)
+    job["options"].update(aspect=body.aspect, layout=body.layout, subtitles=body.subtitles,
+                          remove_silence=body.remove_silence, show_title=body.show_title)
     await store.publish(job)
     for clip in job["clips"]:
         spawn(pipeline.render(job, clip))
@@ -225,6 +268,167 @@ async def delete_clip(job_id: str, clip_id: str):
     job["clips"].remove(clip)
     await store.publish(job)
     return {"ok": True}
+
+
+# ---------- Pemakaian & biaya AI ----------
+
+class PricingIn(BaseModel):
+    tier: str | None = None
+    usd_idr: float | None = None
+    input: float | None = None   # harga manual USD/1 juta token untuk model aktif; kosong = pakai default
+    audio: float | None = None
+    output: float | None = None
+    clear_override: bool = False
+
+
+@app.post("/api/pricing")
+def save_pricing(body: PricingIn):
+    overrides = dict(pricing.settings()["overrides"])
+    model = pipeline.model_name()
+    if body.clear_override:
+        overrides.pop(model, None)
+    elif body.input is not None and body.output is not None:
+        if body.input < 0 or body.output < 0 or (body.audio is not None and body.audio < 0):
+            raise HTTPException(400, "Harga tidak boleh negatif.")
+        overrides[model] = {"input": body.input, "output": body.output, "audio": body.audio}
+    pricing.save_settings(body.tier, body.usd_idr, overrides)
+    return _pricing_info()
+
+
+@app.get("/api/estimate")
+def estimate(duration: float, num_clips: int = 3, max_len: int = 90, subtitles: bool = True):
+    est = pricing.estimate(max(0.0, duration), pipeline.model_name(), num_clips, max_len, subtitles)
+    return {**est, "model": pipeline.model_name(), "usd_idr": pricing.usd_idr()}
+
+
+@app.get("/api/usage")
+def usage():
+    now = datetime.now()
+    month_start = datetime(now.year, now.month, 1).timestamp()
+    empty = lambda: {"calls": 0, "prompt_tokens": 0, "output_tokens": 0, "total_tokens": 0,  # noqa: E731
+                     "usd": 0.0, "unpriced": 0}
+
+    def add(bucket: dict, e: dict) -> None:
+        bucket["calls"] += 1
+        bucket["prompt_tokens"] += e["prompt_tokens"]
+        bucket["output_tokens"] += e["output_tokens"] + e.get("thoughts_tokens", 0)
+        bucket["total_tokens"] += e["prompt_tokens"] + e["output_tokens"] + e.get("thoughts_tokens", 0)
+        if e.get("cost_usd") is None:
+            bucket["unpriced"] += 1
+        else:
+            bucket["usd"] += e["cost_usd"]
+
+    total, month, per_model, per_day, projects = empty(), empty(), {}, {}, []
+    for job in store.jobs.values():
+        entries = job.get("usage") or []
+        proj = {"id": job["id"], "name": job["name"], "created_at": job["created_at"],
+                "clips": len(job["clips"]), "video_seconds": (job.get("meta") or {}).get("duration"),
+                "tracked": bool(entries), **empty()}
+        for e in entries:
+            for bucket in (total, proj, per_model.setdefault(e["model"], empty()),
+                           per_day.setdefault(datetime.fromtimestamp(e["t"]).date().isoformat(), empty())):
+                add(bucket, e)
+            if e["t"] >= month_start:
+                add(month, e)
+        projects.append(proj)
+    projects.sort(key=lambda p: p["created_at"], reverse=True)
+    return {"total": total, "month": month, "per_model": per_model,
+            "per_day": dict(sorted(per_day.items())[-30:]), "projects": projects,
+            "untracked_projects": sum(1 for p in projects if not p["tracked"]),
+            "pricing": _pricing_info()}
+
+
+@app.post("/api/usage/recalculate")
+async def recalculate_usage():
+    """Hitung ulang biaya semua catatan dengan pengaturan harga saat ini (tier/harga manual)."""
+    count = 0
+    for job in store.jobs.values():
+        if job.get("usage"):
+            job["usage"] = [pricing.with_cost(e) for e in job["usage"]]
+            count += len(job["usage"])
+            await store.publish(job)
+    return {"recalculated": count, **usage()}
+
+
+# ---------- Posting ke media sosial (Buffer) ----------
+
+@app.get("/api/buffer/channels")
+async def buffer_channels(refresh: bool = False):
+    try:
+        return {"channels": await asyncio.to_thread(buffer.list_channels, refresh)}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/mediahost/test")
+async def test_mediahost():
+    try:
+        return {"ok": True, "message": await asyncio.to_thread(mediahost.check)}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, str(e))
+
+
+class PublishIn(BaseModel):
+    channel_ids: list[str]
+    text: str
+    mode: str = "addToQueue"
+    due_at: str | None = None
+
+
+@app.post("/api/jobs/{job_id}/clips/{clip_id}/publish")
+async def publish_clip(job_id: str, clip_id: str, body: PublishIn):
+    job = get_job(job_id)
+    clip = store.clip(job, clip_id)
+    if not clip or clip["status"] != "ready":
+        raise HTTPException(400, "Klip belum siap. Tunggu render selesai.")
+    if (clip.get("publish") or {}).get("status") in ("uploading", "posting"):
+        raise HTTPException(409, "Klip ini sedang diposting.")
+    if not body.channel_ids:
+        raise HTTPException(400, "Pilih minimal satu channel.")
+    if body.mode not in ("addToQueue", "shareNow", "shareNext", "customScheduled"):
+        raise HTTPException(400, "Mode posting tidak valid.")
+    due_at = None
+    if body.mode == "customScheduled":
+        try:
+            when = datetime.fromisoformat((body.due_at or "").replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(400, "Waktu jadwal tidak valid.")
+        if when.tzinfo is None or when <= datetime.now(timezone.utc):
+            raise HTTPException(400, "Waktu jadwal harus di masa depan.")
+        due_at = when.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    if mediahost.missing():
+        raise HTTPException(400, mediahost.missing_message())
+    try:
+        known = {c["id"]: c for c in await asyncio.to_thread(buffer.list_channels)}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, str(e))
+    channels = [known[i] for i in body.channel_ids if i in known]
+    unusable = [c for c in channels if c["isDisconnected"] or c["isLocked"]]
+    if len(channels) != len(body.channel_ids) or unusable:
+        raise HTTPException(400, "Ada channel yang tidak ditemukan atau sedang terputus di Buffer.")
+    spawn(pipeline.publish(job, clip, channels, body.text.strip(), body.mode, due_at))
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/clips/{clip_id}/publish/refresh")
+async def refresh_publish(job_id: str, clip_id: str):
+    job = get_job(job_id)
+    clip = store.clip(job, clip_id)
+    pub = (clip or {}).get("publish")
+    if not pub:
+        raise HTTPException(404, "Klip ini belum pernah diposting.")
+    ids = [r["post_id"] for r in pub["results"] if r.get("ok")]
+    try:
+        statuses = await asyncio.to_thread(buffer.post_statuses, ids)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, str(e))
+    for r in pub["results"]:
+        st = statuses.get(r.get("post_id"))
+        if st:
+            r.update(status=st["status"], due_at=st.get("dueAt"), sent_at=st.get("sentAt"),
+                     link=st.get("externalLink"), error=(st.get("error") or {}).get("message"))
+    await store.publish(job)
+    return pub
 
 
 # ---------- File media (mendukung Range request untuk seek video) ----------

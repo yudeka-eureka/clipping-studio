@@ -49,6 +49,9 @@ class Store:
             for c in job["clips"]:
                 if c["status"] in ("queued", "rendering"):
                     c["status"], c["error"] = "error", "Render terputus. Klik Render ulang."
+                pub = c.get("publish")
+                if pub and pub["status"] in ("uploading", "posting"):
+                    pub["status"], pub["error"] = "error", "Posting terputus karena server dimatikan."
             self.jobs[job["id"]] = job
 
     def dir(self, job_id: str) -> Path:

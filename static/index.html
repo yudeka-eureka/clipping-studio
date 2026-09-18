@@ -19,6 +19,7 @@
   <div class="layout">
     <aside class="sidebar">
       <button id="btn-new" class="primary block">+ Proyek baru</button>
+      <button id="btn-usage" class="ghost block usage-btn">📊 Pemakaian AI <span id="usage-month" class="muted small"></span></button>
       <div id="job-list" class="job-list"></div>
     </aside>
 
@@ -68,17 +69,65 @@
               </select>
             </label>
             <label class="check"><input type="checkbox" id="in-subs" checked /> Subtitle otomatis</label>
+            <label class="check"><input type="checkbox" id="in-trim" checked /> Hapus jeda diam</label>
+            <label class="check"><input type="checkbox" id="in-title" checked /> Judul di atas video</label>
           </div>
           <label>Instruksi tambahan untuk AI <span class="muted">(opsional)</span>
             <textarea id="in-instr" rows="2" placeholder="Contoh: fokus pada tips praktis tentang keuangan, hindari bagian iklan"></textarea>
           </label>
 
+          <p id="estimate" class="estimate small" hidden></p>
           <div id="upload-bar" class="bar" hidden><div></div></div>
           <div class="row end">
             <span id="form-msg" class="muted small"></span>
             <button type="submit" class="primary" id="btn-submit">✨ Mulai proses</button>
           </div>
         </form>
+      </section>
+
+      <!-- Pemakaian AI -->
+      <section id="view-usage" hidden>
+        <div class="job-head">
+          <div>
+            <h1>📊 Pemakaian AI</h1>
+            <div class="muted small">Token Gemini yang terpakai untuk analisis video dan estimasi biayanya. Transkripsi Whisper, deteksi wajah, dan render berjalan lokal tanpa biaya API.</div>
+          </div>
+        </div>
+        <div id="usage-tiles" class="tiles"></div>
+        <div class="card">
+          <h2>Biaya per hari <span class="muted small">(30 hari terakhir yang tercatat)</span></h2>
+          <div id="usage-days" class="days"></div>
+        </div>
+        <div class="card">
+          <h2>Per proyek</h2>
+          <div class="table-wrap"><table id="usage-projects" class="table"></table></div>
+        </div>
+        <div class="card">
+          <h2>Per model</h2>
+          <div class="table-wrap"><table id="usage-models" class="table"></table></div>
+        </div>
+        <div class="card">
+          <h2>Harga &amp; kurs</h2>
+          <p class="muted small" id="price-info"></p>
+          <div class="grid">
+            <label>Tier Gemini API
+              <select id="price-tier">
+                <option value="paid">Paid (berbayar)</option>
+                <option value="free">Free (gratis, dengan batas kuota)</option>
+              </select>
+            </label>
+            <label>Kurs 1 USD ke Rupiah<input type="number" id="price-rate" min="0" step="1" placeholder="mis. 16500" /></label>
+            <span></span>
+            <label>Harga input manual (USD / 1 jt token)<input type="number" id="price-input" min="0" step="0.001" placeholder="default" /></label>
+            <label>Harga audio manual<input type="number" id="price-audio" min="0" step="0.001" placeholder="sama dengan input" /></label>
+            <label>Harga output manual<input type="number" id="price-output" min="0" step="0.001" placeholder="default" /></label>
+          </div>
+          <div class="row end">
+            <button class="ghost" id="btn-price-reset">Pakai harga default</button>
+            <button class="ghost" id="btn-recalc" title="Terapkan tier & harga saat ini ke semua catatan lama">↻ Hitung ulang riwayat</button>
+            <button class="primary" id="btn-price-save">Simpan</button>
+          </div>
+        </div>
       </section>
 
       <!-- Detail proyek -->
@@ -105,6 +154,8 @@
 
         <div id="job-summary" class="card" hidden></div>
 
+        <div id="job-usage" class="card" hidden></div>
+
         <div id="job-format" class="card" hidden>
           <div class="row wrap">
             <h2 class="grow">Format klip</h2>
@@ -116,6 +167,8 @@
               <option value="face">Fokus wajah</option><option value="crop">Crop tengah</option><option value="blur">Utuh + latar blur</option>
             </select>
             <label class="check inline"><input type="checkbox" id="fmt-subs" /> Subtitle</label>
+            <label class="check inline"><input type="checkbox" id="fmt-trim" /> Hapus jeda</label>
+            <label class="check inline"><input type="checkbox" id="fmt-title" /> Judul</label>
             <button class="primary" id="btn-rerender-all">↻ Render ulang semua</button>
           </div>
         </div>
@@ -164,10 +217,64 @@
         <label>Model transkripsi<select id="set-whisper"></select></label>
         <label>Bahasa<select id="set-lang"></select></label>
       </div>
+      <h2 class="section">Posting ke media sosial (Buffer)</h2>
+      <label>Buffer API key
+        <input type="password" id="set-buffer" autocomplete="off" placeholder="Dari publish.buffer.com/settings/api" />
+        <span class="muted small" id="set-buffer-hint"></span>
+      </label>
+      <p class="muted small">Buffer tidak menerima upload file, jadi klip diunggah dulu ke hosting video publik.</p>
+      <label>Hosting video
+        <select id="set-host">
+          <option value="cloudinary">Cloudinary</option>
+          <option value="r2">Cloudflare R2</option>
+        </select>
+      </label>
+      <div class="grid two" data-host="cloudinary">
+        <label>Cloud name<input data-env="CLOUDINARY_CLOUD_NAME" autocomplete="off" /></label>
+        <label>API key<input data-env="CLOUDINARY_API_KEY" autocomplete="off" /></label>
+        <label>API secret<input type="password" data-env="CLOUDINARY_API_SECRET" autocomplete="off" /></label>
+      </div>
+      <div class="grid two" data-host="r2" hidden>
+        <label>Account ID<input data-env="R2_ACCOUNT_ID" autocomplete="off" /></label>
+        <label>Bucket<input data-env="R2_BUCKET" autocomplete="off" /></label>
+        <label>Access key ID<input data-env="R2_ACCESS_KEY_ID" autocomplete="off" /></label>
+        <label>Secret access key<input type="password" data-env="R2_SECRET_ACCESS_KEY" autocomplete="off" /></label>
+        <label class="span2">URL publik bucket<input data-env="R2_PUBLIC_URL" autocomplete="off" placeholder="https://pub-xxxx.r2.dev atau domain sendiri" /></label>
+      </div>
+      <p class="warn small" id="host-missing" hidden></p>
+      <div class="row"><button type="button" class="ghost" id="btn-test-host">↻ Tes hosting</button><span class="muted small" id="host-test"></span></div>
+      <div class="row"><button type="button" class="ghost" id="btn-test-buffer">↻ Tes koneksi Buffer</button><span class="muted small" id="buffer-test"></span></div>
       <p class="muted small" id="set-info"></p>
       <div class="row end">
-        <button value="cancel" class="ghost">Tutup</button>
-        <button id="btn-save-settings" class="primary" value="default">Simpan</button>
+        <button type="button" class="ghost" data-close="dlg-settings">Tutup</button>
+        <button type="submit" id="btn-save-settings" class="primary">Simpan</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-publish">
+    <form method="dialog" id="form-publish">
+      <h2>Posting klip</h2>
+      <p class="muted small" id="pub-clip"></p>
+      <div class="row between"><label class="flat">Channel</label><button type="button" class="ghost small-btn" id="btn-pub-refresh">↻ Muat ulang</button></div>
+      <div id="pub-channels" class="channels"><p class="muted small">Memuat channel…</p></div>
+      <label>Caption
+        <textarea id="pub-text" rows="5"></textarea>
+        <span class="muted small" id="pub-count"></span>
+      </label>
+      <label>Waktu posting
+        <select id="pub-mode">
+          <option value="addToQueue">Masukkan ke antrean (jadwal Buffer)</option>
+          <option value="shareNext">Posting berikutnya di antrean</option>
+          <option value="shareNow">Posting sekarang</option>
+          <option value="customScheduled">Jadwalkan…</option>
+        </select>
+      </label>
+      <label id="pub-when-wrap" hidden>Tanggal &amp; jam<input type="datetime-local" id="pub-when" /></label>
+      <p class="muted small">Instagram &amp; Facebook dikirim sebagai Reel; YouTube sebagai video publik dengan judul klip.</p>
+      <div class="row end">
+        <button type="button" class="ghost" data-close="dlg-publish">Batal</button>
+        <button type="submit" id="btn-pub-send" class="primary">📤 Kirim ke Buffer</button>
       </div>
     </form>
   </dialog>
