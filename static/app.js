@@ -237,6 +237,7 @@ function showUsage() {
   $("#view-new").hidden = true;
   $("#view-job").hidden = true;
   $("#view-usage").hidden = false;
+  $("#view-settings").hidden = true;
   $("#src-video").removeAttribute("src");
   renderJobList();
   renderUsage();
@@ -336,6 +337,7 @@ function showNew() {
   $("#view-new").hidden = false;
   $("#view-job").hidden = true;
   $("#view-usage").hidden = true;
+  $("#view-settings").hidden = true;
   $("#src-video").removeAttribute("src");
   renderJobList();
 }
@@ -379,8 +381,8 @@ drop.addEventListener("drop", (e) => {
 $("#form-new").onsubmit = (e) => {
   e.preventDefault();
   if (!state.config?.has_key) {
-    toast("Isi API key Gemini dulu di Pengaturan.", true);
-    openSettings();
+    toast(`Isi API key ${state.config?.providers?.[state.config.provider]?.label || "AI"} dulu di Pengaturan.`, true);
+    showSettings();
     return;
   }
   const fd = new FormData();
@@ -437,6 +439,7 @@ function openJob(id) {
   $("#view-new").hidden = true;
   $("#view-job").hidden = false;
   $("#view-usage").hidden = true;
+  $("#view-settings").hidden = true;
   $("#clips").innerHTML = "";
   delete $("#job-format").dataset.job;
   $("#src-video").removeAttribute("src");
@@ -888,7 +891,7 @@ $("#btn-delete-job").onclick = async () => {
 async function loadConfig() {
   state.config = await api("/api/config");
   fillSettings();
-  if (!state.config.has_key) openSettings();
+  if (!state.config.has_key) showSettings();
 }
 
 // Isian yang sedang diedit (belum disimpan) tidak boleh tertimpa saat konfigurasi dimuat ulang.
@@ -1121,17 +1124,32 @@ $("#btn-add-account").onclick = async () => {
   }
 };
 
-function openSettings() {
-  if ($("#dlg-settings").open) return;
+function showSettings() {
+  state.backTo = state.current ? { view: "job", id: state.current } : { view: $("#view-usage").hidden ? "new" : "usage" };
+  state.current = null;
+  for (const v of ["#view-new", "#view-job", "#view-usage"]) $(v).hidden = true;
+  $("#view-settings").hidden = false;
+  $("#src-video").removeAttribute("src");
   clearDirty();
   if (state.config) fillSettings();
   $("#host-test").textContent = "";
   $("#buffer-test").textContent = "";
-  $("#dlg-settings").showModal();
+  $("#settings-status").textContent = "";
+  window.scrollTo(0, 0);
+  renderJobList();
   loadBranding();
 }
+
+function leaveSettings() {
+  const back = state.backTo || { view: "new" };
+  if (back.view === "job" && state.jobs[back.id]) openJob(back.id);
+  else if (back.view === "usage") showUsage();
+  else showNew();
+}
+
 document.querySelectorAll("[data-close]").forEach((btn) => (btn.onclick = () => $(`#${btn.dataset.close}`).close()));
-$("#btn-settings").onclick = openSettings;
+$("#btn-settings").onclick = showSettings;
+$("#btn-settings-back").onclick = leaveSettings;
 function showHostFields() {
   document.querySelectorAll("[data-host]").forEach((el) => (el.hidden = el.dataset.host !== $("#set-host").value));
 }
@@ -1205,9 +1223,9 @@ settingsForm.addEventListener("submit", async (e) => {
   try {
     await saveSettings();
     if (state.config.media_missing.length) {
-      toast(`Tersimpan, tapi hosting video belum lengkap: ${state.config.media_missing.join(", ")}.`, true);
+      $("#settings-status").textContent = `⚠️ Tersimpan, tapi hosting video belum lengkap: ${state.config.media_missing.join(", ")}.`;
     } else {
-      $("#dlg-settings").close();
+      $("#settings-status").textContent = "✓ Tersimpan.";
       toast("Pengaturan disimpan.");
     }
   } catch (err) {
