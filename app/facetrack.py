@@ -25,6 +25,18 @@ from .media import FFMPEG
 os.environ.setdefault("GLOG_minloglevel", "2")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
+
+def _quiet_absl() -> None:
+    try:  # absl ikut terpasang bersama mediapipe
+        import logging
+
+        from absl import logging as absl_logging
+
+        absl_logging.use_absl_handler()
+        absl_logging.set_verbosity(logging.ERROR)
+    except ImportError:
+        pass
+
 SAMPLE_FPS = 5
 ANALYSIS_W = 960
 MIN_SHOT = int(SAMPLE_FPS * 1.2)        # sampel minimal sebelum kamera boleh pindah orang
@@ -173,6 +185,7 @@ def _runs(labels: list) -> list[list]:
 def track(src: Path, start: float, end: float, src_w: int, src_h: int, crop_w_norm: float,
           crop_h_norm: float, on_progress: Callable[[float], None] | None = None) -> dict:
     """Return {"keys": [(cx, cy, cut)], "stats": {...}} dengan satu key per sampel (1/SAMPLE_FPS dtk)."""
+    _quiet_absl()
     import mediapipe as mp
 
     dur = max(0.2, end - start)

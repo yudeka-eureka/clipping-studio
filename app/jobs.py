@@ -19,8 +19,12 @@ class Hub:
 
     def __init__(self) -> None:
         self.sockets: set[WebSocket] = set()
+        # Pendengar lokal (dipakai mode command line untuk menampilkan progres).
+        self.listeners: list = []
 
     async def send(self, event: dict) -> None:
+        for listen in list(self.listeners):
+            listen(event)
         dead = []
         for ws in list(self.sockets):
             try:

@@ -6,9 +6,19 @@ sendiri dengan ffmpeg. Semua progres tampil **realtime** di browser lewat WebSoc
 
 ## Menjalankan
 
+Antarmuka web:
+
 ```bash
 ./run.sh
 ```
+
+Mode command line (untuk skrip atau AI agent, tanpa web):
+
+```bash
+./clip run podcast.mp4 --clips 3 --json
+```
+
+Daftar perintah lengkap ada di [AGENTS.md](AGENTS.md) atau `./clip --help`.
 
 Browser terbuka otomatis di http://localhost:8765. Saat pertama kali dijalankan, skrip
 menyiapkan environment Python di `.venv` (butuh `uv` atau Python 3.10+).
@@ -43,6 +53,7 @@ video → probe → proxy 360p (hemat upload & token) → Gemini Files API
 
 | File | Isi |
 |---|---|
+| `app/cli.py` | Mode command line (`./clip`), semua fitur tanpa web |
 | `app/main.py` | REST API, WebSocket `/ws`, penyajian file media |
 | `app/pipeline.py` | Urutan proses: unduh → proxy → analisis AI → render |
 | `app/gemini.py` | Koneksi Gemini: upload, prompt, skema respons |

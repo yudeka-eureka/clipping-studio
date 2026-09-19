@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Jalankan Clipping Studio di http://localhost:8765
 set -e
+# Redam log bawaan MediaPipe/TensorFlow Lite.
+export GLOG_minloglevel=2 TF_CPP_MIN_LOG_LEVEL=3 GRPC_VERBOSITY=ERROR
 cd "$(dirname "$0")"
 PORT="${PORT:-8765}"
 if [ ! -x .venv/bin/python ]; then

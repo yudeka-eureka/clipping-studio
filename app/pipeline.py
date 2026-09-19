@@ -268,6 +268,23 @@ async def publish(job: dict, clip: dict, channels: list[dict], text: str, mode: 
     await store.publish(job)
 
 
+async def prepare_source(job: dict, upload_path: Path | None, url: str | None) -> tuple[Path, dict]:
+    """Siapkan file sumber (unduh kalau perlu) lalu baca metadatanya. Dipakai mode web & CLI."""
+    if url:
+        await store.update(job, status="downloading", stage="Mengunduh video…", progress=0)
+        await store.log(job, f"Mengunduh dari {url}")
+        src = await asyncio.to_thread(_download, job, url, asyncio.get_running_loop())
+    else:
+        assert upload_path
+        src = upload_path
+    meta = await media.probe(src)
+    job.update(source=src.name, meta=meta)
+    await store.log(job, f"Video: {meta['width']}x{meta['height']}, {meta['duration']:.0f} detik"
+                         + ("" if meta["has_audio"] else " (tanpa audio)"))
+    await store.publish(job)
+    return src, meta
+
+
 async def record_usage(job: dict, usage: dict) -> None:
     entry = pricing.with_cost(usage)
     job.setdefault("usage", []).append(entry)
@@ -289,18 +306,7 @@ async def run(job: dict, upload_path: Path | None, url: str | None) -> None:
         key = ""
         try:
             # 1. Sumber video
-            if url:
-                await store.update(job, status="downloading", stage="Mengunduh video…", progress=0)
-                await store.log(job, f"Mengunduh dari {url}")
-                src = await asyncio.to_thread(_download, job, url, loop)
-            else:
-                assert upload_path
-                src = upload_path
-            meta = await media.probe(src)
-            job.update(source=src.name, meta=meta)
-            await store.log(job, f"Video: {meta['width']}x{meta['height']}, {meta['duration']:.0f} detik"
-                                 + ("" if meta["has_audio"] else " (tanpa audio)"))
-            await store.publish(job)
+            src, meta = await prepare_source(job, upload_path, url)
 
             # Sumber sudah siap: klip manual bisa dibuat walau langkah AI gagal.
             key = api_key()
