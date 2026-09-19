@@ -37,6 +37,7 @@ Key disimpan di file `.env` dan tidak pernah dikirim ke mana pun selain ke Googl
   - **Crop tengah**, atau **video utuh + latar blur**
 - **Hapus jeda diam** otomatis, supaya durasi klip terpakai untuk bicara
 - **Judul di atas video** (kotak putih, teks membungkus otomatis) supaya penonton langsung paham konteksnya. Judul bisa diedit di kartu klip
+- **Logo (watermark)** di sudut video dan **video/gambar penutup (outro)** di akhir tiap klip
 - **Posting ke media sosial lewat Buffer**: Instagram/Facebook (Reel), TikTok, YouTube, LinkedIn, X, Threads, dan lainnya, langsung, masuk antrean, atau dijadwalkan
 - **Pemakaian & biaya AI**: token Gemini per proyek (video/audio/teks, output, thinking), estimasi biaya dalam USD & Rupiah, perkiraan biaya sebelum proses, dan dashboard total per bulan/hari/model
 - Ganti format proyek lama lalu **Render ulang semua** klip sekaligus
@@ -67,6 +68,7 @@ video → probe → proxy 360p (hemat upload & token) → Gemini Files API
 | `app/buffer.py` | Buffer GraphQL API: daftar channel, buat post video, cek status |
 | `app/mediahost.py` | Upload klip ke Cloudinary / Cloudflare R2 untuk mendapat URL publik |
 | `app/pricing.py` | Tabel harga Gemini, pencatatan token, estimasi & perhitungan biaya |
+| `app/branding.py` | Pengaturan logo & penutup klip |
 | `app/media.py` | Perintah ffmpeg: probe, proxy, crop/blur, subtitle, SRT |
 | `app/jobs.py` | Penyimpanan job di disk dan siaran event realtime |
 | `static/` | Antarmuka web (HTML/CSS/JS tanpa build) |
@@ -111,6 +113,27 @@ Kalau subtitle aktif, jeda dihitung dari celah antar kata Whisper (tahan musik l
 Batas potongan dibulatkan ke grid frame supaya audio dan video tetap sinkron walau ada puluhan potongan.
 Crop wajah dihitung di timeline asli, sedangkan subtitle dan judul dipetakan ke timeline hasil potong.
 
+## Logo & penutup klip
+
+Di **⚙ Pengaturan → Logo & penutup klip**:
+
+- **Logo (watermark):** unggah PNG/JPG/WEBP, atur sudut (4 pilihan), lebar (persen dari lebar video),
+  transparansi, dan jarak dari tepi. Logo ditempel di atas video, setelah subtitle dan judul.
+- **Penutup (outro):** unggah video atau gambar yang disambung di akhir tiap klip. Ukurannya otomatis
+  disamakan dengan klip (dengan bar hitam kalau rasionya beda), begitu juga frame rate dan audionya.
+  Untuk gambar, durasinya bisa diatur; untuk video, audionya bisa dimatikan.
+
+Dari command line:
+
+```bash
+./clip branding --logo logo.png --position bottom-right --size 12 --opacity 0.85
+./clip branding --outro outro.mp4        # atau gambar: --outro penutup.png --outro-duration 3
+./clip branding --logo-off               # matikan sementara tanpa menghapus filenya
+```
+
+File disimpan di `data/branding/`. Keduanya dipasang saat render, jadi klip lama perlu **Render ulang**.
+Logo tidak ditempel di bagian outro, karena outro biasanya sudah punya branding sendiri.
+
 ## Memilih penyedia AI
 
 | Penyedia | Cara kerja | Catatan |
@@ -148,11 +171,16 @@ berjalan lokal sehingga tidak dihitung.
 ## Posting ke media sosial (Buffer)
 
 1. Buat API key di https://publish.buffer.com/settings/api dan hubungkan akun sosial media di Buffer.
+   Bisa menambahkan **beberapa akun Buffer** (mis. akun sendiri + akun klien): tiap akun punya API key sendiri,
+   daftar channelnya digabung, dan satu klip bisa dikirim ke channel milik akun berbeda sekaligus.
+   Akun disimpan di `data/buffer_accounts.json` (hanya bisa dibaca pemilik file, tidak ikut ke git).
 2. Buffer API **tidak menerima upload file**, jadi klip harus punya URL HTTPS publik. Isi salah satu hosting di Pengaturan:
    - **Cloudinary**: cloud name, API key, API secret (Dashboard → API Keys).
    - **Cloudflare R2**: account ID, bucket, access key, secret, dan URL publik bucket (r2.dev atau domain sendiri).
 3. Klik **📤 Posting** di kartu klip, pilih channel, edit caption, lalu pilih waktu: antrean Buffer, posting berikutnya, sekarang, atau jadwal tertentu.
 
+Channel dirujuk sebagai `idAkun:idChannel`, jadi akun berbeda yang punya id channel sama tidak tertukar.
+Kalau satu akun bermasalah (key dicabut, kuota habis), akun lain tetap tampil dan hanya muncul peringatan.
 Klip diunggah sekali per versi dan dipakai untuk semua channel. Instagram & Facebook dikirim sebagai Reel,
 YouTube sebagai video publik (kategori People & Blogs) dengan judul klip. Status tiap channel tampil di kartu klip;
 klik **↻ Cek status** untuk memperbarui (terjadwal → terkirim, plus link post).

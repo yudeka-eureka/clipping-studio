@@ -18,7 +18,7 @@ import openai
 from google.genai import errors as genai_errors
 from pydantic import BaseModel
 
-from . import analysis, buffer, facetrack, media, mediahost, pipeline, pricing, transcribe
+from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, transcribe
 from .jobs import hub, store
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -104,7 +104,7 @@ def get_config():
         "whisper_language": transcribe.language(),
         "whisper_languages": transcribe.LANGUAGES,
         "pricing": _pricing_info(),
-        "buffer_key_hint": _hint("BUFFER_API_KEY"),
+        "buffer_accounts": buffer.public_accounts(),
         "media_host": mediahost.provider(),
         "media_missing": [mediahost.LABELS[f] for f in mediahost.missing()],
         # Nilai non-rahasia dikirim apa adanya; rahasia hanya petunjuk 4 karakter terakhir.
@@ -293,6 +293,69 @@ async def delete_clip(job_id: str, clip_id: str):
     return {"ok": True}
 
 
+# ---------- Logo & penutup (branding) ----------
+
+class BrandingIn(BaseModel):
+    enabled: bool | None = None
+    position: str | None = None
+    size: float | None = None
+    opacity: float | None = None
+    margin: float | None = None
+    duration: float | None = None
+    keep_audio: bool | None = None
+
+
+def _check_kind(kind: str) -> None:
+    if kind not in ("logo", "outro"):
+        raise HTTPException(404, "Bagian tidak dikenal.")
+
+
+@app.get("/api/branding")
+def get_branding():
+    return branding.public()
+
+
+@app.post("/api/branding/{kind}")
+async def upload_branding(kind: str, file: UploadFile = File(...)):
+    _check_kind(kind)
+    tmp = branding.DIR.parent / f".upload-{kind}"
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with tmp.open("wb") as out:
+            await asyncio.to_thread(shutil.copyfileobj, file.file, out, 4 * 1024 * 1024)
+        await asyncio.to_thread(branding.save_file, kind, tmp, file.filename or "")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        tmp.unlink(missing_ok=True)
+    return branding.public()
+
+
+@app.patch("/api/branding/{kind}")
+def update_branding(kind: str, body: BrandingIn):
+    _check_kind(kind)
+    try:
+        branding.update(kind, **body.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return branding.public()
+
+
+@app.delete("/api/branding/{kind}")
+def delete_branding(kind: str):
+    _check_kind(kind)
+    branding.clear(kind)
+    return branding.public()
+
+
+@app.get("/branding/{name}")
+def branding_file(name: str):
+    target = (branding.DIR / name).resolve()
+    if branding.DIR.resolve() not in target.parents or not target.is_file():
+        raise HTTPException(404)
+    return FileResponse(target)
+
+
 # ---------- Pemakaian & biaya AI ----------
 
 class PricingIn(BaseModel):
@@ -378,11 +441,51 @@ async def recalculate_usage():
 # ---------- Posting ke media sosial (Buffer) ----------
 
 @app.get("/api/buffer/channels")
-async def buffer_channels(refresh: bool = False):
+async def buffer_channels(refresh: bool = False, account_id: str | None = None):
     try:
-        return {"channels": await asyncio.to_thread(buffer.list_channels, refresh)}
+        channels, errors = await asyncio.to_thread(buffer.channels_and_errors, refresh, account_id)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, str(e))
+    return {"channels": channels, "errors": errors, "accounts": buffer.public_accounts()}
+
+
+class AccountIn(BaseModel):
+    label: str | None = None
+    api_key: str | None = None
+
+
+@app.get("/api/buffer/accounts")
+def buffer_accounts():
+    return {"accounts": buffer.public_accounts()}
+
+
+@app.post("/api/buffer/accounts")
+async def add_buffer_account(body: AccountIn):
+    try:
+        added = await asyncio.to_thread(buffer.add_account, body.label or "", body.api_key or "")
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, str(e))
+    return {"added": added, "accounts": buffer.public_accounts()}
+
+
+@app.patch("/api/buffer/accounts/{account_id}")
+def rename_buffer_account(account_id: str, body: AccountIn):
+    try:
+        buffer.rename_account(account_id, body.label or "")
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, str(e))
+    return {"accounts": buffer.public_accounts()}
+
+
+@app.delete("/api/buffer/accounts/{account_id}")
+def delete_buffer_account(account_id: str):
+    try:
+        from_env = buffer.remove_account(account_id)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, str(e))
+    if from_env:
+        _set_env("BUFFER_API_KEY", "")  # supaya tidak muncul lagi dari .env
+    return {"accounts": buffer.public_accounts()}
 
 
 @app.post("/api/mediahost/test")
@@ -424,9 +527,12 @@ async def publish_clip(job_id: str, clip_id: str, body: PublishIn):
     if mediahost.missing():
         raise HTTPException(400, mediahost.missing_message())
     try:
-        known = {c["id"]: c for c in await asyncio.to_thread(buffer.list_channels)}
+        found = await asyncio.to_thread(buffer.list_channels)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, str(e))
+    # Channel dirujuk sebagai "idAkun:idChannel"; id polos tetap diterima kalau tidak ambigu.
+    known = {c["key"]: c for c in found}
+    known.update({c["id"]: c for c in found if sum(1 for x in found if x["id"] == c["id"]) == 1})
     channels = [known[i] for i in body.channel_ids if i in known]
     unusable = [c for c in channels if c["isDisconnected"] or c["isLocked"]]
     if len(channels) != len(body.channel_ids) or unusable:
@@ -442,9 +548,15 @@ async def refresh_publish(job_id: str, clip_id: str):
     pub = (clip or {}).get("publish")
     if not pub:
         raise HTTPException(404, "Klip ini belum pernah diposting.")
-    ids = [r["post_id"] for r in pub["results"] if r.get("ok")]
+    # Status ditanyakan ke akun yang memposting masing-masing.
+    per_account: dict[str | None, list[str]] = {}
+    for r in pub["results"]:
+        if r.get("ok"):
+            per_account.setdefault(r.get("account_id"), []).append(r["post_id"])
+    statuses: dict[str, dict] = {}
     try:
-        statuses = await asyncio.to_thread(buffer.post_statuses, ids)
+        for account_id, ids in per_account.items():
+            statuses.update(await asyncio.to_thread(buffer.post_statuses, ids, account_id))
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, str(e))
     for r in pub["results"]:
@@ -481,6 +593,15 @@ async def ws(websocket: WebSocket):
         pass
     finally:
         hub.sockets.discard(websocket)
+
+
+@app.middleware("http")
+async def no_stale_ui(request, call_next):
+    """Antarmuka selalu divalidasi ulang, supaya versi lama tidak nyangkut di cache browser."""
+    response = await call_next(request)
+    if request.url.path.startswith(("/branding/", "/static/")) or request.url.path in ("/", "/app.js", "/style.css", "/index.html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 app.mount("/", StaticFiles(directory=ROOT / "static", html=True), name="static")

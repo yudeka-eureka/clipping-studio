@@ -30,10 +30,12 @@ jadi stdout aman di-pipe. Kode keluar: `0` berhasil, `1` gagal (JSON berisi `{"o
 | `transcribe SOURCE` | Transkrip Whisper lokal, `--format text\|srt\|json` (json = waktu per kata) |
 | `estimate SOURCE` | Perkiraan token & biaya Gemini |
 | `usage` | Token & biaya yang sudah terpakai per proyek |
-| `channels` | Daftar channel media sosial di Buffer |
-| `publish JOB CLIP --channel ID` | Unggah klip ke hosting lalu buat post di Buffer |
+| `channels` | Daftar channel dari semua akun Buffer (`--account ID` untuk satu akun) |
+| `accounts` | Kelola akun Buffer: `--add [--label X]` (key dari stdin), `--rename ID --label X`, `--remove ID` |
+| `publish JOB CLIP --channel idAkun:idChannel` | Unggah klip ke hosting lalu buat post di Buffer (boleh lintas akun) |
 | `publish-status JOB CLIP` | Status terbaru post di Buffer |
 | `provider [gemini\|anthropic\|openai] [--model M]` | Lihat / ganti penyedia AI pemilih klip |
+| `branding [--logo F] [--outro F] [--position P] [--size N] [--opacity N] [--outro-duration N]` | Logo watermark & penutup klip; `--logo-off`, `--remove-outro`, dst. |
 | `config [NAMA [NILAI]]` | Lihat/ubah `.env`. Tanpa NILAI, dibaca dari stdin (aman untuk kredensial) |
 | `serve --port 8765` | Jalankan antarmuka web |
 

@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / ".env"
 load_dotenv(ENV_FILE)
 
-from . import analysis, buffer, facetrack, media, mediahost, pipeline, pricing, transcribe  # noqa: E402
+from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, transcribe  # noqa: E402
 from .jobs import hub, store  # noqa: E402
 
 URL_RE = re.compile(r"^https?://")
@@ -361,13 +361,37 @@ async def cmd_usage(args) -> None:
 
 async def cmd_channels(args) -> None:
     try:
-        channels = await asyncio.to_thread(buffer.list_channels, args.refresh)
+        channels, errors = await asyncio.to_thread(buffer.channels_and_errors, args.refresh, args.account)
     except Exception as e:  # noqa: BLE001
         fail(str(e), args)
-    emit(args, channels, "\n".join(
-        f"{c['id']}  {c['service']:<12} {c.get('displayName') or c['name']}"
-        + ("  [terputus]" if c["isDisconnected"] else "  [terkunci]" if c["isLocked"] else "")
-        for c in channels) or "Belum ada channel di Buffer.")
+    text = "\n".join(
+        f"{c['key']:<28} {c['service']:<12} {c.get('displayName') or c['name']} [{c['account']}]"
+        + ("  (terputus)" if c["isDisconnected"] else "  (terkunci)" if c["isLocked"] else "")
+        for c in channels) or "Belum ada channel di Buffer."
+    if errors:
+        text += "\n⚠️ " + "\n⚠️ ".join(errors)
+    emit(args, {"channels": channels, "errors": errors}, text)
+
+
+async def cmd_accounts(args) -> None:
+    try:
+        if args.add:
+            added = await asyncio.to_thread(
+                buffer.add_account, args.label or "",
+                args.key or sys.stdin.readline().strip())
+            if not args.json:
+                print(f"Akun “{added['label']}” ditambahkan ({', '.join(added['organizations'])}).")
+        elif args.remove:
+            if await asyncio.to_thread(buffer.remove_account, args.remove):
+                _set_env("BUFFER_API_KEY", "")
+        elif args.rename:
+            buffer.rename_account(args.rename, args.label or "")
+    except Exception as e:  # noqa: BLE001
+        fail(str(e), args)
+    data = buffer.public_accounts()
+    emit(args, {"accounts": data},
+         "\n".join(f"{a['id']:<10} {a['label']:<24} key {a['key_hint']}" for a in data)
+         or "Belum ada akun Buffer. Tambahkan dengan: clip accounts --add --label 'Nama'")
 
 
 async def cmd_publish(args) -> None:
@@ -427,6 +451,12 @@ SETTABLE = ["AI_PROVIDER", "GEMINI_API_KEY", "GEMINI_MODEL", "ANTHROPIC_API_KEY"
             "MEDIA_HOST", *mediahost.FIELDS["cloudinary"], *mediahost.FIELDS["r2"]]
 
 
+def _set_env(name: str, value: str) -> None:
+    os.environ[name] = value
+    ENV_FILE.touch(mode=0o600, exist_ok=True)
+    set_key(str(ENV_FILE), name, value)
+
+
 async def cmd_config(args) -> None:
     if args.name:
         name = args.name.upper()
@@ -438,9 +468,7 @@ async def cmd_config(args) -> None:
         value = args.value if args.value is not None else sys.stdin.readline().strip()
         if not value:
             fail("Nilai kosong.", args)
-        os.environ[name] = value
-        ENV_FILE.touch(mode=0o600, exist_ok=True)
-        set_key(str(ENV_FILE), name, value)
+        _set_env(name, value)
     hint = lambda v: (f"…{v[-4:]}" if v else "")  # noqa: E731
     secrets = {"GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "BUFFER_API_KEY", *mediahost.SECRET_FIELDS}
     data = {n: (hint(os.environ.get(n, "")) if n in secrets else os.environ.get(n, "")) for n in SETTABLE}
@@ -464,6 +492,38 @@ async def cmd_provider(args) -> None:
     emit(args, {"provider": analysis.provider(), "providers": data},
          "\n".join(f"{'*' if p['active'] else ' '} {n:<10} {p['label']:<18} {p['model']}"
                    + ("" if p["key"] else "  (API key belum diisi)") for n, p in data.items()))
+
+
+async def cmd_branding(args) -> None:
+    try:
+        for kind, file in (("logo", args.logo), ("outro", args.outro)):
+            if file:
+                path = Path(file).expanduser().resolve()
+                if not path.is_file():
+                    fail(f"File tidak ditemukan: {path}", args)
+                branding.save_file(kind, path, path.name)
+        if args.remove_logo:
+            branding.clear("logo")
+        if args.remove_outro:
+            branding.clear("outro")
+        branding.update("logo", position=args.position, size=args.size, opacity=args.opacity,
+                        margin=args.margin,
+                        enabled=False if args.logo_off else (True if args.logo_on else None))
+        branding.update("outro", duration=args.outro_duration,
+                        keep_audio=False if args.outro_mute else None,
+                        enabled=False if args.outro_off else (True if args.outro_on else None))
+    except ValueError as e:
+        fail(str(e), args)
+    data = branding.public()
+    lg, ou = data["logo"], data["outro"]
+    text = (f"logo  : {lg['file'] or '(belum ada)'}"
+            + (f" · {'aktif' if lg['enabled'] else 'nonaktif'} · {lg['position']} · {lg['size']}% "
+               f"· opacity {lg['opacity']} · margin {lg['margin']}%" if lg["file"] else "")
+            + f"\noutro : {ou['file'] or '(belum ada)'}"
+            + (f" · {'aktif' if ou['enabled'] else 'nonaktif'}"
+               + (f" · {ou['duration']} dtk" if not ou["is_video"] else
+                  f" · video{'' if ou['keep_audio'] else ', audio dimatikan'}") if ou["file"] else ""))
+    emit(args, data, text)
 
 
 async def cmd_serve(args) -> None:
@@ -561,14 +621,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("usage", help="pemakaian token & biaya AI")
     sp.set_defaults(func=cmd_usage)
 
-    sp = sub.add_parser("channels", help="daftar channel media sosial di Buffer")
+    sp = sub.add_parser("channels", help="daftar channel media sosial di semua akun Buffer")
     sp.add_argument("--refresh", action="store_true")
+    sp.add_argument("--account", help="batasi ke satu akun (id dari 'clip accounts')")
     sp.set_defaults(func=cmd_channels)
+
+    sp = sub.add_parser("accounts", help="kelola akun Buffer (boleh lebih dari satu)")
+    sp.add_argument("--add", action="store_true", help="tambah akun; API key dibaca dari stdin kalau --key kosong")
+    sp.add_argument("--key", help="Buffer API key (hindari: tersimpan di riwayat shell)")
+    sp.add_argument("--label", help="nama akun")
+    sp.add_argument("--remove", metavar="ID", help="hapus akun")
+    sp.add_argument("--rename", metavar="ID", help="ganti nama akun (pakai --label)")
+    sp.set_defaults(func=cmd_accounts)
 
     sp = sub.add_parser("publish", help="kirim klip ke media sosial lewat Buffer")
     sp.add_argument("job")
     sp.add_argument("clip")
-    sp.add_argument("--channel", action="append", required=True, help="id channel (boleh diulang)")
+    sp.add_argument("--channel", action="append", required=True,
+                    help="channel: 'idAkun:idChannel' dari 'clip channels' (boleh diulang)")
     sp.add_argument("--mode", default="addToQueue",
                     choices=["addToQueue", "shareNext", "shareNow", "customScheduled"])
     sp.add_argument("--at", help="waktu ISO untuk --mode customScheduled")
@@ -589,6 +659,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("name", nargs="?", choices=list(analysis.PROVIDERS))
     sp.add_argument("--model", help="model untuk penyedia tersebut")
     sp.set_defaults(func=cmd_provider)
+
+    sp = sub.add_parser("branding", help="logo (watermark) & video/gambar penutup untuk klip")
+    sp.add_argument("--logo", metavar="FILE", help="pasang logo (png/jpg/webp)")
+    sp.add_argument("--position", choices=list(branding.POSITIONS))
+    sp.add_argument("--size", type=float, help="lebar logo, persen dari lebar video (3-40)")
+    sp.add_argument("--opacity", type=float, help="transparansi logo 0.1-1.0")
+    sp.add_argument("--margin", type=float, help="jarak dari tepi, persen lebar video (0-25)")
+    sp.add_argument("--logo-off", action="store_true", help="matikan logo tanpa menghapus filenya")
+    sp.add_argument("--logo-on", action="store_true")
+    sp.add_argument("--remove-logo", action="store_true")
+    sp.add_argument("--outro", metavar="FILE", help="pasang penutup (video atau gambar)")
+    sp.add_argument("--outro-duration", type=float, help="durasi penutup kalau berupa gambar (detik)")
+    sp.add_argument("--outro-mute", action="store_true", help="buang audio penutup")
+    sp.add_argument("--outro-off", action="store_true")
+    sp.add_argument("--outro-on", action="store_true")
+    sp.add_argument("--remove-outro", action="store_true")
+    sp.set_defaults(func=cmd_branding)
 
     sp = sub.add_parser("serve", help="jalankan antarmuka web")
     sp.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))
