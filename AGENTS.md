@@ -21,6 +21,8 @@ jadi stdout aman di-pipe. Kode keluar: `0` berhasil, `1` gagal (JSON berisi `{"o
 
 ## Daftar perintah
 
+Tabel ini ringkasan. Semua pilihan tiap perintah ada di [docs/cli.md](docs/cli.md) atau `./clip <perintah> --help`.
+
 | Perintah | Kegunaan |
 |---|---|
 | `doctor` | Status ffmpeg, mediapipe, model Whisper, API key, hosting video |
