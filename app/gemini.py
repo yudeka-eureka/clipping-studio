@@ -1,4 +1,7 @@
-"""Koneksi ke Gemini API: upload video, minta AI memilih momen terbaik untuk klip."""
+"""Koneksi ke Gemini API: upload video, minta AI memilih momen terbaik untuk klip.
+
+Skema jawaban dan prompt dipakai bersama semua penyedia AI (lihat analysis.py).
+"""
 from __future__ import annotations
 
 import time
@@ -7,31 +10,8 @@ from typing import Callable
 
 from google import genai
 from google.genai import types
-from pydantic import BaseModel, Field
-
 from . import pricing
-
-
-class CaptionLine(BaseModel):
-    start: float = Field(description="Detik absolut dari awal video")
-    end: float = Field(description="Detik absolut dari awal video")
-    text: str
-
-
-class ClipSuggestion(BaseModel):
-    title: str = Field(description="Judul yang ditempel di atas video: menjelaskan konteks klip, maks 60 karakter")
-    start: float = Field(description="Detik mulai, dihitung dari awal video")
-    end: float = Field(description="Detik selesai, dihitung dari awal video")
-    hook: str = Field(description="Kalimat pembuka/hook untuk caption media sosial")
-    reason: str = Field(description="Alasan singkat kenapa bagian ini menarik")
-    score: int = Field(description="Potensi viral 1-100")
-    hashtags: list[str]
-    captions: list[CaptionLine] = Field(default_factory=list)
-
-
-class Analysis(BaseModel):
-    summary: str
-    clips: list[ClipSuggestion]
+from .analysis import Analysis, AnalysisError, build_prompt
 
 
 def client(api_key: str) -> genai.Client:
@@ -71,41 +51,6 @@ def delete_file(api_key: str, f: types.File) -> None:
         pass
 
 
-def build_prompt(opts: dict, duration: float) -> str:
-    captions = (
-        "Untuk setiap klip, isi `captions` dengan transkrip ucapan per kalimat pendek "
-        "(maks ~8 kata per baris) beserta waktu mulai/selesai dalam detik absolut, "
-        "dalam bahasa asli pembicara."
-        if opts.get("subtitles") else "Biarkan `captions` berupa list kosong."
-    )
-    extra = f"\nInstruksi tambahan dari pengguna: {opts['instructions']}" if opts.get("instructions") else ""
-    return f"""Kamu adalah editor video pendek profesional untuk TikTok, Instagram Reels, dan YouTube Shorts.
-
-Tonton video ini (gambar + suara) dari awal sampai akhir. Durasi total: {duration:.1f} detik.
-
-Pilih {opts['num_clips']} momen terbaik untuk dijadikan klip pendek yang berdiri sendiri:
-- Durasi tiap klip antara {opts['min_len']} dan {opts['max_len']} detik.
-- Mulai tepat di awal kalimat/ide dan selesai setelah kalimat tuntas (jangan terpotong di tengah kata).
-- Utamakan hook kuat di 3 detik pertama, emosi, insight, humor, atau pernyataan kontroversial.
-- Klip tidak boleh saling tumpang tindih.
-- Semua waktu dalam DETIK (angka desimal) dihitung dari awal video, bukan format MM:SS.
-- Judul, hook, alasan, dan hashtag ditulis dalam Bahasa Indonesia.
-- Judul akan ditempel di bagian atas video. Buat judul yang langsung menjelaskan konteks
-  (siapa/apa yang dibahas) bagi penonton yang tidak menonton video aslinya, maks 60 karakter,
-  tanpa emoji dan tanpa tanda kutip.
-{captions}{extra}
-
-Urutkan dari skor tertinggi."""
-
-
-class AnalysisError(RuntimeError):
-    """Jawaban Gemini tidak bisa dipakai, tapi token tetap terpakai (dibawa di .usage)."""
-
-    def __init__(self, message: str, usage: dict) -> None:
-        super().__init__(message)
-        self.usage = usage
-
-
 def analyze(api_key: str, model: str, source: types.File, opts: dict, duration: float) -> tuple[Analysis, dict]:
     video_part = types.Part.from_uri(file_uri=source.uri, mime_type=source.mime_type or "video/mp4")
     config = types.GenerateContentConfig(
@@ -120,7 +65,7 @@ def analyze(api_key: str, model: str, source: types.File, opts: dict, duration: 
     c = client(api_key)
     resp = c.models.generate_content(
         model=model,
-        contents=[video_part, build_prompt(opts, duration)],
+        contents=[video_part, build_prompt(opts, duration, has_media=True)],
         config=config,
     )
     usage = pricing.usage_from_response(resp, model, duration, low_res)

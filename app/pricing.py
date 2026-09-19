@@ -40,8 +40,36 @@ DEFAULT_PRICES: dict[str, list[dict]] = {
     "gemini-2.5-flash-lite": [{"from": "2000-01-01", "input": 0.10, "audio": 0.30, "output": 0.40, "cache": None}],
 }
 
+# Anthropic (https://docs.claude.com/en/docs/about-claude/pricing), USD per 1 juta token.
+DEFAULT_PRICES.update({
+    "claude-fable-5-1": [{"from": "2000-01-01", "input": 10.00, "audio": None, "output": 50.00, "cache": 1.00}],
+    "claude-fable-5": [{"from": "2000-01-01", "input": 10.00, "audio": None, "output": 50.00, "cache": 1.00}],
+    "claude-opus-5": [{"from": "2000-01-01", "input": 5.00, "audio": None, "output": 25.00, "cache": 0.50}],
+    "claude-opus-4-8": [{"from": "2000-01-01", "input": 5.00, "audio": None, "output": 25.00, "cache": 0.50}],
+    "claude-opus-4-7": [{"from": "2000-01-01", "input": 5.00, "audio": None, "output": 25.00, "cache": 0.50}],
+    "claude-opus-4-6": [{"from": "2000-01-01", "input": 5.00, "audio": None, "output": 25.00, "cache": 0.50}],
+    "claude-sonnet-5": [{"from": "2000-01-01", "input": 2.00, "audio": None, "output": 10.00, "cache": 0.20}],
+    "claude-sonnet-4-6": [{"from": "2000-01-01", "input": 3.00, "audio": None, "output": 15.00, "cache": 0.30}],
+    "claude-haiku-4-5": [{"from": "2000-01-01", "input": 1.00, "audio": None, "output": 5.00, "cache": 0.10}],
+})
+
+# OpenAI (https://developers.openai.com/api/docs/pricing), tier Standard, USD per 1 juta token.
+DEFAULT_PRICES.update({
+    "gpt-6-astra": [{"from": "2000-01-01", "input": 10.00, "audio": None, "output": 50.00, "cache": 1.00}],
+    "gpt-5.6-sol": [{"from": "2000-01-01", "input": 4.00, "audio": None, "output": 20.00, "cache": 0.40}],
+    "gpt-5.6-terra": [{"from": "2000-01-01", "input": 2.00, "audio": None, "output": 12.00, "cache": 0.20}],
+    "gpt-5.6-luna": [{"from": "2000-01-01", "input": 0.20, "audio": None, "output": 1.20, "cache": 0.02}],
+    "gpt-5.5-pro": [{"from": "2000-01-01", "input": 30.00, "audio": None, "output": 180.00, "cache": None}],
+    "gpt-5.5": [{"from": "2000-01-01", "input": 5.00, "audio": None, "output": 30.00, "cache": 0.50}],
+    "gpt-5.4-mini": [{"from": "2000-01-01", "input": 0.75, "audio": None, "output": 4.50, "cache": 0.075}],
+    "gpt-5.4-nano": [{"from": "2000-01-01", "input": 0.20, "audio": None, "output": 1.25, "cache": 0.02}],
+    "gpt-5-mini": [{"from": "2000-01-01", "input": 0.25, "audio": None, "output": 2.00, "cache": 0.025}],
+    "gpt-5-nano": [{"from": "2000-01-01", "input": 0.05, "audio": None, "output": 0.40, "cache": 0.005}],
+})
+
 # Perkiraan token video Gemini per detik (gambar 1 fps + audio): resolusi default vs rendah.
 TOKENS_PER_SEC = {"default": 300, "low": 100}
+MAX_FRAME_TOKENS = 20 * 400  # 20 frame sampel untuk Claude/ChatGPT
 
 
 def settings() -> dict:
@@ -102,7 +130,7 @@ def usage_from_response(resp, model: str, video_seconds: float, low_res: bool) -
         by_modality[name] = by_modality.get(name, 0) + (d.token_count or 0)
     get = lambda f: (getattr(um, f, None) or 0) if um else 0  # noqa: E731
     return {
-        "t": time.time(), "kind": "analysis", "model": model,
+        "t": time.time(), "kind": "analysis", "model": model, "provider": "gemini",
         "video_seconds": round(video_seconds, 1), "low_res": low_res,
         "prompt_tokens": get("prompt_token_count"),
         "video_tokens": by_modality.get("VIDEO", 0) + by_modality.get("IMAGE", 0),
@@ -112,6 +140,37 @@ def usage_from_response(resp, model: str, video_seconds: float, low_res: bool) -
         "output_tokens": get("candidates_token_count"),
         "thoughts_tokens": get("thoughts_token_count"),
         "total_tokens": get("total_token_count"),
+    }
+
+
+def usage_from_anthropic(resp, model: str, video_seconds: float) -> dict:
+    """Token dari respons Claude. output_tokens sudah termasuk token thinking."""
+    u = resp.usage
+    cached = (u.cache_read_input_tokens or 0) + (u.cache_creation_input_tokens or 0)
+    prompt = (u.input_tokens or 0) + cached
+    return {
+        "t": time.time(), "kind": "analysis", "model": model, "provider": "anthropic",
+        "video_seconds": round(video_seconds, 1), "low_res": False,
+        "prompt_tokens": prompt, "video_tokens": 0, "audio_tokens": 0, "text_tokens": prompt,
+        "cached_tokens": u.cache_read_input_tokens or 0,
+        "output_tokens": u.output_tokens or 0, "thoughts_tokens": 0,
+        "total_tokens": prompt + (u.output_tokens or 0),
+    }
+
+
+def usage_from_openai(resp, model: str, video_seconds: float) -> dict:
+    """Token dari respons ChatGPT. output_tokens sudah termasuk reasoning token."""
+    u = resp.usage
+    cached = getattr(getattr(u, "input_tokens_details", None), "cached_tokens", 0) or 0
+    reasoning = getattr(getattr(u, "output_tokens_details", None), "reasoning_tokens", 0) or 0
+    prompt, output = u.input_tokens or 0, u.output_tokens or 0
+    return {
+        "t": time.time(), "kind": "analysis", "model": model, "provider": "openai",
+        "video_seconds": round(video_seconds, 1), "low_res": False,
+        "prompt_tokens": prompt, "video_tokens": 0, "audio_tokens": 0, "text_tokens": prompt - cached,
+        "cached_tokens": cached, "output_tokens": output, "thoughts_tokens": 0,
+        "reasoning_tokens": reasoning,
+        "total_tokens": u.total_tokens or (prompt + output),
     }
 
 
@@ -137,12 +196,18 @@ def with_cost(entry: dict) -> dict:
     return {**entry, "cost_usd": c["usd"], "price": c["price"], "tier": c["tier"]}
 
 
-def estimate(duration: float, model: str, num_clips: int, max_len: int, subtitles: bool) -> dict:
-    """Perkiraan sebelum analisis: token video per detik + prompt + jawaban JSON (+ thinking)."""
+def estimate(duration: float, model: str, num_clips: int, max_len: int, subtitles: bool,
+             provider: str = "gemini") -> dict:
+    """Perkiraan sebelum analisis. Gemini menonton video; penyedia lain membaca transkrip + frame."""
     low = duration > 20 * 60
-    prompt = int(duration * TOKENS_PER_SEC["low" if low else "default"]) + 600
+    if provider == "gemini":
+        prompt = int(duration * TOKENS_PER_SEC["low" if low else "default"]) + 600
+    else:
+        # ~2,5 kata/detik bicara ≈ 3,5 token/detik, plus ~20 frame @ ~400 token.
+        prompt = int(duration * 3.5) + MAX_FRAME_TOKENS + 600
+        low = False
     # ~250 token metadata per klip, ~4 token/detik transkrip per klip, ~1500 token thinking.
-    output = num_clips * (250 + (max_len * 4 if subtitles else 0)) + 1500
+    output = num_clips * (250 + (max_len * 4 if subtitles and provider == "gemini" else 0)) + 1500
     entry = {"t": time.time(), "model": model, "prompt_tokens": prompt, "audio_tokens": 0,
              "cached_tokens": 0, "output_tokens": output, "thoughts_tokens": 0}
     c = cost(entry)

@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / ".env"
 load_dotenv(ENV_FILE)
 
-from . import buffer, facetrack, media, mediahost, pipeline, pricing, transcribe  # noqa: E402
+from . import analysis, buffer, facetrack, media, mediahost, pipeline, pricing, transcribe  # noqa: E402
 from .jobs import hub, store  # noqa: E402
 
 URL_RE = re.compile(r"^https?://")
@@ -186,7 +186,11 @@ async def cmd_doctor(args) -> None:
     info = {
         "ffmpeg": media.FFMPEG, "subtitles_supported": media.SUBTITLES_SUPPORTED,
         "face_tracking": facetrack.available(),
-        "gemini_key": bool(os.environ.get("GEMINI_API_KEY", "").strip()), "gemini_model": pipeline.model_name(),
+        "provider": analysis.provider(), "model": analysis.model_name(),
+        "providers": {n: {"label": spec["label"], "video": spec["video"],
+                          "key": bool(os.environ.get(spec["env"], "").strip()),
+                          "model": analysis.model_name(n)}
+                      for n, spec in analysis.PROVIDERS.items()},
         "whisper_model": transcribe.model_name(), "whisper_downloaded": whisper_ok,
         "whisper_language": transcribe.language(),
         "buffer_key": bool(os.environ.get("BUFFER_API_KEY", "").strip()),
@@ -200,7 +204,9 @@ async def cmd_doctor(args) -> None:
         f"{mark(True)} ffmpeg            {info['ffmpeg']}",
         f"{mark(media.SUBTITLES_SUPPORTED)} subtitle (libass)",
         f"{mark(info['face_tracking'])} deteksi wajah (mediapipe)",
-        f"{mark(info['gemini_key'])} Gemini API key     model: {info['gemini_model']}",
+        *[f"{mark(p['key'])} {p['label']:<18}{'(aktif) ' if n == info['provider'] else ''}model: {p['model']}"
+          + ("" if p["video"] else "  [pakai transkrip lokal]")
+          for n, p in info["providers"].items()],
         f"{mark(whisper_ok[transcribe.model_name()])} model Whisper      {transcribe.model_name()} (bahasa: {info['whisper_language']})",
         f"{mark(info['buffer_key'])} Buffer API key",
         f"{mark(not info['media_host_missing'])} hosting video      {info['media_host']}"
@@ -319,11 +325,13 @@ async def cmd_estimate(args) -> None:
     duration = (await media.probe(src))["duration"] if src.is_file() else args.duration
     if not duration:
         fail("Sebutkan file video yang ada, atau --duration dalam detik (untuk link).", args)
-    est = pricing.estimate(duration, pipeline.model_name(), args.clips, args.max_len, not args.no_subtitles)
+    provider = analysis.provider()
+    est = pricing.estimate(duration, analysis.model_name(), args.clips, args.max_len,
+                           not args.no_subtitles, provider)
     rate = pricing.usd_idr()
     money = "gratis (tier Free)" if est["tier"] == "free" else "harga belum diatur" if est["usd"] is None else (
         f"≈ ${est['usd']:.4f}" + (f" (Rp{est['usd'] * rate:,.0f})".replace(",", ".") if rate else ""))
-    emit(args, {**est, "model": pipeline.model_name(), "duration": duration, "usd_idr": rate},
+    emit(args, {**est, "model": analysis.model_name(), "provider": provider, "duration": duration, "usd_idr": rate},
          f"Video {duration / 60:.1f} menit → ~{est['prompt_tokens']:,} token input + ~{est['output_tokens']:,} output: {money}".replace(",", "."))
 
 
@@ -414,13 +422,16 @@ async def cmd_publish_status(args) -> None:
                               f"{'  ' + r['link'] if r.get('link') else ''}" for r in pub["results"]))
 
 
-SETTABLE = ["GEMINI_API_KEY", "GEMINI_MODEL", "WHISPER_MODEL", "WHISPER_LANGUAGE", "BUFFER_API_KEY",
+SETTABLE = ["AI_PROVIDER", "GEMINI_API_KEY", "GEMINI_MODEL", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
+            "OPENAI_API_KEY", "OPENAI_MODEL", "WHISPER_MODEL", "WHISPER_LANGUAGE", "BUFFER_API_KEY",
             "MEDIA_HOST", *mediahost.FIELDS["cloudinary"], *mediahost.FIELDS["r2"]]
 
 
 async def cmd_config(args) -> None:
     if args.name:
         name = args.name.upper()
+        if name == "AI_PROVIDER" and (args.value or "").strip() not in analysis.PROVIDERS:
+            fail(f"Penyedia AI harus salah satu dari: {', '.join(analysis.PROVIDERS)}", args)
         if name not in SETTABLE:
             fail(f"Nama tidak dikenal. Pilihan: {', '.join(SETTABLE)}", args)
         # Nilai lewat stdin supaya kredensial tidak tersimpan di riwayat shell.
@@ -431,10 +442,28 @@ async def cmd_config(args) -> None:
         ENV_FILE.touch(mode=0o600, exist_ok=True)
         set_key(str(ENV_FILE), name, value)
     hint = lambda v: (f"…{v[-4:]}" if v else "")  # noqa: E731
-    secrets = {"GEMINI_API_KEY", "BUFFER_API_KEY", *mediahost.SECRET_FIELDS}
+    secrets = {"GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "BUFFER_API_KEY", *mediahost.SECRET_FIELDS}
     data = {n: (hint(os.environ.get(n, "")) if n in secrets else os.environ.get(n, "")) for n in SETTABLE}
     emit(args, {"env_file": str(ENV_FILE), "values": data},
          "\n".join(f"{n:<26} {v or '(kosong)'}" for n, v in data.items()))
+
+
+async def cmd_provider(args) -> None:
+    if args.name:
+        os.environ["AI_PROVIDER"] = args.name
+        ENV_FILE.touch(mode=0o600, exist_ok=True)
+        set_key(str(ENV_FILE), "AI_PROVIDER", args.name)
+        if args.model:
+            spec = analysis.PROVIDERS[args.name]
+            os.environ[spec["model_env"]] = args.model
+            set_key(str(ENV_FILE), spec["model_env"], args.model)
+    data = {n: {"label": spec["label"], "model": analysis.model_name(n),
+                "key": bool(os.environ.get(spec["env"], "").strip()), "video": spec["video"],
+                "active": n == analysis.provider()}
+            for n, spec in analysis.PROVIDERS.items()}
+    emit(args, {"provider": analysis.provider(), "providers": data},
+         "\n".join(f"{'*' if p['active'] else ' '} {n:<10} {p['label']:<18} {p['model']}"
+                   + ("" if p["key"] else "  (API key belum diisi)") for n, p in data.items()))
 
 
 async def cmd_serve(args) -> None:
@@ -555,6 +584,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("name", nargs="?", help=f"salah satu dari: {', '.join(SETTABLE)}")
     sp.add_argument("value", nargs="?", help="nilai; kosongkan untuk membacanya dari stdin")
     sp.set_defaults(func=cmd_config)
+
+    sp = sub.add_parser("provider", help="lihat / ganti penyedia AI (gemini, anthropic, openai)")
+    sp.add_argument("name", nargs="?", choices=list(analysis.PROVIDERS))
+    sp.add_argument("--model", help="model untuk penyedia tersebut")
+    sp.set_defaults(func=cmd_provider)
 
     sp = sub.add_parser("serve", help="jalankan antarmuka web")
     sp.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))

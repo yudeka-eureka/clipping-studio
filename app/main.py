@@ -13,10 +13,12 @@ from dotenv import load_dotenv, set_key
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+import anthropic
+import openai
 from google.genai import errors as genai_errors
 from pydantic import BaseModel
 
-from . import buffer, facetrack, gemini, media, mediahost, pipeline, pricing, transcribe
+from . import analysis, buffer, facetrack, media, mediahost, pipeline, pricing, transcribe
 from .jobs import hub, store
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,8 +45,9 @@ def get_job(job_id: str) -> dict:
 # ---------- Pengaturan ----------
 
 class ConfigIn(BaseModel):
-    api_key: str | None = None
-    model: str | None = None
+    provider: str | None = None
+    api_key: str | None = None          # key untuk penyedia di field `provider` (atau yang aktif)
+    model: str | None = None            # model untuk penyedia yang sama
     whisper_model: str | None = None
     whisper_language: str | None = None
     buffer_api_key: str | None = None
@@ -64,19 +67,34 @@ def _set_env(name: str, value: str) -> None:
 
 def _pricing_info() -> dict:
     cfg = pricing.settings()
-    model = pipeline.model_name()
+    model = analysis.model_name()
     return {"tier": cfg["tier"], "usd_idr": pricing.usd_idr(), "model": model,
             "price": pricing.price_for(model), "override": cfg["overrides"].get(model),
             "source_url": pricing.SOURCE_URL}
 
 
+def _providers() -> dict:
+    return {
+        name: {
+            "label": spec["label"], "video": spec["video"],
+            "has_key": bool(os.environ.get(spec["env"], "").strip()),
+            "key_hint": _hint(spec["env"]), "model": analysis.model_name(name),
+            "default_model": spec["default_model"],
+        }
+        for name, spec in analysis.PROVIDERS.items()
+    }
+
+
 @app.get("/api/config")
 def get_config():
-    key = os.environ.get("GEMINI_API_KEY", "")
+    current = analysis.provider()
+    key = os.environ.get(analysis.PROVIDERS[current]["env"], "")
     return {
+        "provider": current,
+        "providers": _providers(),
         "has_key": bool(key),
         "key_hint": f"…{key[-4:]}" if key else "",
-        "model": pipeline.model_name(),
+        "model": analysis.model_name(),
         "ffmpeg": media.FFMPEG,
         "subtitles_supported": media.SUBTITLES_SUPPORTED,
         "face_tracking": facetrack.available(),
@@ -99,12 +117,14 @@ def get_config():
 @app.post("/api/config")
 def save_config(cfg: ConfigIn):
     ENV_FILE.touch(mode=0o600, exist_ok=True)
+    target = cfg.provider if cfg.provider in analysis.PROVIDERS else analysis.provider()
+    spec = analysis.PROVIDERS[target]
+    if cfg.provider in analysis.PROVIDERS:
+        _set_env("AI_PROVIDER", cfg.provider)
     if cfg.api_key is not None and cfg.api_key.strip():
-        os.environ["GEMINI_API_KEY"] = cfg.api_key.strip()
-        set_key(str(ENV_FILE), "GEMINI_API_KEY", cfg.api_key.strip())
+        _set_env(spec["env"], cfg.api_key.strip())
     if cfg.model:
-        os.environ["GEMINI_MODEL"] = cfg.model.strip()
-        set_key(str(ENV_FILE), "GEMINI_MODEL", cfg.model.strip())
+        _set_env(spec["model_env"], cfg.model.strip())
     for field, env, allowed in (("whisper_model", "WHISPER_MODEL", transcribe.MODELS),
                                 ("whisper_language", "WHISPER_LANGUAGE", transcribe.LANGUAGES)):
         value = getattr(cfg, field)
@@ -124,11 +144,14 @@ def save_config(cfg: ConfigIn):
 
 
 @app.get("/api/models")
-async def models():
+async def models(provider: str | None = None):
+    name = provider if provider in analysis.PROVIDERS else analysis.provider()
     try:
-        return {"models": await asyncio.to_thread(gemini.list_models, pipeline.api_key())}
+        return {"provider": name, "models": await asyncio.to_thread(analysis.list_models, name)}
     except genai_errors.APIError as e:
         raise HTTPException(400, f"Gemini API ({e.code}): {e.message}")
+    except (anthropic.APIStatusError, openai.APIStatusError) as e:
+        raise HTTPException(400, f"{analysis.PROVIDERS[name]['label']} menolak: {getattr(e, 'message', e)}")
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, f"Tidak bisa terhubung ke Gemini API: {e}")
 
@@ -284,7 +307,7 @@ class PricingIn(BaseModel):
 @app.post("/api/pricing")
 def save_pricing(body: PricingIn):
     overrides = dict(pricing.settings()["overrides"])
-    model = pipeline.model_name()
+    model = analysis.model_name()
     if body.clear_override:
         overrides.pop(model, None)
     elif body.input is not None and body.output is not None:
@@ -297,8 +320,10 @@ def save_pricing(body: PricingIn):
 
 @app.get("/api/estimate")
 def estimate(duration: float, num_clips: int = 3, max_len: int = 90, subtitles: bool = True):
-    est = pricing.estimate(max(0.0, duration), pipeline.model_name(), num_clips, max_len, subtitles)
-    return {**est, "model": pipeline.model_name(), "usd_idr": pricing.usd_idr()}
+    provider = analysis.provider()
+    est = pricing.estimate(max(0.0, duration), analysis.model_name(), num_clips, max_len, subtitles, provider)
+    return {**est, "model": analysis.model_name(), "provider": provider,
+            "provider_label": analysis.PROVIDERS[provider]["label"], "usd_idr": pricing.usd_idr()}
 
 
 @app.get("/api/usage")

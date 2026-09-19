@@ -127,20 +127,45 @@ def build_captions(words: list[dict], max_chars: int = 30, max_dur: float = 2.2,
     return captions
 
 
+def _cache_key(start: float, end: float) -> dict:
+    return {"start": round(start, 2), "end": round(end, 2), "model": model_name(), "lang": language()}
+
+
+def _read_cache(path: Path, key: dict) -> list[dict] | None:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data["words"] if data.get("key") == key else None
+
+
+def source_words(src: Path, duration: float, cache_dir: Path,
+                 on_progress: Callable[[float], None] | None = None) -> list[dict]:
+    """Transkrip seluruh video (dipakai Claude/ChatGPT untuk memilih klip, lalu dipakai ulang untuk subtitle)."""
+    key = _cache_key(0, duration)
+    cache = cache_dir / "source.words.json"
+    words = _read_cache(cache, key)
+    if words is None:
+        words = transcribe_words(src, 0, duration, "", on_progress)
+        cache.write_text(json.dumps({"key": key, "words": words}, ensure_ascii=False))
+    return words
+
+
 def words_for_clip(src: Path, clip: dict, cache_dir: Path,
                    on_progress: Callable[[float], None] | None = None) -> list[dict]:
     """Kata bertimestamp absolut untuk klip, di-cache per rentang waktu + model + bahasa."""
     hint = " ".join(c["text"] for c in clip.get("ai_captions") or [])
-    key = {"start": clip["start"], "end": clip["end"], "model": model_name(), "lang": language()}
+    key = _cache_key(clip["start"], clip["end"])
     cache = cache_dir / f"clip_{clip['id']}.words.json"
-    words = None
-    if cache.exists():
-        try:
-            data = json.loads(cache.read_text())
-            if data.get("key") == key:
-                words = data["words"]
-        except (OSError, json.JSONDecodeError):
-            pass
+    words = _read_cache(cache, key)
+    if words is None:
+        # Kalau transkrip seluruh video sudah ada (dipakai Claude/ChatGPT), tinggal dipotong.
+        for full in (cache_dir / "source.words.json", cache_dir.parent / "source.words.json"):
+            data = json.loads(full.read_text()) if full.exists() else {}
+            fkey = data.get("key") or {}
+            if fkey.get("model") == key["model"] and fkey.get("lang") == key["lang"]:
+                mid = lambda w: (w["start"] + w["end"]) / 2  # noqa: E731
+                return [w for w in data["words"] if clip["start"] <= mid(w) <= clip["end"]]
     if words is None:
         words = transcribe_words(src, clip["start"], clip["end"], hint, on_progress)
         cache.write_text(json.dumps({"key": key, "words": words}, ensure_ascii=False))

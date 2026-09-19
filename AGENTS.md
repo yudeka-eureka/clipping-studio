@@ -33,6 +33,7 @@ jadi stdout aman di-pipe. Kode keluar: `0` berhasil, `1` gagal (JSON berisi `{"o
 | `channels` | Daftar channel media sosial di Buffer |
 | `publish JOB CLIP --channel ID` | Unggah klip ke hosting lalu buat post di Buffer |
 | `publish-status JOB CLIP` | Status terbaru post di Buffer |
+| `provider [gemini\|anthropic\|openai] [--model M]` | Lihat / ganti penyedia AI pemilih klip |
 | `config [NAMA [NILAI]]` | Lihat/ubah `.env`. Tanpa NILAI, dibaca dari stdin (aman untuk kredensial) |
 | `serve --port 8765` | Jalankan antarmuka web |
 
@@ -42,7 +43,8 @@ Opsi klip (berlaku di `run` dan `cut`): `--clips N`, `--min-len`, `--max-len`,
 
 ## Catatan penting
 
-- `run`, `estimate`, dan `usage` memakai **Gemini API berbayar**. Cek biaya dengan `estimate` dulu.
+- `run` memakai API berbayar dari penyedia yang aktif (Gemini, Claude, atau ChatGPT). Cek biaya dengan `estimate` dulu.
+- Claude & ChatGPT tidak menerima video: klip dipilih dari transkrip Whisper lokal + sampel frame, jadi `run` butuh waktu transkripsi dulu dan tidak bisa dipakai untuk video tanpa suara.
 - `publish` **mengirim konten ke akun media sosial pengguna**. Minta konfirmasi pengguna sebelum menjalankannya,
   dan gunakan `--mode addToQueue` (masuk antrean, bisa dibatalkan di Buffer) daripada `shareNow`.
 - `rm` menghapus video sumber dan semua klip proyek tanpa bisa dibatalkan.

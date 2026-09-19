@@ -200,11 +200,15 @@
   <dialog id="dlg-settings">
     <form method="dialog" id="form-settings">
       <h2>Pengaturan</h2>
-      <label>Gemini API key
-        <input type="password" id="set-key" placeholder="AIza…" autocomplete="off" />
+      <label>Penyedia AI (pemilih momen klip)
+        <select id="set-provider"></select>
+      </label>
+      <p class="muted small" id="provider-note"></p>
+      <label><span id="set-key-label">API key</span>
+        <input type="password" id="set-key" autocomplete="off" />
         <span class="muted small" id="set-key-hint"></span>
       </label>
-      <p class="muted small">Buat gratis di <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>. Disimpan di file <code>.env</code> di komputer ini.</p>
+      <p class="muted small" id="key-help"></p>
       <label>Model
         <div class="row">
           <select id="set-model" class="grow"></select>

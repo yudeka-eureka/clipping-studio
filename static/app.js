@@ -300,7 +300,7 @@ function updateEstimate() {
     try {
       const e = await api(`/api/estimate?${q}`);
       const money = e.tier === "free" ? "gratis (tier Free)" : e.usd == null ? "harga model belum diatur" : `≈ ${fmtMoney(e.usd)}`;
-      box.innerHTML = `🤖 Perkiraan pemakaian AI (${esc(e.model)}): ~${fmtTokens(e.prompt_tokens)} token input + ~${fmtTokens(e.output_tokens)} output → <b>${money}</b>` +
+      box.innerHTML = `🤖 Perkiraan pemakaian AI (${esc(e.provider_label || "")} · ${esc(e.model)}): ~${fmtTokens(e.prompt_tokens)} token input + ~${fmtTokens(e.output_tokens)} output → <b>${money}</b>` +
         (e.low_res ? ` <span class="muted">· video &gt; 20 menit dianalisis resolusi rendah</span>` : "");
       box.hidden = false;
     } catch {
@@ -892,11 +892,49 @@ function setField(el, value) {
   if (!el.dataset.dirty) el.value = value;
 }
 
+const KEY_HELP = {
+  gemini: 'Buat gratis di <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>.',
+  anthropic: 'Buat di <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Anthropic Console</a>.',
+  openai: 'Buat di <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">OpenAI Platform</a>.',
+};
+const PROVIDER_NOTE = {
+  gemini: "Gemini menonton video langsung (gambar + suara).",
+  anthropic: "Claude tidak menerima video. Klip dipilih dari transkrip Whisper lokal + sampel frame, jadi prosesnya lebih lama tapi token inputnya jauh lebih sedikit.",
+  openai: "ChatGPT tidak menerima video. Klip dipilih dari transkrip Whisper lokal + sampel frame, jadi prosesnya lebih lama tapi token inputnya jauh lebih sedikit.",
+};
+
+function currentProvider() {
+  return $("#set-provider").value || state.config.provider;
+}
+
+function fillProviderFields() {
+  const cfg = state.config;
+  const name = currentProvider();
+  const p = cfg.providers[name];
+  $("#provider-note").textContent = PROVIDER_NOTE[name] || "";
+  $("#set-key-label").textContent = `API key ${p.label}`;
+  $("#key-help").innerHTML = (KEY_HELP[name] || "") + " Disimpan di file <code>.env</code> di komputer ini.";
+  $("#set-key-hint").textContent = p.has_key ? `Tersimpan (${p.key_hint}). Kosongkan jika tidak ingin mengganti.` : "Belum diisi.";
+  const sel = $("#set-model");
+  if (![...sel.options].some((o) => o.value === p.model)) sel.add(new Option(p.model, p.model));
+  sel.value = p.model;
+}
+
 function fillSettings() {
   const cfg = state.config;
+  const psel = $("#set-provider");
+  const keep = psel.dataset.dirty ? psel.value : cfg.provider;
+  psel.innerHTML = "";
+  for (const [name, p] of Object.entries(cfg.providers)) {
+    psel.add(new Option(`${p.label}${p.has_key ? "" : " — belum ada API key"}`, name));
+  }
+  psel.value = keep;
   const sel = $("#set-model");
-  if (![...sel.options].some((o) => o.value === cfg.model)) sel.add(new Option(cfg.model, cfg.model));
-  setField(sel, cfg.model);
+  if (![...sel.options].some((o) => o.value === cfg.providers[keep].model)) {
+    sel.add(new Option(cfg.providers[keep].model, cfg.providers[keep].model));
+  }
+  setField(sel, cfg.providers[keep].model);
+  fillProviderFields();
   const wsel = $("#set-whisper");
   const wval = wsel.dataset.dirty ? wsel.value : cfg.whisper_model;
   wsel.innerHTML = "";
@@ -925,7 +963,6 @@ function fillSettings() {
   const sameHost = $("#set-host").value === cfg.media_host;
   missing.hidden = !(sameHost && cfg.media_missing.length);
   missing.textContent = `⚠️ Belum tersimpan: ${cfg.media_missing.join(", ")}. Isi lalu klik Simpan.`;
-  $("#set-key-hint").textContent = cfg.has_key ? `Tersimpan (${cfg.key_hint}). Kosongkan jika tidak ingin mengganti.` : "Belum diisi.";
   $("#set-info").textContent = `ffmpeg: ${cfg.ffmpeg.split("/").pop()} · subtitle: ${cfg.subtitles_supported ? "didukung" : "tidak didukung"} · deteksi wajah: ${cfg.face_tracking ? "aktif" : "tidak tersedia"}`;
 }
 
@@ -943,6 +980,11 @@ function showHostFields() {
   document.querySelectorAll("[data-host]").forEach((el) => (el.hidden = el.dataset.host !== $("#set-host").value));
 }
 $("#set-host").onchange = showHostFields;
+$("#set-provider").onchange = () => {
+  $("#set-key").value = "";
+  delete $("#set-model").dataset.dirty;
+  fillProviderFields();
+};
 $("#btn-test-buffer").onclick = async () => {
   const out = $("#buffer-test");
   out.textContent = "Menghubungkan…";
@@ -964,14 +1006,15 @@ $("#btn-load-models").onclick = async () => {
   btn.disabled = true;
   try {
     const key = $("#set-key").value.trim();
-    if (key) await api("/api/config", { method: "POST", body: JSON.stringify({ api_key: key }) });
-    const { models } = await api("/api/models");
+    const provider = currentProvider();
+    if (key) await api("/api/config", { method: "POST", body: JSON.stringify({ provider, api_key: key }) });
+    const { models } = await api(`/api/models?provider=${provider}`);
     const sel = $("#set-model");
     const current = sel.value;
     sel.innerHTML = "";
     models.forEach((m) => sel.add(new Option(m, m)));
     if (models.includes(current)) sel.value = current;
-    toast(`Terhubung ke Gemini · ${models.length} model tersedia`);
+    toast(`Terhubung ke ${state.config.providers[provider].label} · ${models.length} model tersedia`);
     $("#set-key").value = "";
     delete $("#set-key").dataset.dirty;
     state.config = await api("/api/config");
@@ -990,6 +1033,7 @@ async function saveSettings() {
   await api("/api/config", {
     method: "POST",
     body: JSON.stringify({
+      provider: currentProvider(),
       api_key: $("#set-key").value.trim() || null, model: $("#set-model").value,
       whisper_model: $("#set-whisper").value, whisper_language: $("#set-lang").value,
       buffer_api_key: $("#set-buffer").value.trim() || null,

@@ -30,7 +30,8 @@ Key disimpan di file `.env` dan tidak pernah dikirim ke mana pun selain ke Googl
 ## Fitur
 
 - Sumber video dari **file lokal** (drag & drop) atau **link** (via yt-dlp)
-- Gemini memilih N klip + judul, hook, alasan, skor viral, hashtag, dan transkrip
+- Pemilih klip bisa **Gemini**, **Claude (Anthropic)**, atau **ChatGPT (OpenAI)** — ganti di Pengaturan
+- AI memilih N klip + judul, hook, alasan, skor viral, hashtag, dan transkrip
 - Render ke 9:16, 1:1, 4:5, 16:9, atau rasio asli, dengan tata letak:
   - **Fokus wajah** (default): crop mengikuti wajah; kalau ada beberapa orang, kamera pindah ke yang sedang bicara
   - **Crop tengah**, atau **video utuh + latar blur**
@@ -56,7 +57,10 @@ video → probe → proxy 360p (hemat upload & token) → Gemini Files API
 | `app/cli.py` | Mode command line (`./clip`), semua fitur tanpa web |
 | `app/main.py` | REST API, WebSocket `/ws`, penyajian file media |
 | `app/pipeline.py` | Urutan proses: unduh → proxy → analisis AI → render |
-| `app/gemini.py` | Koneksi Gemini: upload, prompt, skema respons |
+| `app/analysis.py` | Skema & prompt bersama, pemilihan penyedia AI, sampel frame |
+| `app/gemini.py` | Koneksi Gemini: upload video, prompt, skema respons |
+| `app/provider_anthropic.py` | Koneksi Claude (transkrip + frame, structured output) |
+| `app/provider_openai.py` | Koneksi ChatGPT (transkrip + frame, structured output) |
 | `app/facetrack.py` | Deteksi wajah (MediaPipe), pemilihan pembicara dari gerak bibir, jalur kamera |
 | `app/transcribe.py` | Transkripsi lokal faster-whisper, pengelompokan kata jadi baris subtitle |
 | `app/silence.py` | Deteksi jeda (dari celah antar kata atau energi audio) dan pemetaan waktu |
@@ -106,6 +110,24 @@ Jeda lebih dari 0,5 detik dibuang, dengan sisa napas 0,12 detik sebelum dan sesu
 Kalau subtitle aktif, jeda dihitung dari celah antar kata Whisper (tahan musik latar). Kalau tidak, dari energi audio.
 Batas potongan dibulatkan ke grid frame supaya audio dan video tetap sinkron walau ada puluhan potongan.
 Crop wajah dihitung di timeline asli, sedangkan subtitle dan judul dipetakan ke timeline hasil potong.
+
+## Memilih penyedia AI
+
+| Penyedia | Cara kerja | Catatan |
+|---|---|---|
+| **Gemini** (default) | Menonton video langsung (gambar + suara) | Paling cepat; token input besar karena video |
+| **Claude** | Transkrip Whisper lokal + ~20 frame sebagai gambar | Perlu transkripsi dulu (lama untuk video panjang), token input jauh lebih sedikit |
+| **ChatGPT** | Sama seperti Claude | Sama seperti Claude |
+
+Ganti lewat **⚙ Pengaturan → Penyedia AI**, atau dari command line:
+
+```bash
+./clip provider anthropic --model claude-opus-5
+./clip config ANTHROPIC_API_KEY        # nilai dibaca dari stdin
+```
+
+Transkrip seluruh video disimpan di `source.words.json` dan dipakai ulang untuk subtitle,
+jadi Claude/ChatGPT tidak mentranskripsi dua kali. Untuk video tanpa suara, hanya Gemini yang bisa dipakai.
 
 ## Pemakaian & biaya AI
 

@@ -1,8 +1,9 @@
-"""Alur kerja: sumber video → proxy → Gemini → render klip."""
+"""Alur kerja: sumber video → analisis AI (Gemini/Claude/ChatGPT) → render klip."""
 from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -11,7 +12,7 @@ from typing import Callable
 import yt_dlp
 from google.genai import errors as genai_errors
 
-from . import buffer, facetrack, gemini, media, mediahost, pricing, silence, transcribe
+from . import analysis, buffer, facetrack, gemini, media, mediahost, pricing, silence, transcribe
 from .jobs import store
 
 # Satu analisis penuh sekaligus; render klip boleh paralel terbatas.
@@ -20,14 +21,11 @@ render_lock = asyncio.Semaphore(max(1, min(3, (os.cpu_count() or 2) // 4)))
 
 
 def api_key() -> str:
-    key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not key:
-        raise RuntimeError("API key Gemini belum diisi. Buka Pengaturan di pojok kanan atas.")
-    return key
+    return analysis.api_key()
 
 
 def model_name() -> str:
-    return os.environ.get("GEMINI_MODEL", "").strip() or "gemini-2.5-flash"
+    return analysis.model_name()
 
 
 def _download(job: dict, url: str, loop: asyncio.AbstractEventLoop) -> Path:
@@ -292,7 +290,8 @@ async def record_usage(job: dict, usage: dict) -> None:
     rate = pricing.usd_idr()
     money = ("gratis (tier Free)" if entry["tier"] == "free" else "harga model belum diatur" if usd is None
              else f"≈ ${usd:.4f}" + (f" (Rp{usd * rate:,.0f})".replace(",", ".") if rate else ""))
-    await store.log(job, f"🤖 Token Gemini: {entry['prompt_tokens']:,} input + "
+    label = analysis.PROVIDERS.get(entry.get("provider", "gemini"), {}).get("label", "AI")
+    await store.log(job, f"🤖 Token {label} ({entry['model']}): {entry['prompt_tokens']:,} input + "
                          f"{entry['output_tokens'] + entry['thoughts_tokens']:,} output — {money}".replace(",", "."))
     await store.publish(job)
 
@@ -302,42 +301,64 @@ async def run(job: dict, upload_path: Path | None, url: str | None) -> None:
     opts = job["options"]
     await store.log(job, "Masuk antrean.")
     async with pipeline_lock:
-        uploaded = None
+        uploaded, proxy = None, None
         key = ""
         try:
             # 1. Sumber video
             src, meta = await prepare_source(job, upload_path, url)
 
             # Sumber sudah siap: klip manual bisa dibuat walau langkah AI gagal.
-            key = api_key()
-            model = model_name()
-
-            # 2. Proxy kecil untuk analisis AI
-            await store.update(job, status="preparing", stage="Menyiapkan video untuk AI…", progress=0)
-            proxy = store.dir(job["id"]) / "proxy.mp4"
-            await media.make_proxy(src, proxy, meta["duration"],
-                                   lambda p: store.progress(job, p, "Menyiapkan video untuk AI…"))
-            await store.log(job, f"Proxy siap ({proxy.stat().st_size / 1e6:.1f} MB).")
-
-            # 3. Upload + analisis Gemini
-            await store.update(job, status="analyzing", stage="Mengunggah ke Gemini…", progress=0)
+            provider = analysis.provider()
+            key = analysis.api_key()
+            model = analysis.model_name()
+            label = analysis.PROVIDERS[provider]["label"]
 
             def on_state(msg: str) -> None:
                 asyncio.run_coroutine_threadsafe(store.progress(job, 0, msg), loop)
 
-            uploaded = await asyncio.to_thread(gemini.upload_video, key, proxy, on_state)
-            await store.log(job, f"Video diterima Gemini. Menganalisis dengan {model}…")
-            await store.update(job, stage=f"AI ({model}) sedang menonton & memilih momen…", progress=0)
+            if analysis.needs_transcript(provider):
+                # Claude & ChatGPT tidak bisa menonton video: pakai transkrip lokal + beberapa frame.
+                await store.update(job, status="preparing", stage="Membuat transkrip video…", progress=0)
+                await store.log(job, f"{label} memakai transkrip lokal (Whisper {transcribe.model_name()}); "
+                                     "untuk video panjang ini butuh waktu.")
+                words = await asyncio.to_thread(
+                    transcribe.source_words, src, meta["duration"], store.dir(job["id"]),
+                    lambda p: asyncio.run_coroutine_threadsafe(
+                        store.progress(job, p, "Membuat transkrip video…"), loop) and None)
+                if not words:
+                    raise RuntimeError("Transkrip kosong: video ini tidak ada suaranya, "
+                                       f"jadi {label} tidak bisa memilih momen. Pakai Gemini atau buat klip manual.")
+                frames = await asyncio.to_thread(
+                    analysis.sample_frames, src, meta["duration"], store.dir(job["id"]))
+                await store.log(job, f"Transkrip {len(words)} kata + {len(frames)} frame siap untuk {label}.")
+                await store.update(job, status="analyzing",
+                                   stage=f"AI ({model}) sedang membaca transkrip & memilih momen…", progress=0)
+                analyze_args = (None, opts, meta["duration"], words, frames, on_state)
+            else:
+                # 2. Proxy kecil untuk analisis AI
+                await store.update(job, status="preparing", stage="Menyiapkan video untuk AI…", progress=0)
+                proxy = store.dir(job["id"]) / "proxy.mp4"
+                await media.make_proxy(src, proxy, meta["duration"],
+                                       lambda p: store.progress(job, p, "Menyiapkan video untuk AI…"))
+                await store.log(job, f"Proxy siap ({proxy.stat().st_size / 1e6:.1f} MB).")
+
+                # 3. Upload + analisis Gemini
+                await store.update(job, status="analyzing", stage="Mengunggah ke Gemini…", progress=0)
+                uploaded = await asyncio.to_thread(gemini.upload_video, key, proxy, on_state)
+                await store.log(job, f"Video diterima Gemini. Menganalisis dengan {model}…")
+                await store.update(job, stage=f"AI ({model}) sedang menonton & memilih momen…", progress=0)
+                analyze_args = (uploaded, opts, meta["duration"], None, None, on_state)
+
             try:
-                analysis, usage = await asyncio.to_thread(gemini.analyze, key, model, uploaded, opts, meta["duration"])
-            except gemini.AnalysisError as e:
+                result, usage = await asyncio.to_thread(analysis.analyze, *analyze_args)
+            except analysis.AnalysisError as e:
                 await record_usage(job, e.usage)
                 raise
             await record_usage(job, usage)
-            suggestions = _sanitize(analysis.clips, meta["duration"], opts)
+            suggestions = _sanitize(result.clips, meta["duration"], opts)
             if not suggestions:
                 raise RuntimeError("AI tidak menemukan momen yang cocok. Coba ubah instruksi atau durasi klip.")
-            job["summary"] = analysis.summary
+            job["summary"] = result.summary
             ai_clips = [
                 new_clip(job, s.start, s.end, s.title, hook=s.hook, reason=s.reason, score=s.score,
                          hashtags=s.hashtags, ai_captions=[c.model_dump() for c in s.captions])
@@ -351,7 +372,9 @@ async def run(job: dict, upload_path: Path | None, url: str | None) -> None:
             await asyncio.gather(*(render(job, c) for c in ai_clips))
             ready = sum(c["status"] == "ready" for c in job["clips"])
             await store.update(job, status="done", stage=f"Selesai — {ready} klip siap", progress=1)
-            proxy.unlink(missing_ok=True)
+            if proxy:
+                proxy.unlink(missing_ok=True)
+            shutil.rmtree(store.dir(job["id"]) / "frames", ignore_errors=True)
         except Exception as e:  # noqa: BLE001
             msg = f"Gemini API ({e.code}): {e.message}" if isinstance(e, genai_errors.APIError) else str(e)
             await store.log(job, f"❌ {msg}")
