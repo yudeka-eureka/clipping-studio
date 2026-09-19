@@ -1,8 +1,10 @@
 # ✂️ Clipping Studio
 
 Aplikasi lokal untuk memotong video panjang jadi klip pendek (TikTok, Reels, Shorts).
-AI **Gemini API** menonton video dan memilih momen terbaik, lalu klip dirender di komputer
-sendiri dengan ffmpeg. Semua progres tampil **realtime** di browser lewat WebSocket.
+AI (**Gemini**, **Claude**, atau **ChatGPT**) memilih momen terbaik, lalu klip dirender di komputer
+sendiri dengan ffmpeg: crop mengikuti wajah, jeda diam dibuang, subtitle diselaraskan dengan suara,
+judul di atas, logo, dan penutup. Hasilnya bisa langsung diposting ke media sosial lewat Buffer.
+Semua progres tampil **realtime** di browser lewat WebSocket.
 
 ## Menjalankan
 
@@ -24,8 +26,9 @@ Browser terbuka otomatis di http://localhost:8765. Saat pertama kali dijalankan,
 menyiapkan environment Python di `.venv` (butuh `uv` atau Python 3.10+).
 ffmpeg sudah ikut terpasang lewat paket `imageio-ffmpeg`, jadi tidak perlu install terpisah.
 
-Isi API key Gemini di menu **⚙ Pengaturan** (buat gratis di https://aistudio.google.com/apikey).
-Key disimpan di file `.env` dan tidak pernah dikirim ke mana pun selain ke Google.
+Isi API key penyedia AI pilihan Anda di menu **⚙ Pengaturan** (Gemini gratis dibuat di
+https://aistudio.google.com/apikey). Key disimpan di file `.env` di komputer ini dan hanya dikirim
+ke penyedia yang bersangkutan.
 
 ## Fitur
 
@@ -39,7 +42,7 @@ Key disimpan di file `.env` dan tidak pernah dikirim ke mana pun selain ke Googl
 - **Judul di atas video** (kotak putih, teks membungkus otomatis) supaya penonton langsung paham konteksnya. Judul bisa diedit di kartu klip
 - **Logo (watermark)** di sudut video dan **video/gambar penutup (outro)** di akhir tiap klip
 - **Posting ke media sosial lewat Buffer**: Instagram/Facebook (Reel), TikTok, YouTube, LinkedIn, X, Threads, dan lainnya, langsung, masuk antrean, atau dijadwalkan
-- **Pemakaian & biaya AI**: token Gemini per proyek (video/audio/teks, output, thinking), estimasi biaya dalam USD & Rupiah, perkiraan biaya sebelum proses, dan dashboard total per bulan/hari/model
+- **Pemakaian & biaya AI**: token per proyek (video/audio/teks, output, thinking), estimasi biaya dalam USD & Rupiah, perkiraan biaya sebelum proses, dan dashboard total per bulan/hari/model
 - Ganti format proyek lama lalu **Render ulang semua** klip sekaligus
 - **Subtitle otomatis** yang pas dengan gerak mulut (Whisper lokal, timestamp per kata), ditempel ke video plus file `.srt`
 - Editor manual: putar video sumber, set awal/akhir (tombol `I` / `O`), buat klip sendiri
@@ -49,8 +52,14 @@ Key disimpan di file `.env` dan tidak pernah dikirim ke mana pun selain ke Googl
 ## Alur kerja
 
 ```
-video → probe → proxy 360p (hemat upload & token) → Gemini Files API
-      → generate_content (JSON terstruktur) → render ffmpeg per klip → browser (WebSocket)
+                    ┌─ Gemini    : proxy 360p → Files API → model menonton video
+video → probe ──────┤
+                    └─ Claude /  : transkrip Whisper lokal + ~20 frame
+                       ChatGPT
+
+   → daftar klip (JSON terstruktur)
+   → render per klip: crop wajah → buang jeda → subtitle + judul → logo → penutup
+   → browser (WebSocket)  →  posting ke Buffer (opsional)
 ```
 
 | File | Isi |
@@ -69,21 +78,39 @@ video → probe → proxy 360p (hemat upload & token) → Gemini Files API
 | `app/mediahost.py` | Upload klip ke Cloudinary / Cloudflare R2 untuk mendapat URL publik |
 | `app/pricing.py` | Tabel harga Gemini, pencatatan token, estimasi & perhitungan biaya |
 | `app/branding.py` | Pengaturan logo & penutup klip |
-| `app/media.py` | Perintah ffmpeg: probe, proxy, crop/blur, subtitle, SRT |
+| `app/media.py` | Perintah ffmpeg: probe, proxy, crop/blur, subtitle, logo, penutup |
 | `app/jobs.py` | Penyimpanan job di disk dan siaran event realtime |
 | `static/` | Antarmuka web (HTML/CSS/JS tanpa build) |
 
 ## Pengaturan lewat `.env`
 
-```
-GEMINI_API_KEY=...
-GEMINI_MODEL=gemini-2.5-flash
-```
+Semua ini bisa diisi dari menu Pengaturan, jadi biasanya tidak perlu mengedit file ini langsung.
+Contoh lengkap ada di [.env.example](.env.example).
 
-Opsional: `WHISPER_MODEL` (`small` / `medium` / `large-v3-turbo`) dan `WHISPER_LANGUAGE` (`auto` / `id` / `en`).
+```
+AI_PROVIDER=gemini               # gemini | anthropic | openai
+GEMINI_API_KEY=...               GEMINI_MODEL=gemini-2.5-flash
+ANTHROPIC_API_KEY=...            ANTHROPIC_MODEL=claude-opus-5
+OPENAI_API_KEY=...               OPENAI_MODEL=gpt-5.6-terra
+WHISPER_MODEL=small              # small | medium | large-v3-turbo
+WHISPER_LANGUAGE=auto            # auto | id | en
+MEDIA_HOST=cloudinary            # atau r2; kredensialnya lihat bagian Buffer
+```
 
 Model bisa diganti dari menu Pengaturan → **↻ Muat daftar** (mengambil model yang tersedia untuk key Anda).
 Port bisa diubah: `PORT=9000 ./run.sh`.
+
+### File yang dibuat aplikasi
+
+| Lokasi | Isi |
+|---|---|
+| `data/jobs/<id>/` | Video sumber, `job.json`, transkrip, dan klip di `clips/` |
+| `data/branding/` | Logo dan file penutup |
+| `data/buffer_accounts.json` | Akun Buffer beserta API key-nya (izin file 600) |
+| `data/pricing.json` | Tier, kurs, dan harga manual untuk perhitungan biaya |
+| `.env` | API key dan pengaturan lain |
+
+Semuanya ada di komputer Anda dan tidak ikut ke git.
 
 ## Cara kerja "Fokus wajah"
 
@@ -100,11 +127,12 @@ Semua proses ini berjalan lokal dan tidak memakai kuota API.
 Gemini hanya memperkirakan waktu ucapan (dibulatkan ~0,5 detik dari video 5 fps), jadi subtitle bisa telat atau duluan.
 Saat render, audio klip ditranskripsi ulang di komputer ini dengan faster-whisper (timestamp per kata),
 lalu kata dikelompokkan jadi baris pendek (maks ~30 karakter / 2,2 detik, pecah di jeda dan tanda baca).
-Teks dari Gemini dipakai sebagai petunjuk ejaan. Hasil per klip disimpan di `clips/clip_<id>.words.json`,
-jadi render ulang dengan rentang yang sama tidak mentranskripsi lagi.
+Kalau penyedianya Gemini, teks perkiraan dari Gemini dipakai sebagai petunjuk ejaan. Hasilnya disimpan
+(`clips/clip_<id>.words.json`, atau `source.words.json` kalau transkrip seluruh video sudah dibuat untuk
+Claude/ChatGPT), jadi render ulang dengan rentang yang sama tidak mentranskripsi lagi.
 
 Model Whisper diunduh sekali dari Hugging Face saat pertama dipakai (`small` ~480 MB). Kalau gagal (misalnya offline),
-aplikasi kembali memakai waktu perkiraan dari Gemini dan menulis peringatan di log.
+aplikasi kembali memakai waktu perkiraan dari AI dan menulis peringatan di log.
 
 ## Hapus jeda diam
 
@@ -154,14 +182,18 @@ jadi Claude/ChatGPT tidak mentranskripsi dua kali. Untuk video tanpa suara, hany
 
 ## Pemakaian & biaya AI
 
-Setiap analisis Gemini mencatat `usage_metadata` dari respons: token input per jenis (video, audio, teks),
-token output, dan token *thinking* (ditagih sebagai output). Biaya dihitung saat itu juga memakai harga
-resmi dari [halaman harga Gemini API](https://ai.google.dev/gemini-api/docs/pricing) (tier Paid Standard,
-diperbarui 16 Sep 2026), termasuk kenaikan harga seri 3.x Flash mulai 1 Jan 2027.
+Setiap analisis mencatat token dari respons penyedianya: token input per jenis (video, audio, teks),
+token output, dan token *thinking*/reasoning. Biaya dihitung saat itu juga memakai harga resmi masing-masing
+penyedia — [Gemini](https://ai.google.dev/gemini-api/docs/pricing) (termasuk kenaikan harga seri 3.x Flash
+mulai 1 Jan 2027), [Claude](https://docs.claude.com/en/docs/about-claude/pricing), dan
+[OpenAI](https://developers.openai.com/api/docs/pricing), tier Paid Standard.
+
+Karena Claude dan ChatGPT hanya membaca transkrip, token inputnya jauh lebih sedikit daripada Gemini
+yang menonton video. Bandingkan dulu dengan `./clip estimate video.mp4` sebelum memproses video panjang.
 
 - Menu **📊 Pemakaian AI**: total bulan ini & keseluruhan, grafik per hari, tabel per proyek & per model.
 - Kartu **🤖 Pemakaian AI** di tiap proyek, termasuk biaya rata-rata per klip.
-- Perkiraan biaya muncul di form proyek baru setelah memilih file (~300 token/detik video, ~100 untuk video > 20 menit).
+- Perkiraan biaya muncul di form proyek baru setelah memilih file (Gemini ~300 token/detik video, ~100 untuk video > 20 menit; Claude/ChatGPT dihitung dari panjang transkrip + frame).
 - Atur di menu tersebut: tier (Paid/Free), kurs USD→Rupiah, dan harga manual untuk model yang belum ada di tabel.
   Pengaturan disimpan di `data/pricing.json`. **Hitung ulang riwayat** menerapkan pengaturan baru ke catatan lama.
 
@@ -186,16 +218,20 @@ YouTube sebagai video publik (kategori People & Blogs) dengan judul klip. Status
 klik **↻ Cek status** untuk memperbarui (terjadwal → terkirim, plus link post).
 Paket Free Buffer dibatasi 250 request/hari; daftar channel di-cache 10 menit supaya hemat.
 
+Akun Buffer dikelola dari Pengaturan (atau `./clip accounts`), bukan dari `.env`. Kredensial hosting video:
+
 ```
-BUFFER_API_KEY=...
 MEDIA_HOST=cloudinary            # atau r2
 CLOUDINARY_CLOUD_NAME=... CLOUDINARY_API_KEY=... CLOUDINARY_API_SECRET=...
 R2_ACCOUNT_ID=... R2_BUCKET=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=... R2_PUBLIC_URL=https://...
 ```
 
+`BUFFER_API_KEY` di `.env` masih dikenali dan otomatis menjadi akun pertama.
+
 ## Catatan
 
 - Fitur unduh dari link hanya untuk video milik sendiri atau yang sudah mendapat izin untuk dipakai ulang.
 - Waktu potong dari AI kadang meleset beberapa detik. Rapikan lewat kolom waktu di kartu klip lalu klik Render ulang.
-- Video di atas 20 menit dianalisis dengan resolusi media rendah supaya muat di context window Gemini.
+- Untuk Gemini, video di atas 20 menit dianalisis dengan resolusi media rendah supaya muat di context window.
+- Claude dan ChatGPT butuh suara: video tanpa audio hanya bisa diproses Gemini atau dipotong manual.
 - `clip_video_starter.py` adalah skrip awal versi baris perintah dan tidak dipakai aplikasi ini.

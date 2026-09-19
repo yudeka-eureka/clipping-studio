@@ -11,12 +11,13 @@ jadi stdout aman di-pipe. Kode keluar: `0` berhasil, `1` gagal (JSON berisi `{"o
 ./clip estimate video.mp4 --json                       # perkiraan token & biaya sebelum proses
 ./clip run video.mp4 --clips 3 --json                  # AI pilih momen → render semua klip
 ./clip show last --json                                # hasil terakhir: path file .mp4 & .srt per klip
-./clip publish <job> <clip> --channel <id> --mode addToQueue --json
+./clip channels --json                                 # id channel dari semua akun Buffer
+./clip publish <job> <clip> --channel idAkun:idChannel --mode addToQueue --json
 ```
 
 `run` menerima file lokal maupun link (YouTube dll). Hasil `--json` memuat `clips[].file`
 (path absolut .mp4), `clips[].srt`, `duration_out` (durasi setelah jeda diam dibuang),
-`score`, `hook`, `hashtags`, dan `usage` (token + biaya Gemini).
+`score`, `hook`, `hashtags`, dan `usage` (token + biaya penyedia AI yang aktif).
 
 ## Daftar perintah
 
@@ -28,7 +29,7 @@ jadi stdout aman di-pipe. Kode keluar: `0` berhasil, `1` gagal (JSON berisi `{"o
 | `rerender JOB [CLIP...]` | Render ulang dengan `--aspect`, `--layout`, `--start/--end`, `--title` |
 | `jobs`, `show JOB`, `rm JOB` | Daftar / detail (`--logs`) / hapus proyek. `JOB` boleh awalan id atau `last` |
 | `transcribe SOURCE` | Transkrip Whisper lokal, `--format text\|srt\|json` (json = waktu per kata) |
-| `estimate SOURCE` | Perkiraan token & biaya Gemini |
+| `estimate SOURCE` | Perkiraan token & biaya penyedia AI yang aktif |
 | `usage` | Token & biaya yang sudah terpakai per proyek |
 | `channels` | Daftar channel dari semua akun Buffer (`--account ID` untuk satu akun) |
 | `accounts` | Kelola akun Buffer: `--add [--label X]` (key dari stdin), `--rename ID --label X`, `--remove ID` |
@@ -49,6 +50,8 @@ Opsi klip (berlaku di `run` dan `cut`): `--clips N`, `--min-len`, `--max-len`,
 - Claude & ChatGPT tidak menerima video: klip dipilih dari transkrip Whisper lokal + sampel frame, jadi `run` butuh waktu transkripsi dulu dan tidak bisa dipakai untuk video tanpa suara.
 - `publish` **mengirim konten ke akun media sosial pengguna**. Minta konfirmasi pengguna sebelum menjalankannya,
   dan gunakan `--mode addToQueue` (masuk antrean, bisa dibatalkan di Buffer) daripada `shareNow`.
-- `rm` menghapus video sumber dan semua klip proyek tanpa bisa dibatalkan.
+- `rm` menghapus video sumber dan semua klip proyek tanpa bisa dibatalkan; `accounts --remove` dan
+  `branding --remove-logo/--remove-outro` juga menghapus tanpa konfirmasi.
+- Logo dan penutup (`branding`) berlaku global untuk semua render berikutnya, bukan per proyek.
 - Kredensial ada di `.env`; jangan tulis nilainya ke argumen perintah (`config NAMA` membaca dari stdin).
 - Data proyek ada di `data/jobs/<job-id>/`. Kalau web app sedang berjalan, perubahan dari CLI baru terlihat setelah web app di-restart.
