@@ -130,6 +130,122 @@
         </div>
       </section>
 
+      <!-- Pengaturan -->
+      <section id="view-settings" hidden>
+        <form id="form-settings">
+          <div class="job-head">
+            <div>
+              <h1>⚙ Pengaturan</h1>
+              <div class="muted small">Tersimpan di komputer ini (<code>.env</code> dan folder <code>data/</code>).</div>
+            </div>
+            <button type="button" class="ghost" id="btn-settings-back">← Kembali</button>
+          </div>
+      <div class="card">
+        <h2>AI pemilih klip</h2>
+
+      <label>Penyedia AI (pemilih momen klip)
+        <select id="set-provider"></select>
+      </label>
+      <p class="muted small" id="provider-note"></p>
+      <label><span id="set-key-label">API key</span>
+        <input type="password" id="set-key" autocomplete="off" />
+        <span class="muted small" id="set-key-hint"></span>
+      </label>
+      <p class="muted small" id="key-help"></p>
+      <label>Model
+        <div class="row">
+          <select id="set-model" class="grow"></select>
+          <button type="button" class="ghost" id="btn-load-models">↻ Muat daftar</button>
+        </div>
+      </label>
+      </div>
+      <div class="card">
+        <h2>Subtitle</h2>
+        <p class="muted small">Waktu subtitle diselaraskan per kata dengan suara memakai Whisper di komputer ini. Model diunduh sekali dari Hugging Face saat pertama dipakai.</p>
+
+      <div class="grid two">
+        <label>Model transkripsi<select id="set-whisper"></select></label>
+        <label>Bahasa<select id="set-lang"></select></label>
+      </div>
+      </div>
+      <div class="card">
+        <h2>Logo &amp; penutup klip</h2>
+        <p class="muted small">Keduanya dipasang saat render. Klip lama perlu <b>Render ulang</b> untuk ikut berubah.</p>
+
+      <div class="brand-row">
+        <div class="brand-preview" id="logo-preview"></div>
+        <div class="grow">
+          <div class="row wrap">
+            <label class="check inline"><input type="checkbox" id="logo-enabled" /> Logo aktif</label>
+            <input type="file" id="logo-file" accept="image/png,image/jpeg,image/webp" class="grow" />
+            <button type="button" class="ghost small-btn danger" id="logo-remove">Hapus</button>
+          </div>
+          <div class="grid two">
+            <label>Posisi<select id="logo-position"></select></label>
+            <label>Lebar (% video)<input type="number" id="logo-size" min="3" max="40" step="1" /></label>
+            <label>Transparansi<input type="number" id="logo-opacity" min="0.1" max="1" step="0.05" /></label>
+            <label>Jarak tepi (%)<input type="number" id="logo-margin" min="0" max="25" step="1" /></label>
+          </div>
+        </div>
+      </div>
+      <div class="brand-row">
+        <div class="brand-preview" id="outro-preview"></div>
+        <div class="grow">
+          <div class="row wrap">
+            <label class="check inline"><input type="checkbox" id="outro-enabled" /> Penutup aktif</label>
+            <input type="file" id="outro-file" accept="video/*,image/png,image/jpeg,image/webp" class="grow" />
+            <button type="button" class="ghost small-btn danger" id="outro-remove">Hapus</button>
+          </div>
+          <div class="grid two">
+            <label id="outro-duration-wrap">Durasi gambar (dtk)<input type="number" id="outro-duration" min="0.5" max="15" step="0.5" /></label>
+            <label class="check inline" id="outro-audio-wrap"><input type="checkbox" id="outro-audio" /> Pakai audio penutup</label>
+          </div>
+        </div>
+      </div>
+      <p class="muted small" id="brand-msg"></p>
+      </div>
+      <div class="card">
+        <h2>Posting ke media sosial (Buffer)</h2>
+
+      <label class="flat">Akun Buffer <span class="muted">(boleh lebih dari satu)</span></label>
+      <div id="buffer-accounts" class="accounts"></div>
+      <div class="row wrap">
+        <input id="acc-label" placeholder="Nama akun (opsional)" class="grow" />
+        <input type="password" id="acc-key" placeholder="Buffer API key" class="grow" autocomplete="off" />
+        <button type="button" class="ghost" id="btn-add-account">+ Tambah akun</button>
+      </div>
+      <p class="muted small" id="acc-msg">API key dibuat di publish.buffer.com/settings/api. Tiap akun Buffer punya key sendiri.</p>
+      <p class="muted small">Buffer tidak menerima upload file, jadi klip diunggah dulu ke hosting video publik.</p>
+      <label>Hosting video
+        <select id="set-host">
+          <option value="cloudinary">Cloudinary</option>
+          <option value="r2">Cloudflare R2</option>
+        </select>
+      </label>
+      <div class="grid two" data-host="cloudinary">
+        <label>Cloud name<input data-env="CLOUDINARY_CLOUD_NAME" autocomplete="off" /></label>
+        <label>API key<input data-env="CLOUDINARY_API_KEY" autocomplete="off" /></label>
+        <label>API secret<input type="password" data-env="CLOUDINARY_API_SECRET" autocomplete="off" /></label>
+      </div>
+      <div class="grid two" data-host="r2" hidden>
+        <label>Account ID<input data-env="R2_ACCOUNT_ID" autocomplete="off" /></label>
+        <label>Bucket<input data-env="R2_BUCKET" autocomplete="off" /></label>
+        <label>Access key ID<input data-env="R2_ACCESS_KEY_ID" autocomplete="off" /></label>
+        <label>Secret access key<input type="password" data-env="R2_SECRET_ACCESS_KEY" autocomplete="off" /></label>
+        <label class="span2">URL publik bucket<input data-env="R2_PUBLIC_URL" autocomplete="off" placeholder="https://pub-xxxx.r2.dev atau domain sendiri" /></label>
+      </div>
+      <p class="warn small" id="host-missing" hidden></p>
+      <div class="row"><button type="button" class="ghost" id="btn-test-host">↻ Tes hosting</button><span class="muted small" id="host-test"></span></div>
+      <div class="row"><button type="button" class="ghost" id="btn-test-buffer">↻ Tes koneksi Buffer</button><span class="muted small" id="buffer-test"></span></div>
+      <p class="muted small" id="set-info"></p>
+      </div>
+          <div class="settings-actions">
+            <span class="muted small" id="settings-status"></span>
+            <button type="submit" id="btn-save-settings" class="primary">Simpan</button>
+          </div>
+        </form>
+      </section>
+
       <!-- Detail proyek -->
       <section id="view-job" hidden>
         <div class="job-head">
@@ -196,103 +312,6 @@
       </section>
     </main>
   </div>
-
-  <dialog id="dlg-settings">
-    <form method="dialog" id="form-settings">
-      <h2>Pengaturan</h2>
-      <label>Penyedia AI (pemilih momen klip)
-        <select id="set-provider"></select>
-      </label>
-      <p class="muted small" id="provider-note"></p>
-      <label><span id="set-key-label">API key</span>
-        <input type="password" id="set-key" autocomplete="off" />
-        <span class="muted small" id="set-key-hint"></span>
-      </label>
-      <p class="muted small" id="key-help"></p>
-      <label>Model
-        <div class="row">
-          <select id="set-model" class="grow"></select>
-          <button type="button" class="ghost" id="btn-load-models">↻ Muat daftar</button>
-        </div>
-      </label>
-      <h2 class="section">Subtitle</h2>
-      <p class="muted small">Waktu subtitle diselaraskan per kata dengan suara memakai Whisper di komputer ini. Model diunduh sekali dari Hugging Face saat pertama dipakai.</p>
-      <div class="grid two">
-        <label>Model transkripsi<select id="set-whisper"></select></label>
-        <label>Bahasa<select id="set-lang"></select></label>
-      </div>
-      <h2 class="section">Logo &amp; penutup klip</h2>
-      <p class="muted small">Keduanya dipasang saat render. Klip lama perlu <b>Render ulang</b> untuk ikut berubah.</p>
-      <div class="brand-row">
-        <div class="brand-preview" id="logo-preview"></div>
-        <div class="grow">
-          <div class="row wrap">
-            <label class="check inline"><input type="checkbox" id="logo-enabled" /> Logo aktif</label>
-            <input type="file" id="logo-file" accept="image/png,image/jpeg,image/webp" class="grow" />
-            <button type="button" class="ghost small-btn danger" id="logo-remove">Hapus</button>
-          </div>
-          <div class="grid two">
-            <label>Posisi<select id="logo-position"></select></label>
-            <label>Lebar (% video)<input type="number" id="logo-size" min="3" max="40" step="1" /></label>
-            <label>Transparansi<input type="number" id="logo-opacity" min="0.1" max="1" step="0.05" /></label>
-            <label>Jarak tepi (%)<input type="number" id="logo-margin" min="0" max="25" step="1" /></label>
-          </div>
-        </div>
-      </div>
-      <div class="brand-row">
-        <div class="brand-preview" id="outro-preview"></div>
-        <div class="grow">
-          <div class="row wrap">
-            <label class="check inline"><input type="checkbox" id="outro-enabled" /> Penutup aktif</label>
-            <input type="file" id="outro-file" accept="video/*,image/png,image/jpeg,image/webp" class="grow" />
-            <button type="button" class="ghost small-btn danger" id="outro-remove">Hapus</button>
-          </div>
-          <div class="grid two">
-            <label id="outro-duration-wrap">Durasi gambar (dtk)<input type="number" id="outro-duration" min="0.5" max="15" step="0.5" /></label>
-            <label class="check inline" id="outro-audio-wrap"><input type="checkbox" id="outro-audio" /> Pakai audio penutup</label>
-          </div>
-        </div>
-      </div>
-      <p class="muted small" id="brand-msg"></p>
-
-      <h2 class="section">Posting ke media sosial (Buffer)</h2>
-      <label class="flat">Akun Buffer <span class="muted">(boleh lebih dari satu)</span></label>
-      <div id="buffer-accounts" class="accounts"></div>
-      <div class="row wrap">
-        <input id="acc-label" placeholder="Nama akun (opsional)" class="grow" />
-        <input type="password" id="acc-key" placeholder="Buffer API key" class="grow" autocomplete="off" />
-        <button type="button" class="ghost" id="btn-add-account">+ Tambah akun</button>
-      </div>
-      <p class="muted small" id="acc-msg">API key dibuat di publish.buffer.com/settings/api. Tiap akun Buffer punya key sendiri.</p>
-      <p class="muted small">Buffer tidak menerima upload file, jadi klip diunggah dulu ke hosting video publik.</p>
-      <label>Hosting video
-        <select id="set-host">
-          <option value="cloudinary">Cloudinary</option>
-          <option value="r2">Cloudflare R2</option>
-        </select>
-      </label>
-      <div class="grid two" data-host="cloudinary">
-        <label>Cloud name<input data-env="CLOUDINARY_CLOUD_NAME" autocomplete="off" /></label>
-        <label>API key<input data-env="CLOUDINARY_API_KEY" autocomplete="off" /></label>
-        <label>API secret<input type="password" data-env="CLOUDINARY_API_SECRET" autocomplete="off" /></label>
-      </div>
-      <div class="grid two" data-host="r2" hidden>
-        <label>Account ID<input data-env="R2_ACCOUNT_ID" autocomplete="off" /></label>
-        <label>Bucket<input data-env="R2_BUCKET" autocomplete="off" /></label>
-        <label>Access key ID<input data-env="R2_ACCESS_KEY_ID" autocomplete="off" /></label>
-        <label>Secret access key<input type="password" data-env="R2_SECRET_ACCESS_KEY" autocomplete="off" /></label>
-        <label class="span2">URL publik bucket<input data-env="R2_PUBLIC_URL" autocomplete="off" placeholder="https://pub-xxxx.r2.dev atau domain sendiri" /></label>
-      </div>
-      <p class="warn small" id="host-missing" hidden></p>
-      <div class="row"><button type="button" class="ghost" id="btn-test-host">↻ Tes hosting</button><span class="muted small" id="host-test"></span></div>
-      <div class="row"><button type="button" class="ghost" id="btn-test-buffer">↻ Tes koneksi Buffer</button><span class="muted small" id="buffer-test"></span></div>
-      <p class="muted small" id="set-info"></p>
-      <div class="row end">
-        <button type="button" class="ghost" data-close="dlg-settings">Tutup</button>
-        <button type="submit" id="btn-save-settings" class="primary">Simpan</button>
-      </div>
-    </form>
-  </dialog>
 
   <dialog id="dlg-publish">
     <form method="dialog" id="form-publish">

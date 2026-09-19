@@ -26,8 +26,8 @@ Browser terbuka otomatis di http://localhost:8765. Saat pertama kali dijalankan,
 menyiapkan environment Python di `.venv` (butuh `uv` atau Python 3.10+).
 ffmpeg sudah ikut terpasang lewat paket `imageio-ffmpeg`, jadi tidak perlu install terpisah.
 
-Isi API key penyedia AI pilihan Anda di menu **⚙ Pengaturan** (Gemini gratis dibuat di
-https://aistudio.google.com/apikey). Key disimpan di file `.env` di komputer ini dan hanya dikirim
+Isi API key penyedia AI pilihan Anda di halaman **⚙ Pengaturan** (tombol di pojok kanan atas).
+API key Gemini bisa dibuat gratis di https://aistudio.google.com/apikey. Key disimpan di file `.env` di komputer ini dan hanya dikirim
 ke penyedia yang bersangkutan.
 
 ## Fitur
@@ -84,7 +84,7 @@ video → probe ──────┤
 
 ## Pengaturan lewat `.env`
 
-Semua ini bisa diisi dari menu Pengaturan, jadi biasanya tidak perlu mengedit file ini langsung.
+Semua ini bisa diisi dari halaman Pengaturan, jadi biasanya tidak perlu mengedit file ini langsung.
 Contoh lengkap ada di [.env.example](.env.example).
 
 ```
@@ -97,7 +97,7 @@ WHISPER_LANGUAGE=auto            # auto | id | en
 MEDIA_HOST=cloudinary            # atau r2; kredensialnya lihat bagian Buffer
 ```
 
-Model bisa diganti dari menu Pengaturan → **↻ Muat daftar** (mengambil model yang tersedia untuk key Anda).
+Model bisa diganti dari halaman Pengaturan → **↻ Muat daftar** (mengambil model yang tersedia untuk key Anda).
 Port bisa diubah: `PORT=9000 ./run.sh`.
 
 ### File yang dibuat aplikasi
@@ -143,7 +143,7 @@ Crop wajah dihitung di timeline asli, sedangkan subtitle dan judul dipetakan ke 
 
 ## Logo & penutup klip
 
-Di **⚙ Pengaturan → Logo & penutup klip**:
+Di halaman **⚙ Pengaturan → Logo & penutup klip**:
 
 - **Logo (watermark):** unggah PNG/JPG/WEBP, atur sudut (4 pilihan), lebar (persen dari lebar video),
   transparansi, dan jarak dari tepi. Logo ditempel di atas video, setelah subtitle dan judul.
@@ -170,7 +170,7 @@ Logo tidak ditempel di bagian outro, karena outro biasanya sudah punya branding 
 | **Claude** | Transkrip Whisper lokal + ~20 frame sebagai gambar | Perlu transkripsi dulu (lama untuk video panjang), token input jauh lebih sedikit |
 | **ChatGPT** | Sama seperti Claude | Sama seperti Claude |
 
-Ganti lewat **⚙ Pengaturan → Penyedia AI**, atau dari command line:
+Ganti lewat halaman **⚙ Pengaturan → AI pemilih klip**, atau dari command line:
 
 ```bash
 ./clip provider anthropic --model claude-opus-5
