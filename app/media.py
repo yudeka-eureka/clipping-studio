@@ -170,30 +170,85 @@ def _video_filter(aspect: str, layout: str, fps: float, ass_file: str | None,
     tail = f"select='{_between(segments, half_frame)}',setpts=N/FRAME_RATE/TB" if segments else "null"
     if ass_file:
         tail += f",subtitles=filename={ass_file}"
-    return chain + f";[base]{tail}[v]"
+    return chain + f";[base]{tail}[vclip]"
+
+
+def _logo_chain(logo: dict, index: int, width: int, src_label: str, out_label: str) -> str:
+    """Tempel logo di salah satu sudut. Ukuran & jarak tepi dihitung dari lebar video."""
+    w = max(2, round(width * float(logo["size"]) / 100) // 2 * 2)
+    margin = round(width * float(logo["margin"]) / 100)
+    x = f"{margin}" if "left" in logo["position"] else f"W-w-{margin}"
+    y = f"{margin}" if "top" in logo["position"] else f"H-h-{margin}"
+    return (f"[{index}:v]scale={w}:-1,format=rgba,colorchannelmixer=aa={float(logo['opacity']):.3f}[lg];"
+            f"[{src_label}][lg]overlay={x}:{y}:format=auto[{out_label}]")
+
+
+def _outro_chains(index: int, size: tuple[int, int], fps: float, video_in: str,
+                  audio_in: str | None, outro_audio_in: str | None) -> list[str]:
+    """Samakan ukuran/fps/audio outro dengan klip, lalu sambung di belakangnya."""
+    w, h = size
+    chains = [f"[{index}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
+              f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={fps:g},format=yuv420p[vo]"]
+    if audio_in is None:
+        chains.append(f"[{video_in}][vo]concat=n=2:v=1:a=0[v]")
+    else:
+        chains.append(f"{outro_audio_in}aformat=sample_rates=48000:channel_layouts=stereo[ao]")
+        chains.append(f"[{video_in}][{audio_in}][vo][ao]concat=n=2:v=1:a=1[v][a]")
+    return chains
 
 
 async def render_clip(src: Path, dst: Path, start: float, end: float, aspect: str, layout: str,
                       has_audio: bool, fps: float, ass_path: Path | None, on_progress: ProgressCb,
                       face_crop: tuple[str, int, int, int, int] | None = None,
-                      segments: list[tuple[float, float]] | None = None) -> None:
+                      segments: list[tuple[float, float]] | None = None,
+                      out_size: tuple[int, int] | None = None,
+                      logo: dict | None = None, outro: dict | None = None) -> None:
     duration = max(0.1, end - start)
     segments = snap_segments(segments, fps)
     out_duration = sum(e - s for s, e in segments) if segments else duration
     # cwd = folder klip, supaya nama file di filter tidak perlu di-escape.
     ass_name = ass_path.name if ass_path and SUBTITLES_SUPPORTED else None
-    graph = _video_filter(aspect, layout, fps, ass_name, face_crop, segments)
+
+    # Input 0 = video sumber; input berikutnya menyusul sesuai fitur yang dipakai.
+    # -ss dan -t harus di depan -i (opsi input), supaya tidak menempel ke input logo/outro.
+    inputs = ["-ss", f"{start:.3f}", "-t", f"{duration:.3f}", "-i", str(src.resolve())]
+    chains = [_video_filter(aspect, layout, fps, ass_name, face_crop, segments)]
+    video_label, next_index = "vclip", 1
+
+    if logo and out_size:
+        inputs += ["-i", str(logo["path"].resolve())]
+        chains.append(_logo_chain(logo, next_index, out_size[0], video_label, "vlogo"))
+        video_label, next_index = "vlogo", next_index + 1
+
+    audio_label = None
     if has_audio:
         # Audio dipecah jadi potongan kecil (256 sampel) supaya titik potongnya presisi.
-        audio = (f"asetnsamples=n=256:p=0,aselect='{_between(segments)}',asetpts=N/SR/TB"
-                 if segments else "anull")
-        graph += f";[0:a:0]{audio}[a]"
-    args = [
-        "-ss", f"{start:.3f}", "-i", str(src.resolve()), "-t", f"{duration:.3f}",
-        "-filter_complex", graph, "-map", "[v]",
-    ]
-    if has_audio:
-        args += ["-map", "[a]", "-c:a", "aac", "-b:a", "160k"]
+        cut = (f"asetnsamples=n=256:p=0,aselect='{_between(segments)}',asetpts=N/SR/TB"
+               if segments else "anull")
+        chains.append(f"[0:a:0]{cut},aformat=sample_rates=48000:channel_layouts=stereo[aclip]")
+        audio_label = "aclip"
+
+    if outro and out_size:
+        outro_index = next_index
+        if outro["is_video"]:
+            inputs += ["-i", str(outro["path"].resolve())]
+        else:
+            inputs += ["-loop", "1", "-t", f"{outro['duration']:.2f}", "-i", str(outro["path"].resolve())]
+        next_index += 1
+        outro_audio = f"[{outro_index}:a]" if outro.get("has_audio") and outro.get("keep_audio") else None
+        if audio_label and not outro_audio:
+            # Outro tanpa suara tetap perlu jalur audio supaya bisa disambung.
+            inputs += ["-f", "lavfi", "-t", f"{outro['duration']:.2f}",
+                       "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+            outro_audio = f"[{next_index}:a]"
+            next_index += 1
+        chains += _outro_chains(outro_index, out_size, fps, video_label, audio_label, outro_audio)
+        video_label, audio_label = "v", "a" if audio_label else None
+        out_duration += float(outro["duration"])
+
+    args = [*inputs, "-filter_complex", ";".join(chains), "-map", f"[{video_label}]"]
+    if audio_label:
+        args += ["-map", f"[{audio_label}]", "-c:a", "aac", "-b:a", "160k"]
     args += [
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
         "-movflags", "+faststart", dst.name,

@@ -12,7 +12,7 @@ from typing import Callable
 import yt_dlp
 from google.genai import errors as genai_errors
 
-from . import analysis, buffer, facetrack, gemini, media, mediahost, pricing, silence, transcribe
+from . import analysis, branding, buffer, facetrack, gemini, media, mediahost, pricing, silence, transcribe
 from .jobs import store
 
 # Satu analisis penuh sekaligus; render klip boleh paralel terbatas.
@@ -142,6 +142,17 @@ async def _words(job: dict, clip: dict, src: Path, clips_dir: Path, prog: ClipPr
         return None
 
 
+async def _outro_spec() -> dict | None:
+    """Outro siap pakai. Untuk outro berupa video, durasi & ada/tidaknya audio dibaca dari filenya."""
+    outro = branding.active("outro")
+    if outro and outro["is_video"]:
+        info = await media.probe(outro["path"])
+        outro = {**outro, "duration": info["duration"], "has_audio": info["has_audio"]}
+    elif outro:
+        outro = {**outro, "has_audio": False}
+    return outro
+
+
 async def render(job: dict, clip: dict) -> None:
     opts = job["options"]
     clip.update(status="queued", progress=0.0, error=None, stage=None)
@@ -202,11 +213,17 @@ async def render(job: dict, clip: dict) -> None:
             title = clip["title"] if opts.get("show_title") else None
             has_ass = media.write_ass(ass_path, width, height, out_duration, title, captions)
 
+            logo = branding.active("logo")
+            outro = await _outro_spec()
             await media.render_clip(
                 src, out, clip["start"], clip["end"], opts["aspect"], opts["layout"],
                 meta["has_audio"], meta["fps"], ass_path if has_ass else None,
                 lambda p: prog.set("render", p), face_crop, segments,
+                (width, height), logo, outro,
             )
+            extras = [x for x, on in (("logo", logo), ("outro", outro)) if on]
+            if extras:
+                await store.log(job, f"🎨 “{clip['title']}”: {' + '.join(extras)} ditempel.")
             clip.update(status="ready", progress=1.0, stage=None, file=f"clips/{out.name}",
                         srt=f"clips/{srt_path.name}" if has_srt else None,
                         duration_out=round(out_duration, 2), version=clip.get("version", 0) + 1)
@@ -249,11 +266,15 @@ async def publish(job: dict, clip: dict, channels: list[dict], text: str, mode: 
                 post = await asyncio.to_thread(
                     buffer.create_video_post, ch, text, clip["hosted"]["url"], title, mode, due_at)
                 state["results"].append({"channel_id": ch["id"], "channel": label, "service": ch["service"],
+                                         "account_id": ch.get("account_id"), "account": ch.get("account"),
                                          "ok": True, "post_id": post["id"], "status": post.get("status"),
                                          "due_at": post.get("dueAt"), "link": post.get("externalLink")})
-                await store.log(job, f"📤 “{title}” → {ch['service']} ({label}): {post.get('status', 'terkirim')}")
+                await store.log(job, f"📤 “{title}” → {ch['service']} ({label}"
+                                     + (f", akun {ch['account']}" if ch.get("account") else "")
+                                     + f"): {post.get('status', 'terkirim')}")
             except Exception as e:  # noqa: BLE001
                 state["results"].append({"channel_id": ch["id"], "channel": label, "service": ch["service"],
+                                         "account_id": ch.get("account_id"), "account": ch.get("account"),
                                          "ok": False, "error": str(e)})
                 await store.log(job, f"❌ “{title}” → {ch['service']} ({label}): {e}")
             await store.publish(job)

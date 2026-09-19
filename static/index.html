@@ -221,11 +221,49 @@
         <label>Model transkripsi<select id="set-whisper"></select></label>
         <label>Bahasa<select id="set-lang"></select></label>
       </div>
+      <h2 class="section">Logo &amp; penutup klip</h2>
+      <p class="muted small">Keduanya dipasang saat render. Klip lama perlu <b>Render ulang</b> untuk ikut berubah.</p>
+      <div class="brand-row">
+        <div class="brand-preview" id="logo-preview"></div>
+        <div class="grow">
+          <div class="row wrap">
+            <label class="check inline"><input type="checkbox" id="logo-enabled" /> Logo aktif</label>
+            <input type="file" id="logo-file" accept="image/png,image/jpeg,image/webp" class="grow" />
+            <button type="button" class="ghost small-btn danger" id="logo-remove">Hapus</button>
+          </div>
+          <div class="grid two">
+            <label>Posisi<select id="logo-position"></select></label>
+            <label>Lebar (% video)<input type="number" id="logo-size" min="3" max="40" step="1" /></label>
+            <label>Transparansi<input type="number" id="logo-opacity" min="0.1" max="1" step="0.05" /></label>
+            <label>Jarak tepi (%)<input type="number" id="logo-margin" min="0" max="25" step="1" /></label>
+          </div>
+        </div>
+      </div>
+      <div class="brand-row">
+        <div class="brand-preview" id="outro-preview"></div>
+        <div class="grow">
+          <div class="row wrap">
+            <label class="check inline"><input type="checkbox" id="outro-enabled" /> Penutup aktif</label>
+            <input type="file" id="outro-file" accept="video/*,image/png,image/jpeg,image/webp" class="grow" />
+            <button type="button" class="ghost small-btn danger" id="outro-remove">Hapus</button>
+          </div>
+          <div class="grid two">
+            <label id="outro-duration-wrap">Durasi gambar (dtk)<input type="number" id="outro-duration" min="0.5" max="15" step="0.5" /></label>
+            <label class="check inline" id="outro-audio-wrap"><input type="checkbox" id="outro-audio" /> Pakai audio penutup</label>
+          </div>
+        </div>
+      </div>
+      <p class="muted small" id="brand-msg"></p>
+
       <h2 class="section">Posting ke media sosial (Buffer)</h2>
-      <label>Buffer API key
-        <input type="password" id="set-buffer" autocomplete="off" placeholder="Dari publish.buffer.com/settings/api" />
-        <span class="muted small" id="set-buffer-hint"></span>
-      </label>
+      <label class="flat">Akun Buffer <span class="muted">(boleh lebih dari satu)</span></label>
+      <div id="buffer-accounts" class="accounts"></div>
+      <div class="row wrap">
+        <input id="acc-label" placeholder="Nama akun (opsional)" class="grow" />
+        <input type="password" id="acc-key" placeholder="Buffer API key" class="grow" autocomplete="off" />
+        <button type="button" class="ghost" id="btn-add-account">+ Tambah akun</button>
+      </div>
+      <p class="muted small" id="acc-msg">API key dibuat di publish.buffer.com/settings/api. Tiap akun Buffer punya key sendiri.</p>
       <p class="muted small">Buffer tidak menerima upload file, jadi klip diunggah dulu ke hosting video publik.</p>
       <label>Hosting video
         <select id="set-host">

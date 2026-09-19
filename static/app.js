@@ -611,6 +611,10 @@ const SERVICE_LABEL = { instagram: "Instagram", tiktok: "TikTok", youtube: "YouT
 const POST_STATUS = { scheduled: "terjadwal", sending: "sedang dikirim", sent: "terkirim", error: "gagal",
   draft: "draf", needs_approval: "menunggu persetujuan" };
 
+function pubMulti(state) {
+  return new Set((state.results || []).map((r) => r.account_id)).size > 1;
+}
+
 function renderPublishState(job, clip, card) {
   const box = $(".pubstate", card);
   const pub = clip.publish;
@@ -623,7 +627,8 @@ function renderPublishState(job, clip, card) {
   else head = `📤 Posting · <button type="button" class="ghost small-btn" data-act="pubrefresh">↻ Cek status</button>`;
   const when = (iso) => (iso ? new Date(iso).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" }) : "");
   const rows = pub.results.map((r) => {
-    const name = `${SERVICE_LABEL[r.service] || r.service} · ${esc(r.channel)}`;
+    const name = `${SERVICE_LABEL[r.service] || r.service} · ${esc(r.channel)}`
+      + (r.account && pubMulti(pub) ? ` <span class="muted">(${esc(r.account)})</span>` : "");
     if (!r.ok) return `<div class="bad">✗ ${name}: ${esc(r.error)}</div>`;
     const status = POST_STATUS[r.status] || r.status || "terkirim";
     const extra = r.error ? ` — ${esc(r.error)}` : r.link ? ` — <a href="${esc(r.link)}" target="_blank" rel="noopener">lihat</a>` : r.due_at && r.status === "scheduled" ? ` ${when(r.due_at)}` : "";
@@ -644,24 +649,34 @@ async function loadChannels(refresh = false) {
   const box = $("#pub-channels");
   box.innerHTML = `<p class="muted small">Memuat channel…</p>`;
   try {
-    const { channels } = await api(`/api/buffer/channels${refresh ? "?refresh=true" : ""}`);
+    const { channels, accounts, errors } = await api(`/api/buffer/channels${refresh ? "?refresh=true" : ""}`);
     pub.channels = channels;
+    pub.multiAccount = (accounts || []).length > 1;
     if (!channels.length) {
       box.innerHTML = `<p class="muted small">Belum ada channel di Buffer. Hubungkan akun sosial media di publish.buffer.com.</p>`;
       return;
     }
     let remembered = [];
     try { remembered = JSON.parse(localStorage.getItem("pubChannels") || "[]"); } catch {}
-    box.innerHTML = channels.map((c) => {
+    const row = (c) => {
       const off = c.isDisconnected || c.isLocked || !c.supportsVideo;
       const why = c.isDisconnected ? "terputus" : c.isLocked ? "terkunci" : !c.supportsVideo ? "tidak mendukung video" : "";
       return `<label class="channel ${off ? "off" : ""}">
-        <input type="checkbox" value="${esc(c.id)}" ${off ? "disabled" : ""} ${!off && remembered.includes(c.id) ? "checked" : ""} />
+        <input type="checkbox" value="${esc(c.key)}" ${off ? "disabled" : ""} ${!off && remembered.includes(c.key) ? "checked" : ""} />
         ${c.avatar ? `<img src="${esc(c.avatar)}" alt="" referrerpolicy="no-referrer" />` : ""}
         <span>${esc(c.displayName || c.name)}</span>
         <span class="svc">${SERVICE_LABEL[c.service] || esc(c.service)}${why ? ` · ${why}` : ""}</span>
       </label>`;
-    }).join("");
+    };
+    // Kalau ada lebih dari satu akun Buffer, channel dikelompokkan per akun.
+    const multi = (accounts || []).length > 1;
+    const groups = multi
+      ? accounts.map((a) => {
+          const own = channels.filter((c) => c.account_id === a.id);
+          return own.length ? `<div class="channel-group">${esc(a.label)}</div>` + own.map(row).join("") : "";
+        }).join("")
+      : channels.map(row).join("");
+    box.innerHTML = (errors || []).map((e) => `<p class="err">⚠️ ${esc(e)}</p>`).join("") + groups;
   } catch (err) {
     box.innerHTML = `<p class="err">${esc(err.message)}</p>`;
   }
@@ -669,7 +684,7 @@ async function loadChannels(refresh = false) {
 
 function updateCount() {
   const n = $("#pub-text").value.length;
-  const selected = [...$("#pub-channels").querySelectorAll("input:checked")].map((i) => pub.channels.find((c) => c.id === i.value));
+  const selected = [...$("#pub-channels").querySelectorAll("input:checked")].map((i) => pub.channels.find((c) => c.key === i.value));
   const warn = selected.some((c) => c?.service === "twitter") && n > 280 ? " · melebihi 280 karakter untuk X" : "";
   $("#pub-count").textContent = `${n} karakter${warn}`;
 }
@@ -700,7 +715,8 @@ $("#form-publish").onsubmit = async (e) => {
     if (!$("#pub-when").value) return toast("Isi tanggal & jam jadwal.", true);
     due_at = new Date($("#pub-when").value).toISOString();
   }
-  const names = ids.map((id) => pub.channels.find((c) => c.id === id)).map((c) => c.displayName || c.name).join(", ");
+  const names = ids.map((id) => pub.channels.find((c) => c.key === id))
+    .map((c) => `${c.displayName || c.name}${pub.multiAccount ? ` (${c.account})` : ""}`).join(", ");
   const verb = mode === "shareNow" ? "langsung dipublikasikan" : "dijadwalkan";
   if (!confirm(`Klip akan ${verb} ke: ${names}. Lanjutkan?`)) return;
   const btn = $("#btn-pub-send");
@@ -947,7 +963,7 @@ function fillSettings() {
   lsel.innerHTML = "";
   for (const [code, label] of Object.entries(cfg.whisper_languages)) lsel.add(new Option(label, code));
   lsel.value = lval;
-  $("#set-buffer-hint").textContent = cfg.buffer_key_hint ? `Tersimpan (${cfg.buffer_key_hint}).` : "Belum diisi.";
+  renderAccounts(cfg.buffer_accounts || []);
   setField($("#set-host"), cfg.media_host);
   showHostFields();
   document.querySelectorAll("[data-env]").forEach((input) => {
@@ -966,6 +982,145 @@ function fillSettings() {
   $("#set-info").textContent = `ffmpeg: ${cfg.ffmpeg.split("/").pop()} · subtitle: ${cfg.subtitles_supported ? "didukung" : "tidak didukung"} · deteksi wajah: ${cfg.face_tracking ? "aktif" : "tidak tersedia"}`;
 }
 
+// ---------- Logo & penutup ----------
+function renderBranding(data) {
+  state.branding = data;
+  const { logo, outro, positions } = data;
+  $("#logo-preview").innerHTML = logo.url
+    ? `<img src="${logo.url}?v=${logo.size_bytes}" alt="logo" />` : "belum ada logo";
+  $("#outro-preview").innerHTML = outro.url
+    ? (outro.is_video
+        ? `<video src="${outro.url}?v=${outro.size_bytes}" muted playsinline></video>`
+        : `<img src="${outro.url}?v=${outro.size_bytes}" alt="penutup" />`)
+    : "belum ada penutup";
+  const psel = $("#logo-position");
+  if (!psel.options.length) for (const [v, label] of Object.entries(positions)) psel.add(new Option(label, v));
+  psel.value = logo.position;
+  $("#logo-enabled").checked = logo.enabled;
+  $("#logo-size").value = logo.size;
+  $("#logo-opacity").value = logo.opacity;
+  $("#logo-margin").value = logo.margin;
+  $("#outro-enabled").checked = outro.enabled;
+  $("#outro-duration").value = outro.duration;
+  $("#outro-audio").checked = outro.keep_audio;
+  $("#outro-duration-wrap").hidden = outro.is_video;
+  $("#outro-audio-wrap").hidden = !outro.is_video;
+  for (const id of ["#logo-remove", "#outro-remove"]) {
+    $(id).disabled = !(id.startsWith("#logo") ? logo.exists : outro.exists);
+  }
+}
+
+async function loadBranding() {
+  try {
+    renderBranding(await api("/api/branding"));
+  } catch (err) {
+    console.warn(err);
+  }
+}
+
+async function patchBranding(kind, fields) {
+  try {
+    renderBranding(await api(`/api/branding/${kind}`, { method: "PATCH", body: JSON.stringify(fields) }));
+    $("#brand-msg").textContent = "Tersimpan. Klip lama perlu Render ulang untuk ikut berubah.";
+  } catch (err) {
+    $("#brand-msg").textContent = `✗ ${err.message}`;
+  }
+}
+
+async function uploadBranding(kind, input) {
+  const file = input.files[0];
+  if (!file) return;
+  $("#brand-msg").textContent = `Mengunggah ${file.name}…`;
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const res = await fetch(`/api/branding/${kind}`, { method: "POST", body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Gagal mengunggah");
+    renderBranding(data);
+    $("#brand-msg").textContent = `${kind === "logo" ? "Logo" : "Penutup"} tersimpan (${file.name}).`;
+  } catch (err) {
+    $("#brand-msg").textContent = `✗ ${err.message}`;
+  } finally {
+    input.value = "";
+  }
+}
+
+$("#logo-file").onchange = (e) => uploadBranding("logo", e.target);
+$("#outro-file").onchange = (e) => uploadBranding("outro", e.target);
+$("#logo-remove").onclick = async () => {
+  if (confirm("Hapus logo?")) renderBranding(await api("/api/branding/logo", { method: "DELETE" }));
+};
+$("#outro-remove").onclick = async () => {
+  if (confirm("Hapus penutup?")) renderBranding(await api("/api/branding/outro", { method: "DELETE" }));
+};
+$("#logo-enabled").onchange = (e) => patchBranding("logo", { enabled: e.target.checked });
+$("#logo-position").onchange = (e) => patchBranding("logo", { position: e.target.value });
+$("#outro-enabled").onchange = (e) => patchBranding("outro", { enabled: e.target.checked });
+$("#outro-audio").onchange = (e) => patchBranding("outro", { keep_audio: e.target.checked });
+for (const [id, kind, field] of [["#logo-size", "logo", "size"], ["#logo-opacity", "logo", "opacity"],
+                                 ["#logo-margin", "logo", "margin"], ["#outro-duration", "outro", "duration"]]) {
+  $(id).onchange = (e) => patchBranding(kind, { [field]: Number(e.target.value) });
+}
+
+function renderAccounts(list) {
+  const box = $("#buffer-accounts");
+  box.innerHTML = list.length
+    ? list.map((a) => `<div class="account-row" data-id="${esc(a.id)}">
+        <span>${esc(a.label)}</span><span class="hint">${esc(a.key_hint)}</span>
+        <span class="spacer"></span>
+        <button type="button" class="ghost small-btn" data-acc="rename">Ganti nama</button>
+        <button type="button" class="ghost small-btn danger" data-acc="remove">Hapus</button>
+      </div>`).join("")
+    : `<p class="muted small">Belum ada akun Buffer.</p>`;
+}
+
+$("#buffer-accounts").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-acc]");
+  if (!btn) return;
+  const row = btn.closest(".account-row");
+  const id = row.dataset.id;
+  const name = row.firstElementChild.textContent;
+  try {
+    if (btn.dataset.acc === "remove") {
+      if (!confirm(`Hapus akun Buffer “${name}”? Klip yang sudah diposting tidak terpengaruh.`)) return;
+      const { accounts } = await api(`/api/buffer/accounts/${id}`, { method: "DELETE" });
+      renderAccounts(accounts);
+      toast("Akun dihapus.");
+    } else {
+      const label = prompt("Nama akun:", name);
+      if (!label) return;
+      const { accounts } = await api(`/api/buffer/accounts/${id}`, { method: "PATCH", body: JSON.stringify({ label }) });
+      renderAccounts(accounts);
+    }
+    state.config = await api("/api/config");
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+$("#btn-add-account").onclick = async () => {
+  const key = $("#acc-key").value.trim();
+  if (!key) return toast("Isi Buffer API key dulu.", true);
+  const btn = $("#btn-add-account");
+  btn.disabled = true;
+  $("#acc-msg").textContent = "Mengecek API key…";
+  try {
+    const { added, accounts } = await api("/api/buffer/accounts", {
+      method: "POST", body: JSON.stringify({ label: $("#acc-label").value.trim(), api_key: key }),
+    });
+    $("#acc-key").value = "";
+    $("#acc-label").value = "";
+    renderAccounts(accounts);
+    state.config = await api("/api/config");
+    $("#acc-msg").textContent = `✓ Akun “${added.label}” ditambahkan (${added.organizations.join(", ")}).`;
+  } catch (err) {
+    $("#acc-msg").textContent = `✗ ${err.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+};
+
 function openSettings() {
   if ($("#dlg-settings").open) return;
   clearDirty();
@@ -973,6 +1128,7 @@ function openSettings() {
   $("#host-test").textContent = "";
   $("#buffer-test").textContent = "";
   $("#dlg-settings").showModal();
+  loadBranding();
 }
 document.querySelectorAll("[data-close]").forEach((btn) => (btn.onclick = () => $(`#${btn.dataset.close}`).close()));
 $("#btn-settings").onclick = openSettings;
@@ -989,12 +1145,9 @@ $("#btn-test-buffer").onclick = async () => {
   const out = $("#buffer-test");
   out.textContent = "Menghubungkan…";
   try {
-    const key = $("#set-buffer").value.trim();
-    if (key) await api("/api/config", { method: "POST", body: JSON.stringify({ buffer_api_key: key }) });
-    const { channels } = await api("/api/buffer/channels?refresh=true");
-    out.textContent = `✓ Terhubung · ${channels.length} channel`;
-    $("#set-buffer").value = "";
-    delete $("#set-buffer").dataset.dirty;
+    const { channels, accounts, errors } = await api("/api/buffer/channels?refresh=true");
+    out.textContent = `✓ ${accounts.length} akun · ${channels.length} channel`
+      + (errors.length ? ` · ⚠️ ${errors.join(" | ")}` : "");
     state.config = await api("/api/config");
     fillSettings();
   } catch (err) {
@@ -1036,12 +1189,10 @@ async function saveSettings() {
       provider: currentProvider(),
       api_key: $("#set-key").value.trim() || null, model: $("#set-model").value,
       whisper_model: $("#set-whisper").value, whisper_language: $("#set-lang").value,
-      buffer_api_key: $("#set-buffer").value.trim() || null,
       media_host: $("#set-host").value, media: hostFields(),
     }),
   });
   $("#set-key").value = "";
-  $("#set-buffer").value = "";
   clearDirty();
   state.config = await api("/api/config");
   fillSettings();
