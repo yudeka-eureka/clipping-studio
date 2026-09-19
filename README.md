@@ -20,7 +20,8 @@ Mode command line (untuk skrip atau AI agent, tanpa web):
 ./clip run podcast.mp4 --clips 3 --json
 ```
 
-Daftar perintah lengkap ada di [AGENTS.md](AGENTS.md) atau `./clip --help`.
+Referensi lengkap semua perintah beserta pilihannya ada di [docs/cli.md](docs/cli.md)
+(ringkasan untuk AI agent: [AGENTS.md](AGENTS.md)).
 
 Browser terbuka otomatis di http://localhost:8765. Saat pertama kali dijalankan, skrip
 menyiapkan environment Python di `.venv` (butuh `uv` atau Python 3.10+).
