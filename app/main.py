@@ -179,6 +179,10 @@ async def create_job(
         "subtitles": bool(raw.get("subtitles", True)),
         "remove_silence": bool(raw.get("remove_silence", True)),
         "show_title": bool(raw.get("show_title", True)),
+        # Logo: None = pakai default, "" = tanpa logo, selain itu id logo dari pustaka.
+        "logo_id": raw["logo_id"] if isinstance(raw.get("logo_id"), str) else None,
+        # Channel tujuan posting, dipilih sebelum render: ["idAkun:idChannel", ...]
+        "channels": [c for c in (raw.get("channels") or []) if isinstance(c, str)][:20],
         "instructions": str(raw.get("instructions", ""))[:1000],
     }
     opts["max_len"] = max(opts["max_len"], opts["min_len"] + 5)
@@ -209,6 +213,8 @@ class RerenderIn(BaseModel):
     subtitles: bool
     remove_silence: bool = True
     show_title: bool = True
+    logo_id: str | None = None
+    channels: list[str] | None = None
 
 
 @app.post("/api/jobs/{job_id}/rerender")
@@ -221,7 +227,10 @@ async def rerender_all(job_id: str, body: RerenderIn):
     if any(c["status"] in ("queued", "rendering") for c in job["clips"]):
         raise HTTPException(409, "Tunggu sampai semua klip selesai dirender.")
     job["options"].update(aspect=body.aspect, layout=body.layout, subtitles=body.subtitles,
-                          remove_silence=body.remove_silence, show_title=body.show_title)
+                          remove_silence=body.remove_silence, show_title=body.show_title,
+                          logo_id=body.logo_id)
+    if body.channels is not None:
+        job["options"]["channels"] = body.channels[:20]
     await store.publish(job)
     for clip in job["clips"]:
         spawn(pipeline.render(job, clip))
@@ -295,19 +304,22 @@ async def delete_clip(job_id: str, clip_id: str):
 
 # ---------- Logo & penutup (branding) ----------
 
-class BrandingIn(BaseModel):
-    enabled: bool | None = None
+class LogoIn(BaseModel):
+    label: str | None = None
     position: str | None = None
     size: float | None = None
     opacity: float | None = None
     margin: float | None = None
+
+
+class OutroIn(BaseModel):
+    enabled: bool | None = None
     duration: float | None = None
     keep_audio: bool | None = None
 
 
-def _check_kind(kind: str) -> None:
-    if kind not in ("logo", "outro"):
-        raise HTTPException(404, "Bagian tidak dikenal.")
+class DefaultLogoIn(BaseModel):
+    logo_id: str | None = None
 
 
 @app.get("/api/branding")
@@ -315,15 +327,58 @@ def get_branding():
     return branding.public()
 
 
-@app.post("/api/branding/{kind}")
-async def upload_branding(kind: str, file: UploadFile = File(...)):
-    _check_kind(kind)
-    tmp = branding.DIR.parent / f".upload-{kind}"
+async def _save_upload(file: UploadFile, name: str) -> Path:
+    tmp = branding.DIR.parent / f".upload-{name}"
     tmp.parent.mkdir(parents=True, exist_ok=True)
+    with tmp.open("wb") as out:
+        await asyncio.to_thread(shutil.copyfileobj, file.file, out, 4 * 1024 * 1024)
+    return tmp
+
+
+@app.post("/api/branding/logos")
+async def add_logo(file: UploadFile = File(...), label: str = Form("")):
+    tmp = await _save_upload(file, "logo")
     try:
-        with tmp.open("wb") as out:
-            await asyncio.to_thread(shutil.copyfileobj, file.file, out, 4 * 1024 * 1024)
-        await asyncio.to_thread(branding.save_file, kind, tmp, file.filename or "")
+        added = await asyncio.to_thread(branding.add_logo, tmp, file.filename or "", label)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        tmp.unlink(missing_ok=True)
+    return {"added": added, **branding.public()}
+
+
+@app.patch("/api/branding/logos/{logo_id}")
+def update_logo(logo_id: str, body: LogoIn):
+    try:
+        branding.update_logo(logo_id, **body.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return branding.public()
+
+
+@app.delete("/api/branding/logos/{logo_id}")
+def delete_logo(logo_id: str):
+    try:
+        branding.remove_logo(logo_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return branding.public()
+
+
+@app.post("/api/branding/default-logo")
+def default_logo(body: DefaultLogoIn):
+    try:
+        branding.set_default_logo(body.logo_id or None)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return branding.public()
+
+
+@app.post("/api/branding/outro")
+async def upload_outro(file: UploadFile = File(...)):
+    tmp = await _save_upload(file, "outro")
+    try:
+        await asyncio.to_thread(branding.save_outro, tmp, file.filename or "")
     except ValueError as e:
         raise HTTPException(400, str(e))
     finally:
@@ -331,26 +386,21 @@ async def upload_branding(kind: str, file: UploadFile = File(...)):
     return branding.public()
 
 
-@app.patch("/api/branding/{kind}")
-def update_branding(kind: str, body: BrandingIn):
-    _check_kind(kind)
-    try:
-        branding.update(kind, **body.model_dump(exclude_none=True))
-    except ValueError as e:
-        raise HTTPException(400, str(e))
+@app.patch("/api/branding/outro")
+def update_outro(body: OutroIn):
+    branding.update_outro(**body.model_dump(exclude_none=True))
     return branding.public()
 
 
-@app.delete("/api/branding/{kind}")
-def delete_branding(kind: str):
-    _check_kind(kind)
-    branding.clear(kind)
+@app.delete("/api/branding/outro")
+def delete_outro():
+    branding.clear_outro()
     return branding.public()
 
 
-@app.get("/branding/{name}")
-def branding_file(name: str):
-    target = (branding.DIR / name).resolve()
+@app.get("/branding/{path:path}")
+def branding_file(path: str):
+    target = (branding.DIR / path).resolve()
     if branding.DIR.resolve() not in target.parents or not target.is_file():
         raise HTTPException(404)
     return FileResponse(target)
@@ -497,7 +547,7 @@ async def test_mediahost():
 
 
 class PublishIn(BaseModel):
-    channel_ids: list[str]
+    channel_ids: list[str] = []
     text: str
     mode: str = "addToQueue"
     due_at: str | None = None
@@ -511,7 +561,9 @@ async def publish_clip(job_id: str, clip_id: str, body: PublishIn):
         raise HTTPException(400, "Klip belum siap. Tunggu render selesai.")
     if (clip.get("publish") or {}).get("status") in ("uploading", "posting"):
         raise HTTPException(409, "Klip ini sedang diposting.")
-    if not body.channel_ids:
+    # Kosong = pakai tujuan yang sudah dipilih sebelum render.
+    channel_ids = body.channel_ids or pipeline.target_channels(job)
+    if not channel_ids:
         raise HTTPException(400, "Pilih minimal satu channel.")
     if body.mode not in ("addToQueue", "shareNow", "shareNext", "customScheduled"):
         raise HTTPException(400, "Mode posting tidak valid.")
@@ -533,9 +585,9 @@ async def publish_clip(job_id: str, clip_id: str, body: PublishIn):
     # Channel dirujuk sebagai "idAkun:idChannel"; id polos tetap diterima kalau tidak ambigu.
     known = {c["key"]: c for c in found}
     known.update({c["id"]: c for c in found if sum(1 for x in found if x["id"] == c["id"]) == 1})
-    channels = [known[i] for i in body.channel_ids if i in known]
+    channels = [known[i] for i in channel_ids if i in known]
     unusable = [c for c in channels if c["isDisconnected"] or c["isLocked"]]
-    if len(channels) != len(body.channel_ids) or unusable:
+    if len(channels) != len(channel_ids) or unusable:
         raise HTTPException(400, "Ada channel yang tidak ditemukan atau sedang terputus di Buffer.")
     spawn(pipeline.publish(job, clip, channels, body.text.strip(), body.mode, due_at))
     return {"ok": True}

@@ -144,7 +144,7 @@ async def _words(job: dict, clip: dict, src: Path, clips_dir: Path, prog: ClipPr
 
 async def _outro_spec() -> dict | None:
     """Outro siap pakai. Untuk outro berupa video, durasi & ada/tidaknya audio dibaca dari filenya."""
-    outro = branding.active("outro")
+    outro = branding.active_outro()
     if outro and outro["is_video"]:
         info = await media.probe(outro["path"])
         outro = {**outro, "duration": info["duration"], "has_audio": info["has_audio"]}
@@ -213,7 +213,7 @@ async def render(job: dict, clip: dict) -> None:
             title = clip["title"] if opts.get("show_title") else None
             has_ass = media.write_ass(ass_path, width, height, out_duration, title, captions)
 
-            logo = branding.active("logo")
+            logo = branding.logo_for(opts.get("logo_id"))
             outro = await _outro_spec()
             await media.render_clip(
                 src, out, clip["start"], clip["end"], opts["aspect"], opts["layout"],
@@ -232,6 +232,11 @@ async def render(job: dict, clip: dict) -> None:
             clip.update(status="error", error=str(e), stage=None)
             await store.log(job, f"❌ Gagal render “{clip['title']}”: {e}")
     await store.publish(job)
+
+
+def target_channels(job: dict) -> list[str]:
+    """Channel tujuan yang dipilih sebelum render (dipakai sebagai isian awal saat posting)."""
+    return list(job["options"].get("channels") or [])
 
 
 async def publish(job: dict, clip: dict, channels: list[dict], text: str, mode: str,

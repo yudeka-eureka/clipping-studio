@@ -156,6 +156,8 @@ def build_options(args) -> dict:
         "max_len": max(args.min_len + 5, args.max_len), "aspect": args.aspect, "layout": args.layout,
         "subtitles": not args.no_subtitles, "remove_silence": not args.no_trim,
         "show_title": not args.no_title, "instructions": args.instructions or "",
+        "logo_id": branding.NO_LOGO if args.no_logo else args.logo,
+        "channels": list(args.target or []),
     }
 
 
@@ -258,6 +260,12 @@ async def cmd_rerender(args) -> None:
     for field, flag in (("subtitles", args.no_subtitles), ("remove_silence", args.no_trim), ("show_title", args.no_title)):
         if flag:
             job["options"][field] = False
+    if args.no_logo:
+        job["options"]["logo_id"] = branding.NO_LOGO
+    elif args.logo:
+        job["options"]["logo_id"] = args.logo
+    if args.target:
+        job["options"]["channels"] = list(args.target)
     clips = [find_clip(job, c, args) for c in args.clips] if args.clips else list(job["clips"])
     if not clips:
         fail("Proyek ini belum punya klip.", args)
@@ -405,9 +413,12 @@ async def cmd_publish(args) -> None:
         known = {c["id"]: c for c in await asyncio.to_thread(buffer.list_channels)}
     except Exception as e:  # noqa: BLE001
         fail(str(e), args)
-    channels = [known[c] for c in args.channel if c in known]
-    if len(channels) != len(args.channel):
-        fail(f"Channel tidak dikenal: {', '.join(c for c in args.channel if c not in known)}", args)
+    wanted = args.channel or pipeline.target_channels(job)
+    if not wanted:
+        fail("Sebutkan --channel, atau pilih tujuan posting lebih dulu (mis. saat 'clip run --target').", args)
+    channels = [known[c] for c in wanted if c in known]
+    if len(channels) != len(wanted):
+        fail(f"Channel tidak dikenal: {', '.join(c for c in wanted if c not in known)}", args)
     blocked = [c for c in channels if c["isDisconnected"] or c["isLocked"]]
     if blocked:
         fail(f"Channel terputus/terkunci di Buffer: {', '.join(c['name'] for c in blocked)}", args)
@@ -494,35 +505,58 @@ async def cmd_provider(args) -> None:
                    + ("" if p["key"] else "  (API key belum diisi)") for n, p in data.items()))
 
 
-async def cmd_branding(args) -> None:
+async def cmd_logos(args) -> None:
+    """Pustaka logo: beberapa logo, tiap proyek bisa pakai yang berbeda."""
+    target = args.id
     try:
-        for kind, file in (("logo", args.logo), ("outro", args.outro)):
-            if file:
-                path = Path(file).expanduser().resolve()
-                if not path.is_file():
-                    fail(f"File tidak ditemukan: {path}", args)
-                branding.save_file(kind, path, path.name)
-        if args.remove_logo:
-            branding.clear("logo")
-        if args.remove_outro:
-            branding.clear("outro")
-        branding.update("logo", position=args.position, size=args.size, opacity=args.opacity,
-                        margin=args.margin,
-                        enabled=False if args.logo_off else (True if args.logo_on else None))
-        branding.update("outro", duration=args.outro_duration,
-                        keep_audio=False if args.outro_mute else None,
-                        enabled=False if args.outro_off else (True if args.outro_on else None))
+        if args.add:
+            path = Path(args.add).expanduser().resolve()
+            if not path.is_file():
+                fail(f"File tidak ditemukan: {path}", args)
+            entry = branding.add_logo(path, path.name, args.label or "")
+            target = entry["id"]  # pengaturan di perintah yang sama langsung dipakai
+            if not args.json:
+                print(f"Logo “{entry['label']}” ditambahkan (id {entry['id']}).")
+        if args.remove:
+            branding.remove_logo(args.remove)
+        if args.default is not None:
+            branding.set_default_logo(args.default or None)
+        if target:
+            branding.update_logo(target, label=None if args.add else args.label, position=args.position,
+                                 size=args.size, opacity=args.opacity, margin=args.margin)
     except ValueError as e:
         fail(str(e), args)
     data = branding.public()
-    lg, ou = data["logo"], data["outro"]
-    text = (f"logo  : {lg['file'] or '(belum ada)'}"
-            + (f" · {'aktif' if lg['enabled'] else 'nonaktif'} · {lg['position']} · {lg['size']}% "
-               f"· opacity {lg['opacity']} · margin {lg['margin']}%" if lg["file"] else "")
-            + f"\noutro : {ou['file'] or '(belum ada)'}"
+    rows = [f"{'*' if lg['id'] == data['default_logo'] else ' '} {lg['id']}  {lg['label'][:24]:<24} "
+            f"{lg['position']:<13} {lg['size']}% opacity {lg['opacity']} margin {lg['margin']}%"
+            for lg in data["logos"]]
+    emit(args, data, "\n".join(rows) + ("\n(* = logo default untuk proyek baru)" if rows else "")
+         or "Belum ada logo. Tambahkan dengan: clip logos --add logo.png --label 'Nama'")
+
+
+async def cmd_branding(args) -> None:
+    """Video/gambar penutup (outro). Logo diatur lewat 'clip logos'."""
+    try:
+        if args.outro:
+            path = Path(args.outro).expanduser().resolve()
+            if not path.is_file():
+                fail(f"File tidak ditemukan: {path}", args)
+            branding.save_outro(path, path.name)
+        if args.remove_outro:
+            branding.clear_outro()
+        branding.update_outro(duration=args.outro_duration,
+                              keep_audio=False if args.outro_mute else None,
+                              enabled=False if args.outro_off else (True if args.outro_on else None))
+    except ValueError as e:
+        fail(str(e), args)
+    data = branding.public()
+    ou = data["outro"]
+    logos = f"{len(data['logos'])} logo di pustaka (lihat: clip logos)"
+    text = (f"outro : {ou['file'] or '(belum ada)'}"
             + (f" · {'aktif' if ou['enabled'] else 'nonaktif'}"
                + (f" · {ou['duration']} dtk" if not ou["is_video"] else
-                  f" · video{'' if ou['keep_audio'] else ', audio dimatikan'}") if ou["file"] else ""))
+                  f" · video{'' if ou['keep_audio'] else ', audio dimatikan'}") if ou["file"] else "")
+            + f"\nlogo  : {logos}")
     emit(args, data, text)
 
 
@@ -559,6 +593,10 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--no-title", action="store_true", help="jangan tempel judul di atas video")
         sp.add_argument("--instructions", help="instruksi tambahan untuk AI")
         sp.add_argument("--link", action="store_true", help="hardlink file sumber (hemat disk) alih-alih menyalin")
+        sp.add_argument("--logo", metavar="ID", help="id logo dari 'clip logos' (default: logo default)")
+        sp.add_argument("--no-logo", action="store_true", help="proyek ini tanpa logo")
+        sp.add_argument("--target", metavar="AKUN:CHANNEL", action="append",
+                        help="channel tujuan posting, dipilih sebelum render (boleh diulang)")
 
     sp = sub.add_parser("doctor", help="cek ffmpeg, model, API key, dan hosting")
     sp.set_defaults(func=cmd_doctor)
@@ -587,6 +625,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-subtitles", action="store_true")
     sp.add_argument("--no-trim", action="store_true")
     sp.add_argument("--no-title", action="store_true")
+    sp.add_argument("--logo", metavar="ID", help="ganti logo proyek ini")
+    sp.add_argument("--no-logo", action="store_true", help="render tanpa logo")
+    sp.add_argument("--target", metavar="AKUN:CHANNEL", action="append", help="ganti channel tujuan posting")
     sp.set_defaults(func=cmd_rerender)
 
     sp = sub.add_parser("jobs", help="daftar proyek")
@@ -637,8 +678,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("publish", help="kirim klip ke media sosial lewat Buffer")
     sp.add_argument("job")
     sp.add_argument("clip")
-    sp.add_argument("--channel", action="append", required=True,
-                    help="channel: 'idAkun:idChannel' dari 'clip channels' (boleh diulang)")
+    sp.add_argument("--channel", action="append",
+                    help="channel: 'idAkun:idChannel' dari 'clip channels' (boleh diulang). "
+                         "Kosong = pakai tujuan yang dipilih sebelum render")
     sp.add_argument("--mode", default="addToQueue",
                     choices=["addToQueue", "shareNext", "shareNow", "customScheduled"])
     sp.add_argument("--at", help="waktu ISO untuk --mode customScheduled")
@@ -660,15 +702,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--model", help="model untuk penyedia tersebut")
     sp.set_defaults(func=cmd_provider)
 
-    sp = sub.add_parser("branding", help="logo (watermark) & video/gambar penutup untuk klip")
-    sp.add_argument("--logo", metavar="FILE", help="pasang logo (png/jpg/webp)")
+    sp = sub.add_parser("logos", help="pustaka logo (watermark); tiap proyek bisa pakai logo berbeda")
+    sp.add_argument("--add", metavar="FILE", help="tambah logo (png/jpg/webp)")
+    sp.add_argument("--label", help="nama logo (dipakai bersama --add atau --id)")
+    sp.add_argument("--id", metavar="ID", help="ubah pengaturan logo ini")
     sp.add_argument("--position", choices=list(branding.POSITIONS))
     sp.add_argument("--size", type=float, help="lebar logo, persen dari lebar video (3-40)")
     sp.add_argument("--opacity", type=float, help="transparansi logo 0.1-1.0")
     sp.add_argument("--margin", type=float, help="jarak dari tepi, persen lebar video (0-25)")
-    sp.add_argument("--logo-off", action="store_true", help="matikan logo tanpa menghapus filenya")
-    sp.add_argument("--logo-on", action="store_true")
-    sp.add_argument("--remove-logo", action="store_true")
+    sp.add_argument("--default", metavar="ID", nargs="?", const="",
+                    help="jadikan logo default untuk proyek baru; tanpa nilai = tidak ada default")
+    sp.add_argument("--remove", metavar="ID", help="hapus logo dari pustaka")
+    sp.set_defaults(func=cmd_logos)
+
+    sp = sub.add_parser("branding", help="video/gambar penutup (outro) untuk semua klip")
     sp.add_argument("--outro", metavar="FILE", help="pasang penutup (video atau gambar)")
     sp.add_argument("--outro-duration", type=float, help="durasi penutup kalau berupa gambar (detik)")
     sp.add_argument("--outro-mute", action="store_true", help="buang audio penutup")

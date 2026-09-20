@@ -209,3 +209,15 @@ input[type=file] { padding: 5px; font-size: 12px; }
   max-width: 860px; padding: 12px 0; background: linear-gradient(transparent, var(--bg) 35%);
 }
 .settings-actions .muted { margin-right: auto; }
+
+/* Pustaka logo & pemilih tujuan posting */
+.logo-list { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 10px; }
+.logo-row { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.brand-preview.small { width: 56px; height: 56px; }
+.logo-row input[type=number] { width: 72px; margin: 0; }
+.logo-row select { width: auto; margin: 0; }
+.inline-num { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
+.row.small { margin-top: 6px; }
+details.targets { margin-top: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+details.targets summary { cursor: pointer; font-size: 13px; }
+details.targets[open] summary { margin-bottom: 6px; }

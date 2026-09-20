@@ -36,7 +36,8 @@ jadi stdout aman di-pipe. Kode keluar: `0` berhasil, `1` gagal (JSON berisi `{"o
 | `publish JOB CLIP --channel idAkun:idChannel` | Unggah klip ke hosting lalu buat post di Buffer (boleh lintas akun) |
 | `publish-status JOB CLIP` | Status terbaru post di Buffer |
 | `provider [gemini\|anthropic\|openai] [--model M]` | Lihat / ganti penyedia AI pemilih klip |
-| `branding [--logo F] [--outro F] [--position P] [--size N] [--opacity N] [--outro-duration N]` | Logo watermark & penutup klip; `--logo-off`, `--remove-outro`, dst. |
+| `logos [--add F --label X] [--id ID --position P --size N] [--default ID] [--remove ID]` | Pustaka logo watermark (beberapa logo, pilih per proyek) |
+| `branding [--outro F] [--outro-duration N]` | Video/gambar penutup klip; `--outro-off`, `--remove-outro` |
 | `config [NAMA [NILAI]]` | Lihat/ubah `.env`. Tanpa NILAI, dibaca dari stdin (aman untuk kredensial) |
 | `serve --port 8765` | Jalankan antarmuka web |
 
@@ -52,6 +53,7 @@ Opsi klip (berlaku di `run` dan `cut`): `--clips N`, `--min-len`, `--max-len`,
   dan gunakan `--mode addToQueue` (masuk antrean, bisa dibatalkan di Buffer) daripada `shareNow`.
 - `rm` menghapus video sumber dan semua klip proyek tanpa bisa dibatalkan; `accounts --remove` dan
   `branding --remove-logo/--remove-outro` juga menghapus tanpa konfirmasi.
-- Logo dan penutup (`branding`) berlaku global untuk semua render berikutnya, bukan per proyek.
+- Logo dipilih per proyek: `run`/`cut`/`rerender` menerima `--logo ID` atau `--no-logo`; tanpa itu dipakai logo default dari `logos`. Penutup (`branding --outro`) tetap global.
+- `run`/`cut`/`rerender` juga menerima `--target idAkun:idChannel` (boleh diulang) untuk menyimpan tujuan posting; `publish` tanpa `--channel` memakai tujuan tersebut.
 - Kredensial ada di `.env`; jangan tulis nilainya ke argumen perintah (`config NAMA` membaca dari stdin).
 - Data proyek ada di `data/jobs/<job-id>/`. Kalau web app sedang berjalan, perubahan dari CLI baru terlihat setelah web app di-restart.
