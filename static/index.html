@@ -72,6 +72,8 @@
             <label class="check"><input type="checkbox" id="in-trim" checked /> Hapus jeda diam</label>
             <label class="check"><input type="checkbox" id="in-title" checked /> Judul di atas video</label>
             <label>Logo<select id="in-logo"></select></label>
+            <label>Bumper pembuka<select id="in-intro"></select></label>
+            <label>Bumper penutup<select id="in-outro"></select></label>
           </div>
           <label>Instruksi tambahan untuk AI <span class="muted">(opsional)</span>
             <textarea id="in-instr" rows="2" placeholder="Contoh: fokus pada tips praktis tentang keuangan, hindari bagian iklan"></textarea>
@@ -185,20 +187,12 @@
           <button type="button" class="ghost" id="btn-add-logo">+ Tambah logo</button>
         </div>
 
-        <label class="flat section-gap">Penutup klip (outro)</label>
-        <div class="brand-row">
-          <div class="brand-preview" id="outro-preview"></div>
-          <div class="grow">
-            <div class="row wrap">
-              <label class="check inline"><input type="checkbox" id="outro-enabled" /> Penutup aktif</label>
-              <input type="file" id="outro-file" accept="video/*,image/png,image/jpeg,image/webp" class="grow" />
-              <button type="button" class="ghost small-btn danger" id="outro-remove">Hapus</button>
-            </div>
-            <div class="grid two">
-              <label id="outro-duration-wrap">Durasi gambar (dtk)<input type="number" id="outro-duration" min="0.5" max="15" step="0.5" /></label>
-              <label class="check inline" id="outro-audio-wrap"><input type="checkbox" id="outro-audio" /> Pakai audio penutup</label>
-            </div>
-          </div>
+        <label class="flat section-gap">Pustaka bumper <span class="muted">(video/gambar pembuka &amp; penutup)</span></label>
+        <div id="bumper-list" class="logo-list"></div>
+        <div class="row wrap">
+          <input id="bumper-label" placeholder="Nama bumper (mis. Opening Eudeka)" class="grow" />
+          <input type="file" id="bumper-file" accept="video/*,image/png,image/jpeg,image/webp" class="grow" />
+          <button type="button" class="ghost" id="btn-add-bumper">+ Tambah bumper</button>
         </div>
         <p class="muted small" id="brand-msg"></p>
       </div>
@@ -285,6 +279,8 @@
             <label class="check inline"><input type="checkbox" id="fmt-trim" /> Hapus jeda</label>
             <label class="check inline"><input type="checkbox" id="fmt-title" /> Judul</label>
             <select id="fmt-logo" class="auto" title="Logo untuk proyek ini"></select>
+            <select id="fmt-intro" class="auto" title="Bumper pembuka"></select>
+            <select id="fmt-outro" class="auto" title="Bumper penutup"></select>
             <button class="primary" id="btn-rerender-all">↻ Render ulang semua</button>
           </div>
           <details class="targets">

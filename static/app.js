@@ -400,6 +400,8 @@ $("#form-new").onsubmit = (e) => {
     subtitles: $("#in-subs").checked, remove_silence: $("#in-trim").checked,
     show_title: $("#in-title").checked, instructions: $("#in-instr").value,
     logo_id: logoOptionToOption($("#in-logo").value),
+    intro_id: logoOptionToOption($("#in-intro").value),
+    outro_id: logoOptionToOption($("#in-outro").value),
     channels: state.newTargets || [],
   }));
 
@@ -484,6 +486,7 @@ function renderJob() {
     o.remove_silence ? "tanpa jeda" : null,
     o.show_title ? "judul" : null,
     o.logo_id === "" ? "tanpa logo" : null,
+    o.intro_id === "" ? "tanpa pembuka" : null,
     (o.channels || []).length ? `${o.channels.length} tujuan posting` : null,
   ].filter(Boolean).join("  ·  ");
   renderStatus(job);
@@ -503,6 +506,8 @@ function renderJob() {
     $("#fmt-layout").value = o.layout;
     $("#fmt-subs").checked = o.subtitles;
     fillLogoSelect($("#fmt-logo"), logoOptionValue(o.logo_id));
+    fillBumperSelect($("#fmt-intro"), "intro", logoOptionValue(o.intro_id));
+    fillBumperSelect($("#fmt-outro"), "outro", logoOptionValue(o.outro_id));
     state.fmtLogoWanted = logoOptionValue(o.logo_id);
     state.jobTargets = [...(o.channels || [])];
     $("#fmt-target-count").textContent = targetSummary(state.jobTargets);
@@ -931,6 +936,8 @@ $("#btn-rerender-all").onclick = async () => {
         aspect: $("#fmt-aspect").value, layout: $("#fmt-layout").value, subtitles: $("#fmt-subs").checked,
         remove_silence: $("#fmt-trim").checked, show_title: $("#fmt-title").checked,
         logo_id: logoOptionToOption($("#fmt-logo").value),
+        intro_id: logoOptionToOption($("#fmt-intro").value),
+        outro_id: logoOptionToOption($("#fmt-outro").value),
         channels: state.jobTargets || [],
       }),
     });
@@ -1095,25 +1102,54 @@ function renderLogoLibrary() {
     : `<p class="muted small">Belum ada logo. Tambahkan di bawah, lalu pilih logo mana yang dipakai tiap proyek.</p>`;
 }
 
+function fillBumperSelect(sel, role, value) {
+  const list = state.branding?.bumpers || [];
+  const def = list.find((b) => b.id === state.branding?.[`default_${role}`]);
+  const label = role === "intro" ? "pembuka" : "penutup";
+  sel.innerHTML = "";
+  sel.add(new Option(def ? `Default: ${def.label}` : `Tanpa ${label}`, LOGO_DEFAULT));
+  for (const b of list) sel.add(new Option(b.label, b.id));
+  sel.add(new Option(`Tanpa ${label}`, LOGO_NONE));
+  sel.value = [...sel.options].some((o) => o.value === value) ? value : LOGO_DEFAULT;
+}
+
+function renderBumperLibrary() {
+  const { bumpers = [], default_intro, default_outro } = state.branding || {};
+  $("#bumper-list").innerHTML = bumpers.length
+    ? bumpers.map((b) => `<div class="logo-row" data-id="${esc(b.id)}">
+        <div class="brand-preview small">${b.is_video
+          ? `<video src="${b.url}?v=${b.size_bytes}#t=0.1" muted playsinline preload="metadata"></video>`
+          : `<img src="${b.url}?v=${b.size_bytes}" alt="" />`}</div>
+        <div class="grow">
+          <div class="row wrap">
+            <input class="grow bumper-name" value="${esc(b.label)}" data-field="label" />
+            <button type="button" class="ghost small-btn danger" data-bumper="remove">Hapus</button>
+          </div>
+          <div class="row wrap small">
+            <label class="check inline"><input type="checkbox" data-role="intro" ${b.id === default_intro ? "checked" : ""} /> Pembuka</label>
+            <label class="check inline"><input type="checkbox" data-role="outro" ${b.id === default_outro ? "checked" : ""} /> Penutup</label>
+            ${b.is_video
+              ? `<label class="check inline"><input type="checkbox" data-field="keep_audio" ${b.keep_audio ? "checked" : ""} /> Pakai audionya</label>`
+              : `<label class="inline-num">Durasi (dtk) <input type="number" data-field="duration" min="0.5" max="15" step="0.5" value="${b.duration}" /></label>`}
+          </div>
+        </div>
+      </div>`).join("")
+    : `<p class="muted small">Belum ada bumper. Tambahkan video/gambar pembuka atau penutup di bawah.</p>`;
+}
+
 function renderBranding(data) {
   state.branding = data;
   renderLogoLibrary();
-  const outro = data.outro;
-  $("#outro-preview").innerHTML = outro.url
-    ? (outro.is_video
-        ? `<video src="${outro.url}?v=${outro.size_bytes}" muted playsinline></video>`
-        : `<img src="${outro.url}?v=${outro.size_bytes}" alt="penutup" />`)
-    : "belum ada penutup";
-  $("#outro-enabled").checked = outro.enabled;
-  $("#outro-duration").value = outro.duration;
-  $("#outro-audio").checked = outro.keep_audio;
-  $("#outro-duration-wrap").hidden = outro.is_video;
-  $("#outro-audio-wrap").hidden = !outro.is_video;
-  $("#outro-remove").disabled = !outro.exists;
-  // Pemilih logo di form proyek baru & kartu Format klip ikut diperbarui.
+  renderBumperLibrary();
   fillLogoSelect($("#in-logo"), $("#in-logo").value || LOGO_DEFAULT);
+  fillBumperSelect($("#in-intro"), "intro", $("#in-intro").value || LOGO_DEFAULT);
+  fillBumperSelect($("#in-outro"), "outro", $("#in-outro").value || LOGO_DEFAULT);
   const job = state.jobs[state.current];
-  if (job) fillLogoSelect($("#fmt-logo"), state.fmtLogoWanted || logoOptionValue(job.options.logo_id));
+  if (job) {
+    fillLogoSelect($("#fmt-logo"), state.fmtLogoWanted || logoOptionValue(job.options.logo_id));
+    fillBumperSelect($("#fmt-intro"), "intro", logoOptionValue(job.options.intro_id));
+    fillBumperSelect($("#fmt-outro"), "outro", logoOptionValue(job.options.outro_id));
+  }
 }
 
 async function loadBranding() {
@@ -1177,30 +1213,53 @@ $("#logo-file").onchange = async (e) => {
   }
 };
 
-$("#outro-file").onchange = async (e) => {
+$("#bumper-list").addEventListener("change", (e) => {
+  const row = e.target.closest(".logo-row");
+  if (!row) return;
+  const role = e.target.dataset.role;
+  if (role) {
+    // Satu bumper bisa jadi default pembuka, penutup, keduanya, atau tidak sama sekali.
+    brandingCall("/api/branding/default-bumper", {
+      method: "POST", body: JSON.stringify({ role, bumper_id: e.target.checked ? row.dataset.id : null }),
+    });
+    return;
+  }
+  const field = e.target.dataset.field;
+  if (!field) return;
+  const value = field === "label" ? e.target.value : field === "keep_audio" ? e.target.checked : Number(e.target.value);
+  brandingCall(`/api/branding/bumpers/${row.dataset.id}`, { method: "PATCH", body: JSON.stringify({ [field]: value }) });
+});
+
+$("#bumper-list").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-bumper=remove]");
+  if (!btn) return;
+  const row = btn.closest(".logo-row");
+  const name = $(".bumper-name", row).value;
+  if (!confirm(`Hapus bumper “${name}”? Proyek yang memakainya akan kembali ke default.`)) return;
+  brandingCall(`/api/branding/bumpers/${row.dataset.id}`, { method: "DELETE" });
+});
+
+$("#btn-add-bumper").onclick = () => $("#bumper-file").click();
+$("#bumper-file").onchange = async (e) => {
   const file = e.target.files[0];
   if (!file) return;
   const fd = new FormData();
   fd.append("file", file);
+  fd.append("label", $("#bumper-label").value.trim());
   $("#brand-msg").textContent = `Mengunggah ${file.name}…`;
   try {
-    const res = await fetch("/api/branding/outro", { method: "POST", body: fd });
+    const res = await fetch("/api/branding/bumpers", { method: "POST", body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Gagal mengunggah");
     renderBranding(data);
-    $("#brand-msg").textContent = `Penutup tersimpan (${file.name}).`;
+    $("#bumper-label").value = "";
+    $("#brand-msg").textContent = `Bumper “${data.added.label}” ditambahkan. Centang Pembuka/Penutup untuk memakainya.`;
   } catch (err) {
     $("#brand-msg").textContent = `✗ ${err.message}`;
   } finally {
     e.target.value = "";
   }
 };
-$("#outro-remove").onclick = () => {
-  if (confirm("Hapus penutup?")) brandingCall("/api/branding/outro", { method: "DELETE" });
-};
-$("#outro-enabled").onchange = (e) => brandingCall("/api/branding/outro", { method: "PATCH", body: JSON.stringify({ enabled: e.target.checked }) });
-$("#outro-audio").onchange = (e) => brandingCall("/api/branding/outro", { method: "PATCH", body: JSON.stringify({ keep_audio: e.target.checked }) });
-$("#outro-duration").onchange = (e) => brandingCall("/api/branding/outro", { method: "PATCH", body: JSON.stringify({ duration: Number(e.target.value) }) });
 
 function renderAccounts(list) {
   const box = $("#buffer-accounts");

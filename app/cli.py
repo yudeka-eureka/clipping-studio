@@ -157,6 +157,8 @@ def build_options(args) -> dict:
         "subtitles": not args.no_subtitles, "remove_silence": not args.no_trim,
         "show_title": not args.no_title, "instructions": args.instructions or "",
         "logo_id": branding.NO_LOGO if args.no_logo else args.logo,
+        "intro_id": branding.NO_LOGO if args.no_intro else args.intro,
+        "outro_id": branding.NO_LOGO if args.no_outro else args.outro,
         "channels": list(args.target or []),
     }
 
@@ -260,10 +262,13 @@ async def cmd_rerender(args) -> None:
     for field, flag in (("subtitles", args.no_subtitles), ("remove_silence", args.no_trim), ("show_title", args.no_title)):
         if flag:
             job["options"][field] = False
-    if args.no_logo:
-        job["options"]["logo_id"] = branding.NO_LOGO
-    elif args.logo:
-        job["options"]["logo_id"] = args.logo
+    for field, chosen, off in (("logo_id", args.logo, args.no_logo),
+                               ("intro_id", args.intro, args.no_intro),
+                               ("outro_id", args.outro, args.no_outro)):
+        if off:
+            job["options"][field] = branding.NO_LOGO
+        elif chosen:
+            job["options"][field] = chosen
     if args.target:
         job["options"]["channels"] = list(args.target)
     clips = [find_clip(job, c, args) for c in args.clips] if args.clips else list(job["clips"])
@@ -534,30 +539,41 @@ async def cmd_logos(args) -> None:
          or "Belum ada logo. Tambahkan dengan: clip logos --add logo.png --label 'Nama'")
 
 
-async def cmd_branding(args) -> None:
-    """Video/gambar penutup (outro). Logo diatur lewat 'clip logos'."""
+async def cmd_bumpers(args) -> None:
+    """Pustaka bumper: video/gambar pembuka & penutup, dipilih per proyek."""
     try:
-        if args.outro:
-            path = Path(args.outro).expanduser().resolve()
+        if args.add:
+            path = Path(args.add).expanduser().resolve()
             if not path.is_file():
                 fail(f"File tidak ditemukan: {path}", args)
-            branding.save_outro(path, path.name)
-        if args.remove_outro:
-            branding.clear_outro()
-        branding.update_outro(duration=args.outro_duration,
-                              keep_audio=False if args.outro_mute else None,
-                              enabled=False if args.outro_off else (True if args.outro_on else None))
+            entry = branding.add_bumper(path, path.name, args.label or "")
+            if args.duration or args.mute:
+                branding.update_bumper(entry["id"], duration=args.duration,
+                                       keep_audio=False if args.mute else None)
+            if args.role:
+                branding.set_default_bumper(args.role, entry["id"])
+            if not args.json:
+                print(f"Bumper “{entry['label']}” ditambahkan (id {entry['id']}).")
+        if args.id:
+            branding.update_bumper(args.id, label=args.label, duration=args.duration,
+                                   keep_audio=False if args.mute else None)
+            if args.role:
+                branding.set_default_bumper(args.role, args.id)
+        if args.remove:
+            branding.remove_bumper(args.remove)
+        if args.clear:
+            branding.set_default_bumper(args.clear, None)
     except ValueError as e:
         fail(str(e), args)
     data = branding.public()
-    ou = data["outro"]
-    logos = f"{len(data['logos'])} logo di pustaka (lihat: clip logos)"
-    text = (f"outro : {ou['file'] or '(belum ada)'}"
-            + (f" · {'aktif' if ou['enabled'] else 'nonaktif'}"
-               + (f" · {ou['duration']} dtk" if not ou["is_video"] else
-                  f" · video{'' if ou['keep_audio'] else ', audio dimatikan'}") if ou["file"] else "")
-            + f"\nlogo  : {logos}")
-    emit(args, data, text)
+    rows = []
+    for b in data["bumpers"]:
+        peran = [r for r in ("intro", "outro") if data[f"default_{r}"] == b["id"]]
+        tanda = "/".join({"intro": "pembuka", "outro": "penutup"}[r] for r in peran) or "-"
+        jenis = "video" + ("" if b["keep_audio"] else ", audio dimatikan") if b["is_video"] else f"gambar {b['duration']} dtk"
+        rows.append(f"{b['id']}  {b['label'][:24]:<24} {jenis:<28} default: {tanda}")
+    emit(args, data, "\n".join(rows)
+         or "Belum ada bumper. Tambahkan dengan: clip bumpers --add pembuka.mp4 --role intro")
 
 
 async def cmd_serve(args) -> None:
@@ -595,6 +611,10 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--link", action="store_true", help="hardlink file sumber (hemat disk) alih-alih menyalin")
         sp.add_argument("--logo", metavar="ID", help="id logo dari 'clip logos' (default: logo default)")
         sp.add_argument("--no-logo", action="store_true", help="proyek ini tanpa logo")
+        sp.add_argument("--intro", metavar="ID", help="id bumper pembuka dari 'clip bumpers'")
+        sp.add_argument("--no-intro", action="store_true", help="tanpa bumper pembuka")
+        sp.add_argument("--outro", metavar="ID", help="id bumper penutup dari 'clip bumpers'")
+        sp.add_argument("--no-outro", action="store_true", help="tanpa bumper penutup")
         sp.add_argument("--target", metavar="AKUN:CHANNEL", action="append",
                         help="channel tujuan posting, dipilih sebelum render (boleh diulang)")
 
@@ -627,6 +647,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-title", action="store_true")
     sp.add_argument("--logo", metavar="ID", help="ganti logo proyek ini")
     sp.add_argument("--no-logo", action="store_true", help="render tanpa logo")
+    sp.add_argument("--intro", metavar="ID", help="ganti bumper pembuka")
+    sp.add_argument("--no-intro", action="store_true", help="render tanpa bumper pembuka")
+    sp.add_argument("--outro", metavar="ID", help="ganti bumper penutup")
+    sp.add_argument("--no-outro", action="store_true", help="render tanpa bumper penutup")
     sp.add_argument("--target", metavar="AKUN:CHANNEL", action="append", help="ganti channel tujuan posting")
     sp.set_defaults(func=cmd_rerender)
 
@@ -715,14 +739,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--remove", metavar="ID", help="hapus logo dari pustaka")
     sp.set_defaults(func=cmd_logos)
 
-    sp = sub.add_parser("branding", help="video/gambar penutup (outro) untuk semua klip")
-    sp.add_argument("--outro", metavar="FILE", help="pasang penutup (video atau gambar)")
-    sp.add_argument("--outro-duration", type=float, help="durasi penutup kalau berupa gambar (detik)")
-    sp.add_argument("--outro-mute", action="store_true", help="buang audio penutup")
-    sp.add_argument("--outro-off", action="store_true")
-    sp.add_argument("--outro-on", action="store_true")
-    sp.add_argument("--remove-outro", action="store_true")
-    sp.set_defaults(func=cmd_branding)
+    sp = sub.add_parser("bumpers", help="pustaka bumper: video/gambar pembuka & penutup klip")
+    sp.add_argument("--add", metavar="FILE", help="tambah bumper (video atau gambar)")
+    sp.add_argument("--label", help="nama bumper")
+    sp.add_argument("--id", metavar="ID", help="ubah bumper ini")
+    sp.add_argument("--role", choices=["intro", "outro"],
+                    help="jadikan default sebagai pembuka/penutup untuk proyek baru")
+    sp.add_argument("--duration", type=float, help="durasi kalau berupa gambar (detik)")
+    sp.add_argument("--mute", action="store_true", help="buang audio bumper")
+    sp.add_argument("--clear", choices=["intro", "outro"], help="kosongkan default pembuka/penutup")
+    sp.add_argument("--remove", metavar="ID", help="hapus bumper dari pustaka")
+    sp.set_defaults(func=cmd_bumpers)
 
     sp = sub.add_parser("serve", help="jalankan antarmuka web")
     sp.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))

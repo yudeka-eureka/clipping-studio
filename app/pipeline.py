@@ -142,15 +142,15 @@ async def _words(job: dict, clip: dict, src: Path, clips_dir: Path, prog: ClipPr
         return None
 
 
-async def _outro_spec() -> dict | None:
-    """Outro siap pakai. Untuk outro berupa video, durasi & ada/tidaknya audio dibaca dari filenya."""
-    outro = branding.active_outro()
-    if outro and outro["is_video"]:
-        info = await media.probe(outro["path"])
-        outro = {**outro, "duration": info["duration"], "has_audio": info["has_audio"]}
-    elif outro:
-        outro = {**outro, "has_audio": False}
-    return outro
+async def _bumper_spec(role: str, bumper_id: str | None) -> dict | None:
+    """Bumper siap pakai. Untuk bumper berupa video, durasi & ada/tidaknya audio dibaca dari filenya."""
+    spec = branding.bumper_for(role, bumper_id)
+    if not spec:
+        return None
+    if spec["is_video"]:
+        info = await media.probe(spec["path"])
+        return {**spec, "duration": info["duration"], "has_audio": info["has_audio"]}
+    return {**spec, "has_audio": False}
 
 
 async def render(job: dict, clip: dict) -> None:
@@ -214,14 +214,15 @@ async def render(job: dict, clip: dict) -> None:
             has_ass = media.write_ass(ass_path, width, height, out_duration, title, captions)
 
             logo = branding.logo_for(opts.get("logo_id"))
-            outro = await _outro_spec()
+            intro = await _bumper_spec("intro", opts.get("intro_id"))
+            outro = await _bumper_spec("outro", opts.get("outro_id"))
             await media.render_clip(
                 src, out, clip["start"], clip["end"], opts["aspect"], opts["layout"],
                 meta["has_audio"], meta["fps"], ass_path if has_ass else None,
                 lambda p: prog.set("render", p), face_crop, segments,
-                (width, height), logo, outro,
+                (width, height), logo, intro, outro,
             )
-            extras = [x for x, on in (("logo", logo), ("outro", outro)) if on]
+            extras = [x for x, on in (("logo", logo), ("bumper pembuka", intro), ("penutup", outro)) if on]
             if extras:
                 await store.log(job, f"🎨 “{clip['title']}”: {' + '.join(extras)} ditempel.")
             clip.update(status="ready", progress=1.0, stage=None, file=f"clips/{out.name}",

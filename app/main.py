@@ -181,6 +181,9 @@ async def create_job(
         "show_title": bool(raw.get("show_title", True)),
         # Logo: None = pakai default, "" = tanpa logo, selain itu id logo dari pustaka.
         "logo_id": raw["logo_id"] if isinstance(raw.get("logo_id"), str) else None,
+        # Bumper: None = pakai default, "" = tanpa bumper, selain itu id dari pustaka.
+        "intro_id": raw["intro_id"] if isinstance(raw.get("intro_id"), str) else None,
+        "outro_id": raw["outro_id"] if isinstance(raw.get("outro_id"), str) else None,
         # Channel tujuan posting, dipilih sebelum render: ["idAkun:idChannel", ...]
         "channels": [c for c in (raw.get("channels") or []) if isinstance(c, str)][:20],
         "instructions": str(raw.get("instructions", ""))[:1000],
@@ -214,6 +217,8 @@ class RerenderIn(BaseModel):
     remove_silence: bool = True
     show_title: bool = True
     logo_id: str | None = None
+    intro_id: str | None = None
+    outro_id: str | None = None
     channels: list[str] | None = None
 
 
@@ -228,7 +233,7 @@ async def rerender_all(job_id: str, body: RerenderIn):
         raise HTTPException(409, "Tunggu sampai semua klip selesai dirender.")
     job["options"].update(aspect=body.aspect, layout=body.layout, subtitles=body.subtitles,
                           remove_silence=body.remove_silence, show_title=body.show_title,
-                          logo_id=body.logo_id)
+                          logo_id=body.logo_id, intro_id=body.intro_id, outro_id=body.outro_id)
     if body.channels is not None:
         job["options"]["channels"] = body.channels[:20]
     await store.publish(job)
@@ -374,27 +379,53 @@ def default_logo(body: DefaultLogoIn):
     return branding.public()
 
 
-@app.post("/api/branding/outro")
-async def upload_outro(file: UploadFile = File(...)):
-    tmp = await _save_upload(file, "outro")
+class BumperIn(BaseModel):
+    label: str | None = None
+    duration: float | None = None
+    keep_audio: bool | None = None
+
+
+class DefaultBumperIn(BaseModel):
+    role: str
+    bumper_id: str | None = None
+
+
+@app.post("/api/branding/bumpers")
+async def add_bumper(file: UploadFile = File(...), label: str = Form("")):
+    tmp = await _save_upload(file, "bumper")
     try:
-        await asyncio.to_thread(branding.save_outro, tmp, file.filename or "")
+        added = await asyncio.to_thread(branding.add_bumper, tmp, file.filename or "", label)
     except ValueError as e:
         raise HTTPException(400, str(e))
     finally:
         tmp.unlink(missing_ok=True)
+    return {"added": added, **branding.public()}
+
+
+@app.patch("/api/branding/bumpers/{bumper_id}")
+def update_bumper(bumper_id: str, body: BumperIn):
+    try:
+        branding.update_bumper(bumper_id, **body.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return branding.public()
 
 
-@app.patch("/api/branding/outro")
-def update_outro(body: OutroIn):
-    branding.update_outro(**body.model_dump(exclude_none=True))
+@app.delete("/api/branding/bumpers/{bumper_id}")
+def delete_bumper(bumper_id: str):
+    try:
+        branding.remove_bumper(bumper_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return branding.public()
 
 
-@app.delete("/api/branding/outro")
-def delete_outro():
-    branding.clear_outro()
+@app.post("/api/branding/default-bumper")
+def default_bumper(body: DefaultBumperIn):
+    try:
+        branding.set_default_bumper(body.role, body.bumper_id or None)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return branding.public()
 
 
