@@ -71,10 +71,18 @@
             <label class="check"><input type="checkbox" id="in-subs" checked /> Subtitle otomatis</label>
             <label class="check"><input type="checkbox" id="in-trim" checked /> Hapus jeda diam</label>
             <label class="check"><input type="checkbox" id="in-title" checked /> Judul di atas video</label>
+            <label>Logo<select id="in-logo"></select></label>
+            <label>Bumper pembuka<select id="in-intro"></select></label>
+            <label>Bumper penutup<select id="in-outro"></select></label>
           </div>
           <label>Instruksi tambahan untuk AI <span class="muted">(opsional)</span>
             <textarea id="in-instr" rows="2" placeholder="Contoh: fokus pada tips praktis tentang keuangan, hindari bagian iklan"></textarea>
           </label>
+
+          <details class="targets">
+            <summary>🎯 Tujuan posting <span class="muted small" id="new-target-count">(opsional, bisa diatur nanti)</span></summary>
+            <div id="new-targets" class="channels"></div>
+          </details>
 
           <p id="estimate" class="estimate small" hidden></p>
           <div id="upload-bar" class="bar" hidden><div></div></div>
@@ -170,40 +178,25 @@
       </div>
       <div class="card">
         <h2>Logo &amp; penutup klip</h2>
-        <p class="muted small">Keduanya dipasang saat render. Klip lama perlu <b>Render ulang</b> untuk ikut berubah.</p>
+        <p class="muted small">Dipasang saat render. Klip lama perlu <b>Render ulang</b> untuk ikut berubah.</p>
+        <label class="flat">Pustaka logo <span class="muted">(tiap proyek bisa memakai logo berbeda)</span></label>
+        <div id="logo-list" class="logo-list"></div>
+        <div class="row wrap">
+          <input id="logo-label" placeholder="Nama logo (mis. Klien A)" class="grow" />
+          <input type="file" id="logo-file" accept="image/png,image/jpeg,image/webp" class="grow" />
+          <button type="button" class="ghost" id="btn-add-logo">+ Tambah logo</button>
+        </div>
 
-      <div class="brand-row">
-        <div class="brand-preview" id="logo-preview"></div>
-        <div class="grow">
-          <div class="row wrap">
-            <label class="check inline"><input type="checkbox" id="logo-enabled" /> Logo aktif</label>
-            <input type="file" id="logo-file" accept="image/png,image/jpeg,image/webp" class="grow" />
-            <button type="button" class="ghost small-btn danger" id="logo-remove">Hapus</button>
-          </div>
-          <div class="grid two">
-            <label>Posisi<select id="logo-position"></select></label>
-            <label>Lebar (% video)<input type="number" id="logo-size" min="3" max="40" step="1" /></label>
-            <label>Transparansi<input type="number" id="logo-opacity" min="0.1" max="1" step="0.05" /></label>
-            <label>Jarak tepi (%)<input type="number" id="logo-margin" min="0" max="25" step="1" /></label>
-          </div>
+        <label class="flat section-gap">Pustaka bumper <span class="muted">(video/gambar pembuka &amp; penutup)</span></label>
+        <div id="bumper-list" class="logo-list"></div>
+        <div class="row wrap">
+          <input id="bumper-label" placeholder="Nama bumper (mis. Opening Eudeka)" class="grow" />
+          <input type="file" id="bumper-file" accept="video/*,image/png,image/jpeg,image/webp" class="grow" />
+          <button type="button" class="ghost" id="btn-add-bumper">+ Tambah bumper</button>
         </div>
+        <p class="muted small" id="brand-msg"></p>
       </div>
-      <div class="brand-row">
-        <div class="brand-preview" id="outro-preview"></div>
-        <div class="grow">
-          <div class="row wrap">
-            <label class="check inline"><input type="checkbox" id="outro-enabled" /> Penutup aktif</label>
-            <input type="file" id="outro-file" accept="video/*,image/png,image/jpeg,image/webp" class="grow" />
-            <button type="button" class="ghost small-btn danger" id="outro-remove">Hapus</button>
-          </div>
-          <div class="grid two">
-            <label id="outro-duration-wrap">Durasi gambar (dtk)<input type="number" id="outro-duration" min="0.5" max="15" step="0.5" /></label>
-            <label class="check inline" id="outro-audio-wrap"><input type="checkbox" id="outro-audio" /> Pakai audio penutup</label>
-          </div>
-        </div>
-      </div>
-      <p class="muted small" id="brand-msg"></p>
-      </div>
+
       <div class="card">
         <h2>Posting ke media sosial (Buffer)</h2>
 
@@ -285,8 +278,15 @@
             <label class="check inline"><input type="checkbox" id="fmt-subs" /> Subtitle</label>
             <label class="check inline"><input type="checkbox" id="fmt-trim" /> Hapus jeda</label>
             <label class="check inline"><input type="checkbox" id="fmt-title" /> Judul</label>
+            <select id="fmt-logo" class="auto" title="Logo untuk proyek ini"></select>
+            <select id="fmt-intro" class="auto" title="Bumper pembuka"></select>
+            <select id="fmt-outro" class="auto" title="Bumper penutup"></select>
             <button class="primary" id="btn-rerender-all">↻ Render ulang semua</button>
           </div>
+          <details class="targets">
+            <summary>🎯 Tujuan posting <span class="muted small" id="fmt-target-count"></span></summary>
+            <div id="fmt-targets" class="channels"></div>
+          </details>
         </div>
 
         <div id="editor" class="card" hidden>

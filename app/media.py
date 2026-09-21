@@ -183,26 +183,28 @@ def _logo_chain(logo: dict, index: int, width: int, src_label: str, out_label: s
             f"[{src_label}][lg]overlay={x}:{y}:format=auto[{out_label}]")
 
 
-def _outro_chains(index: int, size: tuple[int, int], fps: float, video_in: str,
-                  audio_in: str | None, outro_audio_in: str | None) -> list[str]:
-    """Samakan ukuran/fps/audio outro dengan klip, lalu sambung di belakangnya."""
+def _bumper_chains(index: int, tag: str, size: tuple[int, int], fps: float,
+                   audio_src: str | None) -> list[str]:
+    """Samakan ukuran, frame rate, dan audio bumper dengan klip supaya bisa disambung."""
     w, h = size
     chains = [f"[{index}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
-              f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={fps:g},format=yuv420p[vo]"]
-    if audio_in is None:
-        chains.append(f"[{video_in}][vo]concat=n=2:v=1:a=0[v]")
-    else:
-        chains.append(f"{outro_audio_in}aformat=sample_rates=48000:channel_layouts=stereo[ao]")
-        chains.append(f"[{video_in}][{audio_in}][vo][ao]concat=n=2:v=1:a=1[v][a]")
+              f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={fps:g},format=yuv420p[v{tag}]"]
+    if audio_src:
+        chains.append(f"{audio_src}aformat=sample_rates=48000:channel_layouts=stereo[a{tag}]")
     return chains
+
+
+def _concat_chain(tags: list[str], with_audio: bool) -> str:
+    labels = "".join(f"[v{t}][a{t}]" if with_audio else f"[v{t}]" for t in tags)
+    return f"{labels}concat=n={len(tags)}:v=1:a={1 if with_audio else 0}[v]" + ("[a]" if with_audio else "")
 
 
 async def render_clip(src: Path, dst: Path, start: float, end: float, aspect: str, layout: str,
                       has_audio: bool, fps: float, ass_path: Path | None, on_progress: ProgressCb,
                       face_crop: tuple[str, int, int, int, int] | None = None,
                       segments: list[tuple[float, float]] | None = None,
-                      out_size: tuple[int, int] | None = None,
-                      logo: dict | None = None, outro: dict | None = None) -> None:
+                      out_size: tuple[int, int] | None = None, logo: dict | None = None,
+                      intro: dict | None = None, outro: dict | None = None) -> None:
     duration = max(0.1, end - start)
     segments = snap_segments(segments, fps)
     out_duration = sum(e - s for s, e in segments) if segments else duration
@@ -228,23 +230,36 @@ async def render_clip(src: Path, dst: Path, start: float, end: float, aspect: st
         chains.append(f"[0:a:0]{cut},aformat=sample_rates=48000:channel_layouts=stereo[aclip]")
         audio_label = "aclip"
 
-    if outro and out_size:
-        outro_index = next_index
-        if outro["is_video"]:
-            inputs += ["-i", str(outro["path"].resolve())]
-        else:
-            inputs += ["-loop", "1", "-t", f"{outro['duration']:.2f}", "-i", str(outro["path"].resolve())]
-        next_index += 1
-        outro_audio = f"[{outro_index}:a]" if outro.get("has_audio") and outro.get("keep_audio") else None
-        if audio_label and not outro_audio:
-            # Outro tanpa suara tetap perlu jalur audio supaya bisa disambung.
-            inputs += ["-f", "lavfi", "-t", f"{outro['duration']:.2f}",
-                       "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
-            outro_audio = f"[{next_index}:a]"
+    # Bumper: pembuka disambung sebelum klip, penutup sesudahnya.
+    bumpers = [(spec, tag) for spec, tag in ((intro, "in"), (outro, "out")) if spec and out_size]
+    if bumpers:
+        for spec, tag in bumpers:
+            index = next_index
+            if spec["is_video"]:
+                inputs += ["-i", str(spec["path"].resolve())]
+            else:
+                inputs += ["-loop", "1", "-t", f"{spec['duration']:.2f}", "-i", str(spec["path"].resolve())]
             next_index += 1
-        chains += _outro_chains(outro_index, out_size, fps, video_label, audio_label, outro_audio)
+            audio_src = None
+            if audio_label:
+                if spec["is_video"] and spec.get("keep_audio") and spec.get("has_audio"):
+                    audio_src = f"[{index}:a]"
+                else:
+                    # Bumper tanpa suara tetap perlu jalur audio supaya bisa disambung.
+                    inputs += ["-f", "lavfi", "-t", f"{spec['duration']:.2f}",
+                               "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+                    audio_src = f"[{next_index}:a]"
+                    next_index += 1
+            chains += _bumper_chains(index, tag, out_size, fps, audio_src)
+            out_duration += float(spec["duration"])
+        # Beri label seragam untuk badan klip, lalu sambung sesuai urutan tayang.
+        chains.append(f"[{video_label}]null[vbody]")
+        if audio_label:
+            chains.append(f"[{audio_label}]anull[abody]")
+        order = [tag for spec, tag in ((intro, "in"), (None, "body"), (outro, "out"))
+                 if tag == "body" or (spec and out_size)]
+        chains.append(_concat_chain(order, bool(audio_label)))
         video_label, audio_label = "v", "a" if audio_label else None
-        out_duration += float(outro["duration"])
 
     args = [*inputs, "-filter_complex", ";".join(chains), "-map", f"[{video_label}]"]
     if audio_label:

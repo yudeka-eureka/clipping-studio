@@ -41,7 +41,8 @@ ke penyedia yang bersangkutan.
   - **Crop tengah**, atau **video utuh + latar blur**
 - **Hapus jeda diam** otomatis, supaya durasi klip terpakai untuk bicara
 - **Judul di atas video** (kotak putih, teks membungkus otomatis) supaya penonton langsung paham konteksnya. Judul bisa diedit di kartu klip
-- **Logo (watermark)** di sudut video dan **video/gambar penutup (outro)** di akhir tiap klip
+- **Pustaka logo & bumper**: beberapa logo dan beberapa video/gambar pembuka–penutup, dipilih per proyek sebelum render
+- **Tujuan posting dipilih sebelum render**, jadi dialog Posting sudah terisi channel yang benar
 - **Posting ke media sosial lewat Buffer**: Instagram/Facebook (Reel), TikTok, YouTube, LinkedIn, X, Threads, dan lainnya, langsung, masuk antrean, atau dijadwalkan
 - **Pemakaian & biaya AI**: token per proyek (video/audio/teks, output, thinking), estimasi biaya dalam USD & Rupiah, perkiraan biaya sebelum proses, dan dashboard total per bulan/hari/model
 - Ganti format proyek lama lalu **Render ulang semua** klip sekaligus
@@ -144,24 +145,38 @@ Crop wajah dihitung di timeline asli, sedangkan subtitle dan judul dipetakan ke 
 
 ## Logo & penutup klip
 
-Di halaman **⚙ Pengaturan → Logo & penutup klip**:
+**Pustaka logo:** simpan beberapa logo sekaligus (mis. logo sendiri dan logo tiap klien) di halaman
+**⚙ Pengaturan → Logo & penutup klip**. Tiap logo punya sudut, lebar (persen lebar video), transparansi,
+dan jarak tepinya sendiri, dan salah satunya ditandai sebagai **default untuk proyek baru**.
 
-- **Logo (watermark):** unggah PNG/JPG/WEBP, atur sudut (4 pilihan), lebar (persen dari lebar video),
-  transparansi, dan jarak dari tepi. Logo ditempel di atas video, setelah subtitle dan judul.
-- **Penutup (outro):** unggah video atau gambar yang disambung di akhir tiap klip. Ukurannya otomatis
-  disamakan dengan klip (dengan bar hitam kalau rasionya beda), begitu juga frame rate dan audionya.
-  Untuk gambar, durasinya bisa diatur; untuk video, audionya bisa dimatikan.
+**Dipilih sebelum render:** di form proyek baru ada pemilih **Logo** (logo default / logo tertentu /
+tanpa logo). Untuk proyek yang sudah ada, pemilih yang sama tersedia di kartu **Format klip**;
+ganti logonya lalu **Render ulang semua**.
+
+**Pustaka bumper:** simpan beberapa video/gambar pembuka dan penutup. Tiap bumper bisa ditandai
+sebagai **default pembuka**, **default penutup**, atau keduanya. Sama seperti logo, tiap proyek
+memilih sendiri bumper pembuka dan penutupnya (atau tanpa bumper) sebelum render.
+
+Ukuran bumper otomatis disamakan dengan klip (dengan bar hitam kalau rasionya beda), begitu juga
+frame rate dan audionya. Untuk gambar, durasinya bisa diatur; untuk video, audionya bisa dimatikan.
 
 Dari command line:
 
 ```bash
-./clip branding --logo logo.png --position bottom-right --size 12 --opacity 0.85
-./clip branding --outro outro.mp4        # atau gambar: --outro penutup.png --outro-duration 3
-./clip branding --logo-off               # matikan sementara tanpa menghapus filenya
+./clip logos --add logo.png --label "Klien A" --position bottom-left --size 15
+./clip logos --default 3f2a1b9c          # logo default untuk proyek baru
+./clip logos                             # daftar logo (* = default)
+./clip run video.mp4 --logo 3f2a1b9c     # proyek ini pakai logo itu
+./clip run video.mp4 --no-logo           # proyek ini tanpa logo
+./clip bumpers --add opening.mp4 --label "Opening Eudeka" --role intro
+./clip bumpers --add penutup.png --label "Closing" --role outro --duration 3
+./clip run video.mp4 --intro 7c1d --outro 9a2f   # bumper khusus proyek ini
+./clip run video.mp4 --no-intro                  # proyek ini tanpa pembuka
 ```
 
-File disimpan di `data/branding/`. Keduanya dipasang saat render, jadi klip lama perlu **Render ulang**.
-Logo tidak ditempel di bagian outro, karena outro biasanya sudah punya branding sendiri.
+File disimpan di `data/branding/` (logo di `logos/`, bumper di `bumpers/`). Semuanya dipasang saat render, jadi klip lama
+perlu **Render ulang**. Logo tidak ditempel di bagian outro, karena outro biasanya sudah punya
+branding sendiri.
 
 ## Memilih penyedia AI
 
@@ -210,7 +225,10 @@ berjalan lokal sehingga tidak dihitung.
 2. Buffer API **tidak menerima upload file**, jadi klip harus punya URL HTTPS publik. Isi salah satu hosting di Pengaturan:
    - **Cloudinary**: cloud name, API key, API secret (Dashboard → API Keys).
    - **Cloudflare R2**: account ID, bucket, access key, secret, dan URL publik bucket (r2.dev atau domain sendiri).
-3. Klik **📤 Posting** di kartu klip, pilih channel, edit caption, lalu pilih waktu: antrean Buffer, posting berikutnya, sekarang, atau jadwal tertentu.
+3. **Tujuan posting bisa dipilih sebelum render**: di form proyek baru (dan di kartu **Format klip**)
+   ada bagian **🎯 Tujuan posting** untuk memilih akun dan channelnya. Pilihan itu jadi centang awal
+   saat Anda menekan Posting, jadi tidak perlu memilih ulang tiap klip.
+4. Klik **📤 Posting** di kartu klip, periksa channel, edit caption, lalu pilih waktu: antrean Buffer, posting berikutnya, sekarang, atau jadwal tertentu.
 
 Channel dirujuk sebagai `idAkun:idChannel`, jadi akun berbeda yang punya id channel sama tidak tertukar.
 Kalau satu akun bermasalah (key dicabut, kuota habis), akun lain tetap tampil dan hanya muncul peringatan.

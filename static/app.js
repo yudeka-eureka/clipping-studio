@@ -399,6 +399,10 @@ $("#form-new").onsubmit = (e) => {
     aspect: $("#in-aspect").value, layout: $("#in-layout").value,
     subtitles: $("#in-subs").checked, remove_silence: $("#in-trim").checked,
     show_title: $("#in-title").checked, instructions: $("#in-instr").value,
+    logo_id: logoOptionToOption($("#in-logo").value),
+    intro_id: logoOptionToOption($("#in-intro").value),
+    outro_id: logoOptionToOption($("#in-outro").value),
+    channels: state.newTargets || [],
   }));
 
   // XHR supaya progres upload file besar terlihat realtime.
@@ -481,6 +485,9 @@ function renderJob() {
     o.subtitles ? "subtitle" : null,
     o.remove_silence ? "tanpa jeda" : null,
     o.show_title ? "judul" : null,
+    o.logo_id === "" ? "tanpa logo" : null,
+    o.intro_id === "" ? "tanpa pembuka" : null,
+    (o.channels || []).length ? `${o.channels.length} tujuan posting` : null,
   ].filter(Boolean).join("  ·  ");
   renderStatus(job);
   renderLog(job);
@@ -498,6 +505,16 @@ function renderJob() {
     $("#fmt-aspect").value = o.aspect;
     $("#fmt-layout").value = o.layout;
     $("#fmt-subs").checked = o.subtitles;
+    fillLogoSelect($("#fmt-logo"), logoOptionValue(o.logo_id));
+    fillBumperSelect($("#fmt-intro"), "intro", logoOptionValue(o.intro_id));
+    fillBumperSelect($("#fmt-outro"), "outro", logoOptionValue(o.outro_id));
+    state.fmtLogoWanted = logoOptionValue(o.logo_id);
+    state.jobTargets = [...(o.channels || [])];
+    $("#fmt-target-count").textContent = targetSummary(state.jobTargets);
+    const box = $("#fmt-targets");
+    delete box.dataset.loaded;
+    box.innerHTML = "";
+    $("#fmt-targets").parentElement.open = false;
     $("#fmt-trim").checked = !!o.remove_silence;
     $("#fmt-title").checked = !!o.show_title;
   }
@@ -640,6 +657,78 @@ function renderPublishState(job, clip, card) {
   box.innerHTML = `<div>${head}</div>${rows.join("")}`;
 }
 
+// ---------- Pemilih channel tujuan (dipakai form proyek baru, kartu format, dan dialog posting) ----------
+function channelRow(c, checked) {
+  const off = c.isDisconnected || c.isLocked || !c.supportsVideo;
+  const why = c.isDisconnected ? "terputus" : c.isLocked ? "terkunci" : !c.supportsVideo ? "tidak mendukung video" : "";
+  return `<label class="channel ${off ? "off" : ""}">
+    <input type="checkbox" value="${esc(c.key)}" ${off ? "disabled" : ""} ${!off && checked ? "checked" : ""} />
+    ${c.avatar ? `<img src="${esc(c.avatar)}" alt="" referrerpolicy="no-referrer" />` : ""}
+    <span>${esc(c.displayName || c.name)}</span>
+    <span class="svc">${SERVICE_LABEL[c.service] || esc(c.service)}${why ? ` · ${why}` : ""}</span>
+  </label>`;
+}
+
+function renderChannels(box, channels, accounts, errors, selected) {
+  if (!channels.length) {
+    box.innerHTML = `<p class="muted small">Belum ada channel di Buffer. Hubungkan akun sosial media di publish.buffer.com.</p>`;
+    return;
+  }
+  const multi = (accounts || []).length > 1;
+  const groups = multi
+    ? accounts.map((a) => {
+        const own = channels.filter((c) => c.account_id === a.id);
+        return own.length ? `<div class="channel-group">${esc(a.label)}</div>`
+          + own.map((c) => channelRow(c, selected.includes(c.key))).join("") : "";
+      }).join("")
+    : channels.map((c) => channelRow(c, selected.includes(c.key))).join("");
+  box.innerHTML = (errors || []).map((e) => `<p class="err">⚠️ ${esc(e)}</p>`).join("") + groups;
+}
+
+async function loadChannelsInto(box, selected, refresh = false) {
+  box.innerHTML = `<p class="muted small">Memuat channel…</p>`;
+  try {
+    const data = await api(`/api/buffer/channels${refresh ? "?refresh=true" : ""}`);
+    state.channels = data;
+    renderChannels(box, data.channels, data.accounts, data.errors, selected || []);
+    return data;
+  } catch (err) {
+    box.innerHTML = `<p class="err">${esc(err.message)}</p>`;
+    return null;
+  }
+}
+
+function checkedChannels(box) {
+  return [...box.querySelectorAll("input:checked")].map((i) => i.value);
+}
+
+function targetSummary(keys) {
+  if (!keys.length) return "(belum dipilih)";
+  const names = keys.map((k) => state.channels?.channels?.find((c) => c.key === k))
+    .map((c, i) => (c ? c.displayName || c.name : keys[i]));
+  return `· ${names.length} channel: ${names.join(", ")}`;
+}
+
+// Channel hanya diambil saat bagiannya dibuka, supaya kuota Buffer tidak terpakai sia-sia.
+function wireTargets(details, box, countEl, getSelected, onChange) {
+  details.addEventListener("toggle", async () => {
+    if (!details.open || box.dataset.loaded) return;
+    box.dataset.loaded = "1";
+    await loadChannelsInto(box, getSelected());
+    countEl.textContent = targetSummary(getSelected());
+  });
+  box.addEventListener("change", () => {
+    const keys = checkedChannels(box);
+    countEl.textContent = targetSummary(keys);
+    onChange?.(keys);
+  });
+}
+
+wireTargets($("#new-targets").parentElement, $("#new-targets"), $("#new-target-count"), () => state.newTargets || [],
+            (keys) => (state.newTargets = keys));
+wireTargets($("#fmt-targets").parentElement, $("#fmt-targets"), $("#fmt-target-count"), () => state.jobTargets || [],
+            (keys) => (state.jobTargets = keys));
+
 // ---------- Posting via Buffer ----------
 const pub = { job: null, clip: null, channels: [] };
 
@@ -650,39 +739,16 @@ function clipCaption(clip) {
 
 async function loadChannels(refresh = false) {
   const box = $("#pub-channels");
-  box.innerHTML = `<p class="muted small">Memuat channel…</p>`;
-  try {
-    const { channels, accounts, errors } = await api(`/api/buffer/channels${refresh ? "?refresh=true" : ""}`);
-    pub.channels = channels;
-    pub.multiAccount = (accounts || []).length > 1;
-    if (!channels.length) {
-      box.innerHTML = `<p class="muted small">Belum ada channel di Buffer. Hubungkan akun sosial media di publish.buffer.com.</p>`;
-      return;
-    }
-    let remembered = [];
-    try { remembered = JSON.parse(localStorage.getItem("pubChannels") || "[]"); } catch {}
-    const row = (c) => {
-      const off = c.isDisconnected || c.isLocked || !c.supportsVideo;
-      const why = c.isDisconnected ? "terputus" : c.isLocked ? "terkunci" : !c.supportsVideo ? "tidak mendukung video" : "";
-      return `<label class="channel ${off ? "off" : ""}">
-        <input type="checkbox" value="${esc(c.key)}" ${off ? "disabled" : ""} ${!off && remembered.includes(c.key) ? "checked" : ""} />
-        ${c.avatar ? `<img src="${esc(c.avatar)}" alt="" referrerpolicy="no-referrer" />` : ""}
-        <span>${esc(c.displayName || c.name)}</span>
-        <span class="svc">${SERVICE_LABEL[c.service] || esc(c.service)}${why ? ` · ${why}` : ""}</span>
-      </label>`;
-    };
-    // Kalau ada lebih dari satu akun Buffer, channel dikelompokkan per akun.
-    const multi = (accounts || []).length > 1;
-    const groups = multi
-      ? accounts.map((a) => {
-          const own = channels.filter((c) => c.account_id === a.id);
-          return own.length ? `<div class="channel-group">${esc(a.label)}</div>` + own.map(row).join("") : "";
-        }).join("")
-      : channels.map(row).join("");
-    box.innerHTML = (errors || []).map((e) => `<p class="err">⚠️ ${esc(e)}</p>`).join("") + groups;
-  } catch (err) {
-    box.innerHTML = `<p class="err">${esc(err.message)}</p>`;
+  let remembered = [];
+  try { remembered = JSON.parse(localStorage.getItem("pubChannels") || "[]"); } catch {}
+  // Tujuan yang dipilih sebelum render dipakai lebih dulu; kalau kosong, pakai pilihan terakhir.
+  const selected = pub.job?.options?.channels?.length ? pub.job.options.channels : remembered;
+  const data = await loadChannelsInto(box, selected, refresh);
+  if (data) {
+    pub.channels = data.channels;
+    pub.multiAccount = (data.accounts || []).length > 1;
   }
+  updateCount();
 }
 
 function updateCount() {
@@ -869,6 +935,10 @@ $("#btn-rerender-all").onclick = async () => {
       body: JSON.stringify({
         aspect: $("#fmt-aspect").value, layout: $("#fmt-layout").value, subtitles: $("#fmt-subs").checked,
         remove_silence: $("#fmt-trim").checked, show_title: $("#fmt-title").checked,
+        logo_id: logoOptionToOption($("#fmt-logo").value),
+        intro_id: logoOptionToOption($("#fmt-intro").value),
+        outro_id: logoOptionToOption($("#fmt-outro").value),
+        channels: state.jobTargets || [],
       }),
     });
     toast("Semua klip sedang dirender ulang…");
@@ -985,31 +1055,100 @@ function fillSettings() {
   $("#set-info").textContent = `ffmpeg: ${cfg.ffmpeg.split("/").pop()} · subtitle: ${cfg.subtitles_supported ? "didukung" : "tidak didukung"} · deteksi wajah: ${cfg.face_tracking ? "aktif" : "tidak tersedia"}`;
 }
 
-// ---------- Logo & penutup ----------
+// ---------- Logo (pustaka) & penutup ----------
+const LOGO_DEFAULT = "__default__";   // pakai logo default
+const LOGO_NONE = "__none__";         // proyek ini tanpa logo
+
+function logoOptionValue(logoId) {
+  // Opsi proyek: null = default, "" = tanpa logo, selain itu id logo.
+  return logoId === "" ? LOGO_NONE : logoId || LOGO_DEFAULT;
+}
+
+function logoOptionToOption(value) {
+  if (value === LOGO_NONE) return "";
+  return value === LOGO_DEFAULT ? null : value;
+}
+
+function fillLogoSelect(sel, value) {
+  const logos = state.branding?.logos || [];
+  const def = logos.find((l) => l.id === state.branding?.default_logo);
+  sel.innerHTML = "";
+  sel.add(new Option(def ? `Logo default (${def.label})` : "Tanpa logo (belum ada default)", LOGO_DEFAULT));
+  for (const lg of logos) sel.add(new Option(lg.label, lg.id));
+  sel.add(new Option("Tanpa logo", LOGO_NONE));
+  sel.value = [...sel.options].some((o) => o.value === value) ? value : LOGO_DEFAULT;
+}
+
+function renderLogoLibrary() {
+  const { logos = [], default_logo, positions = {} } = state.branding || {};
+  const box = $("#logo-list");
+  box.innerHTML = logos.length
+    ? logos.map((lg) => `<div class="logo-row" data-id="${esc(lg.id)}">
+        <div class="brand-preview small"><img src="${lg.url}?v=${lg.size_bytes}" alt="" /></div>
+        <div class="grow">
+          <div class="row wrap">
+            <input class="grow logo-name" value="${esc(lg.label)}" data-field="label" />
+            <label class="check inline"><input type="radio" name="logo-default" value="${esc(lg.id)}" ${lg.id === default_logo ? "checked" : ""} /> Default</label>
+            <button type="button" class="ghost small-btn danger" data-logo="remove">Hapus</button>
+          </div>
+          <div class="row wrap small">
+            <select data-field="position">${Object.entries(positions).map(([v, t]) => `<option value="${v}" ${v === lg.position ? "selected" : ""}>${t}</option>`).join("")}</select>
+            <label class="inline-num">Lebar % <input type="number" data-field="size" min="3" max="40" step="1" value="${lg.size}" /></label>
+            <label class="inline-num">Transparansi <input type="number" data-field="opacity" min="0.1" max="1" step="0.05" value="${lg.opacity}" /></label>
+            <label class="inline-num">Tepi % <input type="number" data-field="margin" min="0" max="25" step="1" value="${lg.margin}" /></label>
+          </div>
+        </div>
+      </div>`).join("")
+    : `<p class="muted small">Belum ada logo. Tambahkan di bawah, lalu pilih logo mana yang dipakai tiap proyek.</p>`;
+}
+
+function fillBumperSelect(sel, role, value) {
+  const list = state.branding?.bumpers || [];
+  const def = list.find((b) => b.id === state.branding?.[`default_${role}`]);
+  const label = role === "intro" ? "pembuka" : "penutup";
+  sel.innerHTML = "";
+  sel.add(new Option(def ? `Default: ${def.label}` : `Tanpa ${label}`, LOGO_DEFAULT));
+  for (const b of list) sel.add(new Option(b.label, b.id));
+  sel.add(new Option(`Tanpa ${label}`, LOGO_NONE));
+  sel.value = [...sel.options].some((o) => o.value === value) ? value : LOGO_DEFAULT;
+}
+
+function renderBumperLibrary() {
+  const { bumpers = [], default_intro, default_outro } = state.branding || {};
+  $("#bumper-list").innerHTML = bumpers.length
+    ? bumpers.map((b) => `<div class="logo-row" data-id="${esc(b.id)}">
+        <div class="brand-preview small">${b.is_video
+          ? `<video src="${b.url}?v=${b.size_bytes}#t=0.1" muted playsinline preload="metadata"></video>`
+          : `<img src="${b.url}?v=${b.size_bytes}" alt="" />`}</div>
+        <div class="grow">
+          <div class="row wrap">
+            <input class="grow bumper-name" value="${esc(b.label)}" data-field="label" />
+            <button type="button" class="ghost small-btn danger" data-bumper="remove">Hapus</button>
+          </div>
+          <div class="row wrap small">
+            <label class="check inline"><input type="checkbox" data-role="intro" ${b.id === default_intro ? "checked" : ""} /> Pembuka</label>
+            <label class="check inline"><input type="checkbox" data-role="outro" ${b.id === default_outro ? "checked" : ""} /> Penutup</label>
+            ${b.is_video
+              ? `<label class="check inline"><input type="checkbox" data-field="keep_audio" ${b.keep_audio ? "checked" : ""} /> Pakai audionya</label>`
+              : `<label class="inline-num">Durasi (dtk) <input type="number" data-field="duration" min="0.5" max="15" step="0.5" value="${b.duration}" /></label>`}
+          </div>
+        </div>
+      </div>`).join("")
+    : `<p class="muted small">Belum ada bumper. Tambahkan video/gambar pembuka atau penutup di bawah.</p>`;
+}
+
 function renderBranding(data) {
   state.branding = data;
-  const { logo, outro, positions } = data;
-  $("#logo-preview").innerHTML = logo.url
-    ? `<img src="${logo.url}?v=${logo.size_bytes}" alt="logo" />` : "belum ada logo";
-  $("#outro-preview").innerHTML = outro.url
-    ? (outro.is_video
-        ? `<video src="${outro.url}?v=${outro.size_bytes}" muted playsinline></video>`
-        : `<img src="${outro.url}?v=${outro.size_bytes}" alt="penutup" />`)
-    : "belum ada penutup";
-  const psel = $("#logo-position");
-  if (!psel.options.length) for (const [v, label] of Object.entries(positions)) psel.add(new Option(label, v));
-  psel.value = logo.position;
-  $("#logo-enabled").checked = logo.enabled;
-  $("#logo-size").value = logo.size;
-  $("#logo-opacity").value = logo.opacity;
-  $("#logo-margin").value = logo.margin;
-  $("#outro-enabled").checked = outro.enabled;
-  $("#outro-duration").value = outro.duration;
-  $("#outro-audio").checked = outro.keep_audio;
-  $("#outro-duration-wrap").hidden = outro.is_video;
-  $("#outro-audio-wrap").hidden = !outro.is_video;
-  for (const id of ["#logo-remove", "#outro-remove"]) {
-    $(id).disabled = !(id.startsWith("#logo") ? logo.exists : outro.exists);
+  renderLogoLibrary();
+  renderBumperLibrary();
+  fillLogoSelect($("#in-logo"), $("#in-logo").value || LOGO_DEFAULT);
+  fillBumperSelect($("#in-intro"), "intro", $("#in-intro").value || LOGO_DEFAULT);
+  fillBumperSelect($("#in-outro"), "outro", $("#in-outro").value || LOGO_DEFAULT);
+  const job = state.jobs[state.current];
+  if (job) {
+    fillLogoSelect($("#fmt-logo"), state.fmtLogoWanted || logoOptionValue(job.options.logo_id));
+    fillBumperSelect($("#fmt-intro"), "intro", logoOptionValue(job.options.intro_id));
+    fillBumperSelect($("#fmt-outro"), "outro", logoOptionValue(job.options.outro_id));
   }
 }
 
@@ -1021,50 +1160,106 @@ async function loadBranding() {
   }
 }
 
-async function patchBranding(kind, fields) {
+async function brandingCall(path, opts) {
   try {
-    renderBranding(await api(`/api/branding/${kind}`, { method: "PATCH", body: JSON.stringify(fields) }));
+    renderBranding(await api(path, opts));
     $("#brand-msg").textContent = "Tersimpan. Klip lama perlu Render ulang untuk ikut berubah.";
   } catch (err) {
     $("#brand-msg").textContent = `✗ ${err.message}`;
   }
 }
 
-async function uploadBranding(kind, input) {
-  const file = input.files[0];
+$("#logo-list").addEventListener("change", (e) => {
+  const row = e.target.closest(".logo-row");
+  if (!row) return;
+  if (e.target.name === "logo-default") {
+    brandingCall("/api/branding/default-logo", { method: "POST", body: JSON.stringify({ logo_id: row.dataset.id }) });
+    return;
+  }
+  const field = e.target.dataset.field;
+  if (!field) return;
+  const value = field === "label" || field === "position" ? e.target.value : Number(e.target.value);
+  brandingCall(`/api/branding/logos/${row.dataset.id}`, { method: "PATCH", body: JSON.stringify({ [field]: value }) });
+});
+
+$("#logo-list").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-logo=remove]");
+  if (!btn) return;
+  const row = btn.closest(".logo-row");
+  const name = $(".logo-name", row).value;
+  if (!confirm(`Hapus logo “${name}”? Proyek yang memakainya akan kembali ke logo default.`)) return;
+  brandingCall(`/api/branding/logos/${row.dataset.id}`, { method: "DELETE" });
+});
+
+$("#btn-add-logo").onclick = () => $("#logo-file").click();
+$("#logo-file").onchange = async (e) => {
+  const file = e.target.files[0];
   if (!file) return;
-  $("#brand-msg").textContent = `Mengunggah ${file.name}…`;
   const fd = new FormData();
   fd.append("file", file);
+  fd.append("label", $("#logo-label").value.trim());
+  $("#brand-msg").textContent = `Mengunggah ${file.name}…`;
   try {
-    const res = await fetch(`/api/branding/${kind}`, { method: "POST", body: fd });
+    const res = await fetch("/api/branding/logos", { method: "POST", body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Gagal mengunggah");
     renderBranding(data);
-    $("#brand-msg").textContent = `${kind === "logo" ? "Logo" : "Penutup"} tersimpan (${file.name}).`;
+    $("#logo-label").value = "";
+    $("#brand-msg").textContent = `Logo “${data.added.label}” ditambahkan.`;
   } catch (err) {
     $("#brand-msg").textContent = `✗ ${err.message}`;
   } finally {
-    input.value = "";
+    e.target.value = "";
   }
-}
+};
 
-$("#logo-file").onchange = (e) => uploadBranding("logo", e.target);
-$("#outro-file").onchange = (e) => uploadBranding("outro", e.target);
-$("#logo-remove").onclick = async () => {
-  if (confirm("Hapus logo?")) renderBranding(await api("/api/branding/logo", { method: "DELETE" }));
+$("#bumper-list").addEventListener("change", (e) => {
+  const row = e.target.closest(".logo-row");
+  if (!row) return;
+  const role = e.target.dataset.role;
+  if (role) {
+    // Satu bumper bisa jadi default pembuka, penutup, keduanya, atau tidak sama sekali.
+    brandingCall("/api/branding/default-bumper", {
+      method: "POST", body: JSON.stringify({ role, bumper_id: e.target.checked ? row.dataset.id : null }),
+    });
+    return;
+  }
+  const field = e.target.dataset.field;
+  if (!field) return;
+  const value = field === "label" ? e.target.value : field === "keep_audio" ? e.target.checked : Number(e.target.value);
+  brandingCall(`/api/branding/bumpers/${row.dataset.id}`, { method: "PATCH", body: JSON.stringify({ [field]: value }) });
+});
+
+$("#bumper-list").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-bumper=remove]");
+  if (!btn) return;
+  const row = btn.closest(".logo-row");
+  const name = $(".bumper-name", row).value;
+  if (!confirm(`Hapus bumper “${name}”? Proyek yang memakainya akan kembali ke default.`)) return;
+  brandingCall(`/api/branding/bumpers/${row.dataset.id}`, { method: "DELETE" });
+});
+
+$("#btn-add-bumper").onclick = () => $("#bumper-file").click();
+$("#bumper-file").onchange = async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("label", $("#bumper-label").value.trim());
+  $("#brand-msg").textContent = `Mengunggah ${file.name}…`;
+  try {
+    const res = await fetch("/api/branding/bumpers", { method: "POST", body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Gagal mengunggah");
+    renderBranding(data);
+    $("#bumper-label").value = "";
+    $("#brand-msg").textContent = `Bumper “${data.added.label}” ditambahkan. Centang Pembuka/Penutup untuk memakainya.`;
+  } catch (err) {
+    $("#brand-msg").textContent = `✗ ${err.message}`;
+  } finally {
+    e.target.value = "";
+  }
 };
-$("#outro-remove").onclick = async () => {
-  if (confirm("Hapus penutup?")) renderBranding(await api("/api/branding/outro", { method: "DELETE" }));
-};
-$("#logo-enabled").onchange = (e) => patchBranding("logo", { enabled: e.target.checked });
-$("#logo-position").onchange = (e) => patchBranding("logo", { position: e.target.value });
-$("#outro-enabled").onchange = (e) => patchBranding("outro", { enabled: e.target.checked });
-$("#outro-audio").onchange = (e) => patchBranding("outro", { keep_audio: e.target.checked });
-for (const [id, kind, field] of [["#logo-size", "logo", "size"], ["#logo-opacity", "logo", "opacity"],
-                                 ["#logo-margin", "logo", "margin"], ["#outro-duration", "outro", "duration"]]) {
-  $(id).onchange = (e) => patchBranding(kind, { [field]: Number(e.target.value) });
-}
 
 function renderAccounts(list) {
   const box = $("#buffer-accounts");
@@ -1252,4 +1447,5 @@ $("#btn-test-host").onclick = async () => {
 };
 
 loadConfig().then(loadUsage).catch((err) => toast(err.message, true));
+loadBranding();   // pustaka logo dibutuhkan pemilih logo di form proyek & kartu format
 connect();
