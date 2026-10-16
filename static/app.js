@@ -519,6 +519,10 @@ function renderJob() {
     $("#fmt-title").checked = !!o.show_title;
   }
   $("#btn-rerender-all").disabled = job.clips.some((c) => c.status === "queued" || c.status === "rendering");
+  const readyCount = job.clips.filter((c) => c.status === "ready").length;
+  const downloadAll = $("#btn-dl-all");
+  downloadAll.hidden = readyCount === 0;
+  downloadAll.href = `/api/jobs/${job.id}/download-all`;
 
   const editor = $("#editor");
   editor.hidden = !job.source;
