@@ -1,0 +1,2 @@
+# Dependensi pengujian lokal
+pytest>=8.0
