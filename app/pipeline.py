@@ -406,9 +406,10 @@ async def run(job: dict, upload_path: Path | None, url: str | None) -> None:
             src, meta = await prepare_source(job, upload_path, url)
 
             # Sumber sudah siap: klip manual bisa dibuat walau langkah AI gagal.
-            provider = analysis.provider()
-            key = analysis.api_key()
-            model = analysis.model_name()
+            context = job.get("_ai_context") or {}
+            provider = context.get("provider") or analysis.provider()
+            key = context.get("key") or analysis.api_key(provider)
+            model = context.get("model") or analysis.model_name(provider)
             label = analysis.PROVIDERS[provider]["label"]
 
             def on_state(msg: str) -> None:
@@ -448,7 +449,9 @@ async def run(job: dict, upload_path: Path | None, url: str | None) -> None:
                 analyze_args = (uploaded, opts, meta["duration"], None, None, on_state)
 
             try:
-                result, usage = await asyncio.to_thread(analysis.analyze, *analyze_args)
+                result, usage = await asyncio.to_thread(
+                    analysis.analyze, *analyze_args, provider_name=provider,
+                    api_key_value=key, model=model)
             except analysis.AnalysisError as e:
                 await record_usage(job, e.usage)
                 raise
@@ -480,3 +483,4 @@ async def run(job: dict, upload_path: Path | None, url: str | None) -> None:
         finally:
             if uploaded is not None:
                 await asyncio.to_thread(gemini.delete_file, key, uploaded)
+            job.pop("_ai_context", None)
