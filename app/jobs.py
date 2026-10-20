@@ -75,6 +75,33 @@ class Store:
     def dir(self, job_id: str) -> Path:
         return DATA_DIR / job_id
 
+    @staticmethod
+    def public_job(job: dict) -> dict:
+        """Remove transient secrets and internal ownership metadata before sending to clients."""
+        context = job.get("_ai_context") or {}
+        secret = context.get("key")
+
+        def scrub(value):
+            if isinstance(value, str) and secret:
+                return value.replace(secret, "[REDACTED]")
+            if isinstance(value, dict):
+                return {
+                    key: scrub(item)
+                    for key, item in value.items()
+                    if key not in ("_ai_context", "owner_session_id")
+                }
+            if isinstance(value, list):
+                return [scrub(item) for item in value]
+            return value
+
+        return scrub(job)
+
+    @staticmethod
+    def redact(job: dict, line: str) -> str:
+        context = job.get("_ai_context") or {}
+        key = context.get("key")
+        return line.replace(key, "[REDACTED]") if key else line
+
     def create(self, name: str, source_type: str, options: dict, owner_session_id: str = "") -> dict:
         job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         (self.dir(job_id) / "clips").mkdir(parents=True)
@@ -92,19 +119,26 @@ class Store:
         path = self.dir(job["id"]) / "job.json"
         if not path.parent.exists():
             return  # job sudah dihapus
+        saved = dict(job)
+        if "_ai_context" in saved:
+            ctx = dict(saved["_ai_context"])
+            if "key" in ctx:
+                ctx["key"] = "[REDACTED]"
+            saved["_ai_context"] = ctx
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(job, ensure_ascii=False, indent=2))
+        tmp.write_text(json.dumps(saved, ensure_ascii=False, indent=2))
         tmp.replace(path)
 
     async def publish(self, job: dict) -> None:
         self.save(job)
-        await hub.send({"type": "job", "job": job}, job.get("owner_session_id") or None)
+        await hub.send({"type": "job", "job": self.public_job(job)}, job.get("owner_session_id") or None)
 
     async def update(self, job: dict, **fields) -> None:
         job.update(fields)
         await self.publish(job)
 
     async def log(self, job: dict, line: str) -> None:
+        line = self.redact(job, line)
         entry = {"t": time.time(), "line": line}
         job["logs"] = (job["logs"] + [entry])[-200:]
         self.save(job)

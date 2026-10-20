@@ -3,6 +3,55 @@
 const $ = (s, el = document) => el.querySelector(s);
 const state = { jobs: {}, current: null, src: "file", file: null, config: null,
   searchQuery: "", activeFilter: "all" };
+const AI_STORAGE_KEY = "clipping-studio-ai";
+
+function storedAi() {
+  try {
+    const value = JSON.parse(localStorage.getItem(AI_STORAGE_KEY) || "{}");
+    return { provider: value.provider || "", providers: value.providers || {} };
+  } catch {
+    return { provider: "", providers: {} };
+  }
+}
+
+function saveStoredAi(provider, key, model) {
+  const value = storedAi();
+  value.provider = provider;
+  value.providers[provider] = { key: key || "", model: model || "" };
+  localStorage.setItem(AI_STORAGE_KEY, JSON.stringify(value));
+}
+
+function aiHeaders(providerOverride) {
+  if (!state.config?.public_mode) return {};
+  const saved = storedAi();
+  const provider = providerOverride || saved.provider || state.config.provider;
+  const profile = saved.providers[provider] || {};
+  const configModel = state.config.providers?.[provider]?.model || "";
+  return {
+    "X-AI-Provider": provider,
+    "X-AI-Key": profile.key || "",
+    "X-AI-Model": profile.model || configModel,
+  };
+}
+
+function applyStoredAi(cfg) {
+  if (!cfg.public_mode) return cfg;
+  const saved = storedAi();
+  const provider = saved.provider || cfg.provider;
+  for (const [name, p] of Object.entries(cfg.providers)) {
+    const profile = saved.providers[name] || {};
+    if (profile.key) {
+      p.has_key = true;
+      p.key_hint = "…" + profile.key.slice(-4);
+    }
+    if (profile.model) p.model = profile.model;
+  }
+  cfg.provider = provider;
+  cfg.model = cfg.providers[provider]?.model || cfg.model;
+  cfg.has_key = Boolean(saved.providers[provider]?.key);
+  cfg.key_hint = cfg.has_key ? "…" + saved.providers[provider].key.slice(-4) : "";
+  return cfg;
+}
 
 const STATUS_LABEL = {
   queued: "Antre", downloading: "Mengunduh", preparing: "Menyiapkan", analyzing: "Analisis AI",
@@ -334,7 +383,7 @@ function updateEstimate() {
     if (!duration) return (box.hidden = true);
     const q = new URLSearchParams({ duration, num_clips: $("#in-num").value, max_len: $("#in-max").value, subtitles: $("#in-subs").checked });
     try {
-      const e = await api(`/api/estimate?${q}`);
+      const e = await api(`/api/estimate?${q}`, { headers: aiHeaders() });
       const money = e.tier === "free" ? "gratis (tier Free)" : e.usd == null ? "harga model belum diatur" : `≈ ${fmtMoney(e.usd)}`;
       box.innerHTML = `🤖 Perkiraan pemakaian AI (${esc(e.provider_label || "")} · ${esc(e.model)}): ~${fmtTokens(e.prompt_tokens)} token input + ~${fmtTokens(e.output_tokens)} output → <b>${money}</b>` +
         (e.low_res ? ` <span class="muted">· video &gt; 20 menit dianalisis resolusi rendah</span>` : "");
@@ -502,6 +551,7 @@ $("#form-new").onsubmit = (e) => {
   };
   xhr.open("POST", "/api/jobs");
   if (_sessionId) xhr.setRequestHeader("X-Session-ID", _sessionId);
+  Object.entries(aiHeaders()).forEach(([name, value]) => xhr.setRequestHeader(name, value));
   xhr.send(fd);
 };
 
@@ -1037,7 +1087,7 @@ $("#btn-delete-job").onclick = async () => {
 
 // ---------- Pengaturan ----------
 async function loadConfig() {
-  state.config = await api("/api/config");
+  state.config = applyStoredAi(await api("/api/config"));
   fillSettings();
   if (!state.config.has_key) showSettings();
 }
@@ -1080,7 +1130,9 @@ function fillProviderFields() {
   const p = cfg.providers[name];
   $("#provider-note").textContent = PROVIDER_NOTE[name] || "";
   $("#set-key-label").textContent = `API key ${p.label}`;
-  $("#key-help").innerHTML = (KEY_HELP[name] || "") + " Disimpan di file <code>.env</code> di komputer ini.";
+  $("#key-help").innerHTML = (KEY_HELP[name] || "") + (cfg.public_mode
+    ? " Disimpan hanya di localStorage browser ini dan dikirim per permintaan."
+    : " Disimpan di file <code>.env</code> di komputer ini.");
   $("#set-key-hint").textContent = p.has_key ? `Tersimpan (${p.key_hint}). Kosongkan jika tidak ingin mengganti.` : "Belum diisi.";
   const sel = $("#set-model");
   if (![...sel.options].some((o) => o.value === p.model)) sel.add(new Option(p.model, p.model));
@@ -1369,7 +1421,7 @@ $("#buffer-accounts").addEventListener("click", async (e) => {
       const { accounts } = await api(`/api/buffer/accounts/${id}`, { method: "PATCH", body: JSON.stringify({ label }) });
       renderAccounts(accounts);
     }
-    state.config = await api("/api/config");
+    state.config = applyStoredAi(await api("/api/config"));
   } catch (err) {
     toast(err.message, true);
   }
@@ -1388,7 +1440,7 @@ $("#btn-add-account").onclick = async () => {
     $("#acc-key").value = "";
     $("#acc-label").value = "";
     renderAccounts(accounts);
-    state.config = await api("/api/config");
+    state.config = applyStoredAi(await api("/api/config"));
     $("#acc-msg").textContent = `✓ Akun “${added.label}” ditambahkan (${added.organizations.join(", ")}).`;
   } catch (err) {
     $("#acc-msg").textContent = `✗ ${err.message}`;
@@ -1439,7 +1491,7 @@ $("#btn-test-buffer").onclick = async () => {
     const { channels, accounts, errors } = await api("/api/buffer/channels?refresh=true");
     out.textContent = `✓ ${accounts.length} akun · ${channels.length} channel`
       + (errors.length ? ` · ⚠️ ${errors.join(" | ")}` : "");
-    state.config = await api("/api/config");
+    state.config = applyStoredAi(await api("/api/config"));
     fillSettings();
   } catch (err) {
     out.textContent = `✗ ${err.message}`;
@@ -1451,8 +1503,12 @@ $("#btn-load-models").onclick = async () => {
   try {
     const key = $("#set-key").value.trim();
     const provider = currentProvider();
-    if (key) await api("/api/config", { method: "POST", body: JSON.stringify({ provider, api_key: key }) });
-    const { models } = await api(`/api/models?provider=${provider}`);
+    const model = $("#set-model").value;
+    const effectiveKey = key || storedAi().providers[provider]?.key || "";
+    if (state.config.public_mode) saveStoredAi(provider, effectiveKey, model);
+    const { models } = await api(`/api/models?provider=${provider}`, {
+      headers: aiHeaders(provider),
+    });
     const sel = $("#set-model");
     const current = sel.value;
     sel.innerHTML = "";
@@ -1461,7 +1517,7 @@ $("#btn-load-models").onclick = async () => {
     toast(`Terhubung ke ${state.config.providers[provider].label} · ${models.length} model tersedia`);
     $("#set-key").value = "";
     delete $("#set-key").dataset.dirty;
-    state.config = await api("/api/config");
+    state.config = applyStoredAi(await api("/api/config"));
     fillSettings();
   } catch (err) {
     toast(err.message, true);
@@ -1474,18 +1530,23 @@ function hostFields() {
     .map((i) => [i.dataset.env, i.value.trim()]));
 }
 async function saveSettings() {
+  const provider = currentProvider();
+  const key = $("#set-key").value.trim();
+  const model = $("#set-model").value;
+  if (state.config.public_mode) saveStoredAi(provider, key || storedAi().providers[provider]?.key, model);
+  const body = {
+    provider, model,
+    whisper_model: $("#set-whisper").value, whisper_language: $("#set-lang").value,
+    media_host: $("#set-host").value, media: hostFields(),
+  };
+  if (!state.config.public_mode) body.api_key = key || null;
   await api("/api/config", {
     method: "POST",
-    body: JSON.stringify({
-      provider: currentProvider(),
-      api_key: $("#set-key").value.trim() || null, model: $("#set-model").value,
-      whisper_model: $("#set-whisper").value, whisper_language: $("#set-lang").value,
-      media_host: $("#set-host").value, media: hostFields(),
-    }),
+    body: JSON.stringify(body),
   });
   $("#set-key").value = "";
   clearDirty();
-  state.config = await api("/api/config");
+  state.config = applyStoredAi(await api("/api/config"));
   fillSettings();
 }
 // Tombol Simpan maupun Enter di kolom isian sama-sama menyimpan.
@@ -1515,7 +1576,7 @@ $("#btn-test-host").onclick = async () => {
     await api("/api/config", { method: "POST", body: JSON.stringify({ media_host: $("#set-host").value, media: hostFields() }) });
     document.querySelectorAll("[data-env]").forEach((el) => delete el.dataset.dirty);
     delete $("#set-host").dataset.dirty;
-    state.config = await api("/api/config");
+    state.config = applyStoredAi(await api("/api/config"));
     fillSettings();
     const r = await api("/api/mediahost/test", { method: "POST" });
     out.textContent = `✓ ${r.message}`;

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import UUID, uuid4
 
 from dotenv import load_dotenv, set_key
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
@@ -22,12 +24,18 @@ from google.genai import errors as genai_errors
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, security, transcribe
+from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, security, system, transcribe
 from .jobs import hub, store
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / ".env"
 load_dotenv(ENV_FILE)
+PUBLIC_MODE = os.environ.get("PUBLIC_MODE", "false").strip().lower() in ("1", "true", "yes", "on")
+SESSION_COOKIE = "clipping_session"
+_SESSION_HEADER = "x-session-id"
+_ALT_COOKIE = "session_id"
+_SESSION_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+CURRENT_SESSION: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_session", default=None)
 
 app = FastAPI(title="Clipping Studio")
 tasks: set[asyncio.Task] = set()
@@ -39,65 +47,76 @@ def spawn(coro) -> None:
     t.add_done_callback(tasks.discard)
 
 
-# ---------- Sesi anonim ----------
+# ---------- Sesi anonim & Otorisasi ----------
 
-_SESSION_HEADER = "x-session-id"
-_SESSION_COOKIE = "session_id"
-_SESSION_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
-
-
-def _session_id(
-    request: Request,
-    x_session_id: str | None = Header(default=None, alias=_SESSION_HEADER),
-) -> str:
-    """Ambil session ID dari header X-Session-ID atau Cookie session_id.  Kosong/tidak valid → string kosong."""
-    if x_session_id and _SESSION_RE.match(x_session_id.strip().lower()):
-        return x_session_id.strip().lower()
-    cookie_sid = request.cookies.get(_SESSION_COOKIE)
-    if cookie_sid and _SESSION_RE.match(cookie_sid.strip().lower()):
-        return cookie_sid.strip().lower()
-    return ""
+def current_session_id() -> str | None:
+    return CURRENT_SESSION.get()
 
 
-def _require_session(
-    request: Request,
-    x_session_id: str | None = Header(default=None, alias=_SESSION_HEADER),
-) -> str:
-    sid = _session_id(request, x_session_id)
-    if not sid:
-        raise HTTPException(401, "Header X-Session-ID atau cookie session_id tidak valid atau tidak ada.")
-    return sid
+def valid_session_id(value: str | None) -> str | None:
+    if not value:
+        return None
+    val = value.strip().lower()
+    return val if _SESSION_RE.match(val) else None
 
 
-def _own_job(job: dict, session_id: str) -> dict:
-    """Pastikan job dimiliki oleh session_id ini; kalau tidak, 403."""
-    sid = session_id if isinstance(session_id, str) else ""
-    owner = job.get("owner_session_id", "")
-    # Job lama (sebelum fitur ini) tidak punya owner → bisa diakses tanpa session.
-    if owner and owner != sid:
-        raise HTTPException(403, "Akses ditolak: bukan pemilik proyek ini.")
+def owned_jobs(session_id: str | None = None) -> list[dict]:
+    owner = session_id or current_session_id()
+    if not owner:
+        return []
+    return [
+        job for job in sorted(store.jobs.values(), key=lambda j: j["created_at"], reverse=True)
+        if job.get("owner_session_id") == owner
+    ]
+
+
+def visible_jobs(session_id: str | None = None) -> list[dict]:
+    return [store.public_job(job) for job in owned_jobs(session_id)]
+
+
+def get_job(job_id: str) -> dict:
+    job = store.jobs.get(job_id)
+    if not job or job.get("owner_session_id") != current_session_id():
+        raise HTTPException(404, "Job tidak ditemukan")
     return job
 
 
 @app.get("/api/session")
 def get_session(response: Response):
-    """Terbitkan session ID baru (UUIDv4). Frontend menyimpannya di localStorage & cookie."""
-    sid = str(uuid.uuid4())
+    """Terbitkan session ID baru (UUIDv4). Disimpan di localStorage & cookie."""
+    sid = str(uuid4())
     response.set_cookie(
-        key=_SESSION_COOKIE,
+        key=SESSION_COOKIE,
         value=sid,
         path="/",
         samesite="lax",
-        max_age=31536000,
+        max_age=60 * 60 * 24 * 365,
+    )
+    response.set_cookie(
+        key=_ALT_COOKIE,
+        value=sid,
+        path="/",
+        samesite="lax",
+        max_age=60 * 60 * 24 * 365,
     )
     return {"session_id": sid}
 
 
-def get_job(job_id: str) -> dict:
-    job = store.jobs.get(job_id)
-    if not job:
-        raise HTTPException(404, "Job tidak ditemukan")
-    return job
+# ---------- Kesehatan sistem ----------
+
+@app.get("/api/system/health")
+def get_system_health():
+    disk = system.disk_info(store.dir(""))
+    active_jobs = sum(job.get("status") not in ("done", "error") for job in store.jobs.values())
+    active_tasks = sum(not task.done() for task in tasks)
+    return {
+        "status": system.disk_status(disk["free_gb"]),
+        "disk": disk,
+        "ffmpeg_installed": bool(media.FFMPEG),
+        "active_jobs": active_jobs,
+        "active_tasks": active_tasks,
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
 
 
 # ---------- Pengaturan ----------
@@ -113,6 +132,20 @@ class ConfigIn(BaseModel):
     media: dict[str, str] | None = None  # CLOUDINARY_* / R2_*; secret kosong = tidak diubah
     max_filesize_mb: int | None = None
     max_duration_minutes: int | None = None
+
+
+def _request_ai_context(provider_name: str | None, key: str | None, model: str | None,
+                        *, required: bool = True) -> dict | None:
+    if not PUBLIC_MODE:
+        return None
+    name = (provider_name or "").strip().lower()
+    if name not in analysis.PROVIDERS:
+        raise HTTPException(400, "Header X-AI-Provider tidak valid.")
+    secret = (key or "").strip()
+    if required and not secret:
+        raise HTTPException(400, "Header X-AI-Key wajib diisi dalam PUBLIC_MODE.")
+    selected_model = (model or "").strip() or analysis.PROVIDERS[name]["default_model"]
+    return {"provider": name, "key": secret, "model": selected_model}
 
 
 def _hint(env: str) -> str:
@@ -137,8 +170,9 @@ def _providers() -> dict:
     return {
         name: {
             "label": spec["label"], "video": spec["video"],
-            "has_key": bool(os.environ.get(spec["env"], "").strip()),
-            "key_hint": _hint(spec["env"]), "model": analysis.model_name(name),
+            "has_key": False if PUBLIC_MODE else bool(os.environ.get(spec["env"], "").strip()),
+            "key_hint": "" if PUBLIC_MODE else _hint(spec["env"]),
+            "model": spec["default_model"] if PUBLIC_MODE else analysis.model_name(name),
             "default_model": spec["default_model"],
         }
         for name, spec in analysis.PROVIDERS.items()
@@ -149,12 +183,15 @@ def _providers() -> dict:
 def get_config():
     current = analysis.provider()
     key = os.environ.get(analysis.PROVIDERS[current]["env"], "")
+    if PUBLIC_MODE:
+        key = ""
     return {
         "provider": current,
+        "public_mode": PUBLIC_MODE,
         "providers": _providers(),
         "has_key": bool(key),
         "key_hint": f"…{key[-4:]}" if key else "",
-        "model": analysis.model_name(),
+        "model": analysis.PROVIDERS[current]["default_model"] if PUBLIC_MODE else analysis.model_name(),
         "ffmpeg": media.FFMPEG,
         "subtitles_supported": media.SUBTITLES_SUPPORTED,
         "face_tracking": facetrack.available(),
@@ -182,11 +219,11 @@ def save_config(cfg: ConfigIn):
     ENV_FILE.touch(mode=0o600, exist_ok=True)
     target = cfg.provider if cfg.provider in analysis.PROVIDERS else analysis.provider()
     spec = analysis.PROVIDERS[target]
-    if cfg.provider in analysis.PROVIDERS:
+    if cfg.provider in analysis.PROVIDERS and not PUBLIC_MODE:
         _set_env("AI_PROVIDER", cfg.provider)
-    if cfg.api_key is not None and cfg.api_key.strip():
+    if cfg.api_key is not None and cfg.api_key.strip() and not PUBLIC_MODE:
         _set_env(spec["env"], cfg.api_key.strip())
-    if cfg.model:
+    if cfg.model and not PUBLIC_MODE:
         _set_env(spec["model_env"], cfg.model.strip())
     for field, env, allowed in (("whisper_model", "WHISPER_MODEL", transcribe.MODELS),
                                 ("whisper_language", "WHISPER_LANGUAGE", transcribe.LANGUAGES)):
@@ -211,10 +248,13 @@ def save_config(cfg: ConfigIn):
 
 
 @app.get("/api/models")
-async def models(provider: str | None = None):
-    name = provider if provider in analysis.PROVIDERS else analysis.provider()
+async def models(provider: str | None = None, x_ai_provider: str | None = Header(None),
+                 x_ai_key: str | None = Header(None), x_ai_model: str | None = Header(None)):
+    context = _request_ai_context(x_ai_provider or provider, x_ai_key, x_ai_model)
+    name = context["provider"] if context else provider if provider in analysis.PROVIDERS else analysis.provider()
     try:
-        return {"provider": name, "models": await asyncio.to_thread(analysis.list_models, name)}
+        key = context["key"] if context else None
+        return {"provider": name, "models": await asyncio.to_thread(analysis.list_models, name, key)}
     except genai_errors.APIError as e:
         raise HTTPException(400, f"Gemini API ({e.code}): {e.message}")
     except (anthropic.APIStatusError, openai.APIStatusError) as e:
@@ -226,15 +266,8 @@ async def models(provider: str | None = None):
 # ---------- Job ----------
 
 @app.get("/api/jobs")
-def list_jobs(session_id: str = Depends(_session_id)):
-    sid = session_id if isinstance(session_id, str) else ""
-    jobs = store.jobs.values()
-    if sid:
-        # Hanya tampilkan job milik sesi ini; job lama tanpa owner ditampilkan semua.
-        jobs = [j for j in jobs if not j.get("owner_session_id") or j["owner_session_id"] == sid]
-    else:
-        jobs = list(jobs)
-    return sorted(jobs, key=lambda j: j["created_at"], reverse=True)
+def list_jobs():
+    return visible_jobs()
 
 
 @app.post("/api/jobs")
@@ -242,8 +275,11 @@ async def create_job(
     file: UploadFile | None = File(None),
     url: str = Form(""),
     options: str = Form("{}"),
-    session_id: str = Depends(_session_id),
+    x_ai_provider: str | None = Header(None),
+    x_ai_key: str | None = Header(None),
+    x_ai_model: str | None = Header(None),
 ):
+    ai_context = _request_ai_context(x_ai_provider, x_ai_key, x_ai_model)
     raw = json.loads(options or "{}")
     opts = {
         "num_clips": max(1, min(15, int(raw.get("num_clips", 3)))),
@@ -266,10 +302,12 @@ async def create_job(
     opts["max_len"] = max(opts["max_len"], opts["min_len"] + 5)
     url = url.strip()
 
-    creator_sid = session_id if (isinstance(session_id, str) and session_id) else str(uuid.uuid4())
+    creator_sid = current_session_id() or str(uuid4())
 
     if file and file.filename:
         job = store.create(file.filename, "upload", opts, owner_session_id=creator_sid)
+        if ai_context:
+            job["_ai_context"] = ai_context
         ext = (Path(file.filename).suffix or ".mp4").lower()
         if not re.fullmatch(r"\.[a-z0-9]{1,5}", ext):
             ext = ".mp4"
@@ -284,11 +322,13 @@ async def create_job(
         except security.SecurityValidationError as e:
             raise HTTPException(400, str(e))
         job = store.create(url, "url", opts, owner_session_id=creator_sid)
+        if ai_context:
+            job["_ai_context"] = ai_context
         await store.publish(job)
         spawn(pipeline.run(job, None, url))
     else:
         raise HTTPException(400, "Pilih file video atau masukkan link yang valid.")
-    return job
+    return store.public_job(job)
 
 
 class RerenderIn(BaseModel):
@@ -304,9 +344,8 @@ class RerenderIn(BaseModel):
 
 
 @app.post("/api/jobs/{job_id}/rerender")
-async def rerender_all(job_id: str, body: RerenderIn, session_id: str = Depends(_require_session)):
+async def rerender_all(job_id: str, body: RerenderIn):
     job = get_job(job_id)
-    _own_job(job, session_id)
     if not job.get("meta"):
         raise HTTPException(400, "Video sumber belum siap.")
     if body.aspect not in media.ASPECTS or body.layout not in ("face", "crop", "blur"):
@@ -325,9 +364,8 @@ async def rerender_all(job_id: str, body: RerenderIn, session_id: str = Depends(
 
 
 @app.delete("/api/jobs/{job_id}")
-async def delete_job(job_id: str, session_id: str = Depends(_require_session)):
+async def delete_job(job_id: str):
     job = get_job(job_id)
-    _own_job(job, session_id)
     await store.delete(job_id)
     return {"ok": True}
 
@@ -348,9 +386,8 @@ def _check_range(job: dict, body: ClipIn) -> None:
 
 
 @app.post("/api/jobs/{job_id}/clips")
-async def add_clip(job_id: str, body: ClipIn, session_id: str = Depends(_require_session)):
+async def add_clip(job_id: str, body: ClipIn):
     job = get_job(job_id)
-    _own_job(job, session_id)
     _check_range(job, body)
     clip = pipeline.new_clip(job, round(body.start, 2), round(body.end, 2),
                              body.title or f"Klip manual {len(job['clips']) + 1}")
@@ -360,10 +397,8 @@ async def add_clip(job_id: str, body: ClipIn, session_id: str = Depends(_require
 
 
 @app.patch("/api/jobs/{job_id}/clips/{clip_id}")
-async def update_clip(job_id: str, clip_id: str, body: ClipIn,
-                      session_id: str = Depends(_require_session)):
+async def update_clip(job_id: str, clip_id: str, body: ClipIn):
     job = get_job(job_id)
-    _own_job(job, session_id)
     clip = store.clip(job, clip_id)
     if not clip:
         raise HTTPException(404, "Klip tidak ditemukan")
@@ -378,9 +413,8 @@ async def update_clip(job_id: str, clip_id: str, body: ClipIn,
 
 
 @app.delete("/api/jobs/{job_id}/clips/{clip_id}")
-async def delete_clip(job_id: str, clip_id: str, session_id: str = Depends(_require_session)):
+async def delete_clip(job_id: str, clip_id: str):
     job = get_job(job_id)
-    _own_job(job, session_id)
     clip = store.clip(job, clip_id)
     if not clip:
         raise HTTPException(404, "Klip tidak ditemukan")
@@ -550,10 +584,14 @@ def save_pricing(body: PricingIn):
 
 
 @app.get("/api/estimate")
-def estimate(duration: float, num_clips: int = 3, max_len: int = 90, subtitles: bool = True):
-    provider = analysis.provider()
-    est = pricing.estimate(max(0.0, duration), analysis.model_name(), num_clips, max_len, subtitles, provider)
-    return {**est, "model": analysis.model_name(), "provider": provider,
+def estimate(duration: float, num_clips: int = 3, max_len: int = 90, subtitles: bool = True,
+             x_ai_provider: str | None = Header(None), x_ai_key: str | None = Header(None),
+             x_ai_model: str | None = Header(None)):
+    context = _request_ai_context(x_ai_provider, x_ai_key, x_ai_model, required=False)
+    provider = context["provider"] if context else analysis.provider()
+    model = context["model"] if context else analysis.model_name()
+    est = pricing.estimate(max(0.0, duration), model, num_clips, max_len, subtitles, provider)
+    return {**est, "model": model, "provider": provider,
             "provider_label": analysis.PROVIDERS[provider]["label"], "usd_idr": pricing.usd_idr()}
 
 
@@ -575,7 +613,7 @@ def usage():
             bucket["usd"] += e["cost_usd"]
 
     total, month, per_model, per_day, projects = empty(), empty(), {}, {}, []
-    for job in store.jobs.values():
+    for job in owned_jobs():
         entries = job.get("usage") or []
         proj = {"id": job["id"], "name": job["name"], "created_at": job["created_at"],
                 "clips": len(job["clips"]), "video_seconds": (job.get("meta") or {}).get("duration"),
@@ -598,7 +636,7 @@ def usage():
 async def recalculate_usage():
     """Hitung ulang biaya semua catatan dengan pengaturan harga saat ini (tier/harga manual)."""
     count = 0
-    for job in store.jobs.values():
+    for job in owned_jobs():
         if job.get("usage"):
             job["usage"] = [pricing.with_cost(e) for e in job["usage"]]
             count += len(job["usage"])
@@ -672,10 +710,8 @@ class PublishIn(BaseModel):
 
 
 @app.post("/api/jobs/{job_id}/clips/{clip_id}/publish")
-async def publish_clip(job_id: str, clip_id: str, body: PublishIn,
-                       session_id: str = Depends(_require_session)):
+async def publish_clip(job_id: str, clip_id: str, body: PublishIn):
     job = get_job(job_id)
-    _own_job(job, session_id)
     clip = store.clip(job, clip_id)
     if not clip or clip["status"] != "ready":
         raise HTTPException(400, "Klip belum siap. Tunggu render selesai.")
@@ -714,9 +750,8 @@ async def publish_clip(job_id: str, clip_id: str, body: PublishIn,
 
 
 @app.post("/api/jobs/{job_id}/clips/{clip_id}/publish/refresh")
-async def refresh_publish(job_id: str, clip_id: str, session_id: str = Depends(_require_session)):
+async def refresh_publish(job_id: str, clip_id: str):
     job = get_job(job_id)
-    _own_job(job, session_id)
     clip = store.clip(job, clip_id)
     pub = (clip or {}).get("publish")
     if not pub:
@@ -744,9 +779,8 @@ async def refresh_publish(job_id: str, clip_id: str, session_id: str = Depends(_
 # ---------- File media (mendukung Range request untuk seek video) ----------
 
 @app.get("/api/jobs/{job_id}/download-all")
-def download_all_clips(job_id: str, session_id: str = Depends(_session_id)):
+def download_all_clips(job_id: str):
     job = get_job(job_id)
-    _own_job(job, session_id)
     base = store.dir(job["id"]).resolve()
     files: list[Path] = []
 
@@ -786,10 +820,8 @@ def download_all_clips(job_id: str, session_id: str = Depends(_session_id)):
     )
 
 @app.get("/media/{job_id}/{path:path}")
-def media_file(job_id: str, path: str, download: bool = False,
-               session_id: str = Depends(_session_id)):
+def media_file(job_id: str, path: str, download: bool = False):
     job = get_job(job_id)
-    _own_job(job, session_id)
     base = store.dir(job["id"]).resolve()
     target = (base / path).resolve()
     if base not in target.parents or not target.is_file():
@@ -801,19 +833,16 @@ def media_file(job_id: str, path: str, download: bool = False,
 
 @app.websocket("/ws")
 async def ws(websocket: WebSocket):
+    session_id = (
+        valid_session_id(websocket.cookies.get(SESSION_COOKIE))
+        or valid_session_id(websocket.cookies.get(_ALT_COOKIE))
+        or valid_session_id(websocket.headers.get(_SESSION_HEADER))
+        or str(uuid4())
+    )
     await websocket.accept()
-    # Ambil session_id dari Cookie atau Header, tanpa query params
-    sid = websocket.cookies.get(_SESSION_COOKIE, "").strip().lower()
-    if not _SESSION_RE.match(sid):
-        sid = websocket.headers.get(_SESSION_HEADER, "").strip().lower()
-        if not _SESSION_RE.match(sid):
-            sid = ""
-    hub.add(websocket, sid)
+    hub.add(websocket, session_id)
     try:
-        # Snapshot hanya berisi job milik sesi ini (atau job lama tanpa owner).
-        my_jobs = [j for j in store.jobs.values()
-                   if not j.get("owner_session_id") or j["owner_session_id"] == sid]
-        await websocket.send_json({"type": "snapshot", "jobs": sorted(my_jobs, key=lambda j: j["created_at"], reverse=True)})
+        await websocket.send_json({"type": "snapshot", "jobs": visible_jobs(session_id)})
         while True:
             await websocket.receive_text()  # ping dari browser
     except WebSocketDisconnect:
@@ -825,18 +854,30 @@ async def ws(websocket: WebSocket):
 @app.middleware("http")
 async def no_stale_ui(request: Request, call_next):
     """Antarmuka selalu divalidasi ulang, supaya versi lama tidak nyangkut di cache browser."""
-    response = await call_next(request)
-    x_sid = request.headers.get(_SESSION_HEADER)
-    if x_sid and _SESSION_RE.match(x_sid.strip().lower()):
-        sid = x_sid.strip().lower()
-        if request.cookies.get(_SESSION_COOKIE) != sid:
-            response.set_cookie(
-                key=_SESSION_COOKIE,
-                value=sid,
-                path="/",
-                samesite="lax",
-                max_age=31536000,
-            )
+    header_sid = valid_session_id(request.headers.get(_SESSION_HEADER))
+    cookie_sid = valid_session_id(request.cookies.get(SESSION_COOKIE)) or valid_session_id(request.cookies.get(_ALT_COOKIE))
+    session_id = header_sid or cookie_sid or str(uuid4())
+
+    token = CURRENT_SESSION.set(session_id)
+    try:
+        response = await call_next(request)
+    finally:
+        CURRENT_SESSION.reset(token)
+
+    if not cookie_sid or (header_sid and cookie_sid != session_id):
+        response.set_cookie(
+            SESSION_COOKIE,
+            session_id,
+            samesite="lax",
+            max_age=60 * 60 * 24 * 365,
+        )
+        response.set_cookie(
+            _ALT_COOKIE,
+            session_id,
+            samesite="lax",
+            max_age=60 * 60 * 24 * 365,
+        )
+
     if request.url.path.startswith(("/branding/", "/static/")) or request.url.path in ("/", "/app.js", "/style.css", "/index.html"):
         response.headers["Cache-Control"] = "no-cache"
     return response

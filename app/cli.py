@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / ".env"
 load_dotenv(ENV_FILE)
 
-from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, security, transcribe  # noqa: E402
+from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, security, system, transcribe  # noqa: E402
 from .jobs import hub, store  # noqa: E402
 
 URL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
@@ -192,6 +192,8 @@ async def source_job(args, opts: dict) -> tuple[dict, Path | None, str | None]:
 
 async def cmd_doctor(args) -> None:
     whisper_ok = {m: transcribe.is_downloaded(m) for m in transcribe.MODELS}
+    disk = system.disk_info(store.dir(""))
+    disk_status = system.disk_status(disk["free_gb"])
     info = {
         "ffmpeg": media.FFMPEG, "subtitles_supported": media.SUBTITLES_SUPPORTED,
         "face_tracking": facetrack.available(),
@@ -207,6 +209,8 @@ async def cmd_doctor(args) -> None:
         "media_host_missing": [mediahost.LABELS[f] for f in mediahost.missing()],
         "pricing_tier": pricing.settings()["tier"], "usd_idr": pricing.usd_idr(),
         "data_dir": str(store.dir("")), "jobs": len(store.jobs),
+        "disk": disk, "disk_status": disk_status,
+        "active_jobs": sum(j.get("status") not in ("done", "error") for j in store.jobs.values()),
         "max_filesize_mb": security.max_filesize_mb(),
         "max_duration_minutes": security.max_duration_minutes(),
     }
@@ -222,6 +226,7 @@ async def cmd_doctor(args) -> None:
         f"{mark(info['buffer_key'])} Buffer API key",
         f"{mark(not info['media_host_missing'])} hosting video      {info['media_host']}"
         + (f" (kurang: {', '.join(info['media_host_missing'])})" if info["media_host_missing"] else ""),
+        f"{mark(info['disk_status'] == 'ok')} disk               {info['disk']['free_gb']:.2f} GB bebas / {info['disk']['total_gb']:.2f} GB ({info['disk_status']})",
         f"  data               {info['data_dir']} ({info['jobs']} proyek)",
         f"  batas unduh        maks {info['max_filesize_mb']} MB, durasi {info['max_duration_minutes']} menit",
     ])
