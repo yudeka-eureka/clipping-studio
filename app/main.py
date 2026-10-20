@@ -299,7 +299,7 @@ async def delete_clip(job_id: str, clip_id: str):
         raise HTTPException(404, "Klip tidak ditemukan")
     if clip["status"] in ("queued", "rendering"):
         raise HTTPException(409, "Klip sedang dirender.")
-    for key in ("file", "srt"):
+    for key in ("file", "srt", "vtt"):
         if clip.get(key):
             (store.dir(job_id) / clip[key]).unlink(missing_ok=True)
     job["clips"].remove(clip)

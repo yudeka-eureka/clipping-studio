@@ -79,7 +79,7 @@ def new_clip(job: dict, start: float, end: float, title: str, **extra) -> dict:
     clip = {
         "id": uuid.uuid4().hex[:8], "title": title, "start": start, "end": end,
         "hook": "", "reason": "", "score": None, "hashtags": [], "captions": [], "ai_captions": [],
-        "status": "pending", "progress": 0.0, "error": None, "file": None, "srt": None,
+        "status": "pending", "progress": 0.0, "error": None, "file": None, "srt": None, "vtt": None,
         "version": 0,
     }
     clip.update(extra)
@@ -165,8 +165,9 @@ async def render(job: dict, clip: dict) -> None:
             base = f"clip_{clip['id']}"
             src = store.dir(job["id"]) / job["source"]
             out = clips_dir / f"{base}.mp4"
-            srt_path, ass_path = clips_dir / f"{base}.srt", clips_dir / f"{base}.ass"
+            srt_path, vtt_path, ass_path = clips_dir / f"{base}.srt", clips_dir / f"{base}.vtt", clips_dir / f"{base}.ass"
             srt_path.unlink(missing_ok=True)
+            vtt_path.unlink(missing_ok=True)
             ass_path.unlink(missing_ok=True)
             meta = job["meta"]
             if "fps" not in meta:  # proyek lama
@@ -208,6 +209,7 @@ async def render(job: dict, clip: dict) -> None:
                     captions = silence.remap_items(clip["ai_captions"], segments, clip["start"])
             clip["captions"] = captions
             has_srt = subs and media.write_srt(captions, srt_path)
+            has_vtt = subs and media.write_vtt(captions, vtt_path)
 
             width, height = media.output_size(meta["width"], meta["height"], opts["aspect"])
             title = clip["title"] if opts.get("show_title") else None
@@ -227,6 +229,7 @@ async def render(job: dict, clip: dict) -> None:
                 await store.log(job, f"🎨 “{clip['title']}”: {' + '.join(extras)} ditempel.")
             clip.update(status="ready", progress=1.0, stage=None, file=f"clips/{out.name}",
                         srt=f"clips/{srt_path.name}" if has_srt else None,
+                        vtt=f"clips/{vtt_path.name}" if has_vtt else None,
                         duration_out=round(out_duration, 2), version=clip.get("version", 0) + 1)
             await store.log(job, f"✅ Klip siap: {clip['title']}")
         except Exception as e:  # noqa: BLE001

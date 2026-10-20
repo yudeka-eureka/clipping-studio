@@ -565,6 +565,7 @@ function renderClips(job) {
             <button data-act="publish">📤 Posting</button>
             <a class="btn dl" data-kind="mp4" hidden>⬇ MP4</a>
             <a class="btn dl-srt" hidden>⬇ SRT</a>
+            <a class="btn dl-vtt" hidden>⬇ VTT</a>
             <button data-act="delete" class="ghost danger">🗑</button>
           </div>
         </div>`;
@@ -617,6 +618,11 @@ function updateCard(job, clip, card) {
     const srt = $(".dl-srt", card);
     srt.hidden = !clip.srt;
     if (clip.srt) srt.href = `/media/${job.id}/${clip.srt}?download=1`;
+    const vtt = $(".dl-vtt", card);
+    if (vtt) {
+      vtt.hidden = !clip.vtt;
+      if (clip.vtt) vtt.href = `/media/${job.id}/${clip.vtt}?download=1`;
+    }
   } else {
     const label = { pending: "Menunggu…", queued: "Antre render…", rendering: clip.stage || "Merender…", error: "Gagal render" }[clip.status];
     if (!$(".overlay", player)) player.innerHTML = `<div class="overlay"><div class="lbl"></div><div class="bar"><div></div></div><div class="pct muted small"></div></div>`;

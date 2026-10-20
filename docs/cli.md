@@ -200,7 +200,7 @@ Transkrip Whisper lokal dengan waktu per kata. Tidak memakai API dan tidak membu
 | `--job JOB` | — | Transkrip video sumber sebuah proyek |
 | `--start N` | `0` | Detik mulai |
 | `--end N` | akhir | Detik selesai |
-| `--format` | `text` | `text` (per baris dengan waktu), `srt` (ke stdout), `json` (kata + baris subtitle) |
+| `--format` | `text` | `text` (per baris dengan waktu), `srt`, `vtt` (ke stdout), `json` (kata + baris subtitle) |
 
 Model diatur lewat `WHISPER_MODEL` dan `WHISPER_LANGUAGE` (lihat [`config`](#config)); model diunduh
 sekali saat pertama dipakai.

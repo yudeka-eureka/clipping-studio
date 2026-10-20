@@ -345,3 +345,26 @@ def write_srt(captions: list[dict], path: Path) -> bool:
         lines += [str(i), f"{_srt_time(s)} --> {_srt_time(e)}", text, ""]
     path.write_text("\n".join(lines), encoding="utf-8")
     return True
+
+
+def _vtt_time(t: float) -> str:
+    t = max(0.0, t)
+    ms = int(round(t * 1000))
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+
+def write_vtt(captions: list[dict], path: Path) -> bool:
+    """Tulis WebVTT dari caption yang waktunya sudah relatif terhadap klip hasil."""
+    entries = sorted((c["start"], c["end"], (c.get("text") or "").strip()) for c in captions)
+    entries = [e for e in entries if e[1] - e[0] >= 0.05 and e[2]]
+    if not entries:
+        return False
+    lines = ["WEBVTT", ""]
+    for i, (s, e, text) in enumerate(entries, start=1):
+        lines += [str(i), f"{_vtt_time(s)} --> {_vtt_time(e)}", text, ""]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return True
+

@@ -66,6 +66,7 @@ def clip_view(job: dict, clip: dict) -> dict:
         "captions": len(clip.get("captions") or []),
         "file": str(base / clip["file"]) if clip.get("file") else None,
         "srt": str(base / clip["srt"]) if clip.get("srt") else None,
+        "vtt": str(base / clip["vtt"]) if clip.get("vtt") else None,
         "publish": clip.get("publish"),
     }
 
@@ -327,6 +328,13 @@ async def cmd_transcribe(args) -> None:
         rel = [{**c, "start": c["start"] - args.start, "end": c["end"] - args.start} for c in captions]
         with tempfile.NamedTemporaryFile("r+", suffix=".srt") as tmp:
             media.write_srt(rel, Path(tmp.name))
+            sys.stdout.write(Path(tmp.name).read_text())
+    elif args.format == "vtt":
+        import tempfile
+
+        rel = [{**c, "start": c["start"] - args.start, "end": c["end"] - args.start} for c in captions]
+        with tempfile.NamedTemporaryFile("r+", suffix=".vtt") as tmp:
+            media.write_vtt(rel, Path(tmp.name))
             sys.stdout.write(Path(tmp.name).read_text())
     else:
         for c in captions:
@@ -672,7 +680,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--job")
     sp.add_argument("--start", type=float, default=0.0)
     sp.add_argument("--end", type=float)
-    sp.add_argument("--format", default="text", choices=["text", "srt", "json"])
+    sp.add_argument("--format", default="text", choices=["text", "srt", "vtt", "json"])
     sp.set_defaults(func=cmd_transcribe)
 
     sp = sub.add_parser("estimate", help="perkiraan token & biaya AI sebelum proses")
