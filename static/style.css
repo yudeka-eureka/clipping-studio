@@ -64,6 +64,11 @@ select.auto { width: auto; margin: 0; }
 
 .layout { display: grid; grid-template-columns: 260px 1fr; min-height: calc(100vh - 52px); }
 .sidebar { border-right: 1px solid var(--line); padding: 12px; background: var(--panel); }
+.sidebar-search { margin-top: 12px; }
+.input-search { margin-top: 0; }
+.status-filters { display: flex; gap: 4px; margin-top: 8px; }
+.btn-filter { flex: 1; padding: 5px 6px; font-size: 12px; }
+.btn-filter.active { color: var(--text); background: var(--panel-2); border-color: var(--accent); }
 .job-list { margin-top: 12px; display: flex; flex-direction: column; gap: 4px; }
 .job-item { padding: 8px 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
 .job-item:hover { background: var(--panel-2); }
@@ -145,6 +150,7 @@ dialog h2.section { margin-top: 20px; }
 @media (max-width: 800px) {
   .layout { grid-template-columns: 1fr; }
   .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
+  .sidebar-search { max-width: 520px; }
   .job-list { flex-direction: row; overflow-x: auto; }
   .job-item { min-width: 180px; }
   .grid { grid-template-columns: 1fr 1fr; }

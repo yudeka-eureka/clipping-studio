@@ -1,7 +1,8 @@
 "use strict";
 
 const $ = (s, el = document) => el.querySelector(s);
-const state = { jobs: {}, current: null, src: "file", file: null, config: null };
+const state = { jobs: {}, current: null, src: "file", file: null, config: null,
+  searchQuery: "", activeFilter: "all" };
 
 const STATUS_LABEL = {
   queued: "Antre", downloading: "Mengunduh", preparing: "Menyiapkan", analyzing: "Analisis AI",
@@ -316,7 +317,18 @@ function updateEstimate() {
 
 // ---------- Sidebar ----------
 function renderJobList() {
-  const jobs = Object.values(state.jobs).sort((a, b) => b.created_at - a.created_at);
+  const query = state.searchQuery.trim().toLocaleLowerCase();
+  const allJobs = Object.values(state.jobs);
+  const jobs = allJobs
+    .filter((j) => {
+      const matchesQuery = !query || [j.name, j.id].some((value) =>
+        String(value || "").toLocaleLowerCase().includes(query));
+      const matchesStatus = state.activeFilter === "all"
+        || (state.activeFilter === "ready" && j.status === "done")
+        || (state.activeFilter === "running" && RUNNING.has(j.status));
+      return matchesQuery && matchesStatus;
+    })
+    .sort((a, b) => b.created_at - a.created_at);
   $("#job-list").innerHTML = jobs.length
     ? jobs.map((j) => {
         const dot = RUNNING.has(j.status) ? "run" : j.status;
@@ -327,11 +339,23 @@ function renderJobList() {
           <div class="meta"><span class="dot ${dot}"></span>${STATUS_LABEL[j.status] || j.status} · ${ready} klip${usd != null ? `<span class="cost">${fmtMoney(usd, true)}</span>` : ""}</div>
         </div>`;
       }).join("")
-    : `<p class="muted small">Belum ada proyek.</p>`;
+    : `<p class="muted small">${allJobs.length ? "Tidak ada proyek yang cocok dengan pencarian." : "Belum ada proyek."}</p>`;
 }
 $("#job-list").addEventListener("click", (e) => {
   const item = e.target.closest(".job-item");
   if (item) openJob(item.dataset.id);
+});
+$("#search-job").addEventListener("input", (e) => {
+  state.searchQuery = e.target.value;
+  renderJobList();
+});
+document.querySelectorAll(".btn-filter").forEach((button) => {
+  button.addEventListener("click", () => {
+    state.activeFilter = button.dataset.status;
+    document.querySelectorAll(".btn-filter").forEach((item) =>
+      item.classList.toggle("active", item === button));
+    renderJobList();
+  });
 });
 
 // ---------- Form proyek baru ----------
