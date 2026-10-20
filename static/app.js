@@ -70,6 +70,9 @@ function handleEvent(ev) {
       else if (state.current) showNew();
       break;
     case "job":
+      if (ev.job.id === state.current && ev.job.status === "error" && state.jobs[ev.job.id]?.status !== "error") {
+        toast(`Gagal: ${ev.job.error}`, true);
+      }
       if ((ev.job.usage || []).length !== (state.jobs[ev.job.id]?.usage || []).length) scheduleUsageRefresh();
       state.jobs[ev.job.id] = ev.job;
       renderJobList();
@@ -392,6 +395,9 @@ $("#form-new").onsubmit = (e) => {
   } else {
     const url = $("#in-url").value.trim();
     if (!url) return toast("Masukkan link video.", true);
+    if (!url.startsWith("https://")) {
+      return toast("Hanya URL dengan protokol https:// yang diizinkan.", true);
+    }
     fd.append("url", url);
   }
   fd.append("options", JSON.stringify({
@@ -420,9 +426,15 @@ $("#form-new").onsubmit = (e) => {
   xhr.onload = () => {
     btn.disabled = false;
     bar.hidden = true;
-    $("#form-msg").textContent = "";
     const data = JSON.parse(xhr.responseText || "{}");
-    if (xhr.status >= 400) return toast(data.detail || "Gagal membuat proyek", true);
+    if (xhr.status >= 400) {
+      const err = data.detail || "Gagal membuat proyek";
+      $("#form-msg").textContent = err;
+      $("#form-msg").className = "small err";
+      return toast(err, true);
+    }
+    $("#form-msg").textContent = "";
+    $("#form-msg").className = "muted small";
     state.jobs[data.id] = data;
     setFile(null);
     $("#in-file").value = "";

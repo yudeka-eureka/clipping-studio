@@ -27,10 +27,10 @@ ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / ".env"
 load_dotenv(ENV_FILE)
 
-from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, transcribe  # noqa: E402
+from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, security, transcribe  # noqa: E402
 from .jobs import hub, store  # noqa: E402
 
-URL_RE = re.compile(r"^https?://")
+URL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
 
 
 # ---------- keluaran ----------
@@ -168,6 +168,10 @@ async def source_job(args, opts: dict) -> tuple[dict, Path | None, str | None]:
     """Buat proyek baru dari file lokal atau link."""
     src = args.source
     if URL_RE.match(src):
+        try:
+            security.validate_video_url(src)
+        except security.SecurityValidationError as e:
+            fail(str(e), args)
         return store.create(src, "url", opts), None, src
     path = Path(src).expanduser().resolve()
     if not path.is_file():
@@ -203,6 +207,8 @@ async def cmd_doctor(args) -> None:
         "media_host_missing": [mediahost.LABELS[f] for f in mediahost.missing()],
         "pricing_tier": pricing.settings()["tier"], "usd_idr": pricing.usd_idr(),
         "data_dir": str(store.dir("")), "jobs": len(store.jobs),
+        "max_filesize_mb": security.max_filesize_mb(),
+        "max_duration_minutes": security.max_duration_minutes(),
     }
     mark = lambda ok: "✓" if ok else "✗"  # noqa: E731
     text = "\n".join([
@@ -217,6 +223,7 @@ async def cmd_doctor(args) -> None:
         f"{mark(not info['media_host_missing'])} hosting video      {info['media_host']}"
         + (f" (kurang: {', '.join(info['media_host_missing'])})" if info["media_host_missing"] else ""),
         f"  data               {info['data_dir']} ({info['jobs']} proyek)",
+        f"  batas unduh        maks {info['max_filesize_mb']} MB, durasi {info['max_duration_minutes']} menit",
     ])
     emit(args, info, text)
 
@@ -472,7 +479,8 @@ async def cmd_publish_status(args) -> None:
 
 SETTABLE = ["AI_PROVIDER", "GEMINI_API_KEY", "GEMINI_MODEL", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
             "OPENAI_API_KEY", "OPENAI_MODEL", "WHISPER_MODEL", "WHISPER_LANGUAGE", "BUFFER_API_KEY",
-            "MEDIA_HOST", *mediahost.FIELDS["cloudinary"], *mediahost.FIELDS["r2"]]
+            "MEDIA_HOST", *mediahost.FIELDS["cloudinary"], *mediahost.FIELDS["r2"],
+            "MAX_FILESIZE_MB", "MAX_DURATION_MINUTES", "ALLOWED_DOMAINS"]
 
 
 def _set_env(name: str, value: str) -> None:
