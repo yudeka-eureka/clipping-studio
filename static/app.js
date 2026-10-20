@@ -10,6 +10,29 @@ const STATUS_LABEL = {
 const LAYOUT_LABEL = { face: "fokus wajah", crop: "crop tengah", blur: "latar blur" };
 const RUNNING = new Set(["queued", "downloading", "preparing", "analyzing", "rendering"]);
 
+// ---------- Sesi anonim ----------
+// Session ID disimpan di localStorage. Kalau belum ada, minta ke server.
+let _sessionId = "";
+
+async function initSession() {
+  try {
+    const stored = localStorage.getItem("sessionId");
+    if (stored && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(stored)) {
+      _sessionId = stored;
+      return;
+    }
+  } catch {}
+  // Minta session baru dari server.
+  try {
+    const res = await fetch("/api/session");
+    const data = await res.json();
+    _sessionId = data.session_id;
+    try { localStorage.setItem("sessionId", _sessionId); } catch {}
+  } catch (err) {
+    console.warn("Gagal mendapatkan session ID:", err);
+  }
+}
+
 // ---------- Utilitas ----------
 function fmt(t) {
   t = Math.max(0, Number(t) || 0);
@@ -34,8 +57,12 @@ function toast(msg, isError = false) {
   toastTimer = setTimeout(() => (el.hidden = true), 4000);
 }
 async function api(path, opts = {}) {
+  const extraHeaders = _sessionId ? { "X-Session-ID": _sessionId } : {};
   const res = await fetch(path, {
-    headers: opts.body && !(opts.body instanceof FormData) ? { "Content-Type": "application/json" } : {},
+    headers: {
+      ...extraHeaders,
+      ...(opts.body && !(opts.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+    },
     ...opts,
   });
   const data = await res.json().catch(() => ({}));
@@ -45,7 +72,8 @@ async function api(path, opts = {}) {
 
 // ---------- Realtime (WebSocket) ----------
 function connect() {
-  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  const sid = _sessionId ? `?session_id=${encodeURIComponent(_sessionId)}` : "";
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws${sid}`);
   let ping;
   ws.onopen = () => {
     $("#conn").className = "pill on";
@@ -446,6 +474,7 @@ $("#form-new").onsubmit = (e) => {
     toast("Tidak bisa terhubung ke server lokal.", true);
   };
   xhr.open("POST", "/api/jobs");
+  if (_sessionId) xhr.setRequestHeader("X-Session-ID", _sessionId);
   xhr.send(fd);
 };
 
@@ -1464,6 +1493,8 @@ $("#btn-test-host").onclick = async () => {
   }
 };
 
-loadConfig().then(loadUsage).catch((err) => toast(err.message, true));
-loadBranding();   // pustaka logo dibutuhkan pemilih logo di form proyek & kartu format
-connect();
+initSession().then(() => {
+  loadConfig().then(loadUsage).catch((err) => toast(err.message, true));
+  loadBranding();   // pustaka logo dibutuhkan pemilih logo di form proyek & kartu format
+  connect();
+});

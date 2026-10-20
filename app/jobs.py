@@ -15,24 +15,38 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class Hub:
-    """Semua browser yang terbuka menerima event yang sama secara realtime."""
+    """Browser pemilik job menerima event realtime; session lain tidak."""
 
     def __init__(self) -> None:
-        self.sockets: set[WebSocket] = set()
+        # socket → session_id
+        self.sockets: dict[WebSocket, str] = {}
         # Pendengar lokal (dipakai mode command line untuk menampilkan progres).
         self.listeners: list = []
 
-    async def send(self, event: dict) -> None:
+    def add(self, ws: WebSocket, session_id: str) -> None:
+        self.sockets[ws] = session_id
+
+    def remove(self, ws: WebSocket) -> None:
+        self.sockets.pop(ws, None)
+
+    async def send(self, event: dict, session_id: str | None = None) -> None:
+        """Kirim event ke semua socket.
+
+        Kalau *session_id* diisi, hanya socket milik sesi itu yang menerima.
+        Kalau None (event global seperti snapshot), kirim ke semua.
+        """
         for listen in list(self.listeners):
             listen(event)
         dead = []
-        for ws in list(self.sockets):
+        for ws, sid in list(self.sockets.items()):
+            if session_id is not None and sid != session_id:
+                continue
             try:
                 await ws.send_json(event)
             except Exception:
                 dead.append(ws)
         for ws in dead:
-            self.sockets.discard(ws)
+            self.sockets.pop(ws, None)
 
 
 hub = Hub()
@@ -61,7 +75,7 @@ class Store:
     def dir(self, job_id: str) -> Path:
         return DATA_DIR / job_id
 
-    def create(self, name: str, source_type: str, options: dict) -> dict:
+    def create(self, name: str, source_type: str, options: dict, owner_session_id: str = "") -> dict:
         job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         (self.dir(job_id) / "clips").mkdir(parents=True)
         job = {
@@ -69,6 +83,7 @@ class Store:
             "created_at": time.time(), "status": "queued", "stage": "Menunggu antrean…",
             "progress": 0.0, "error": None, "source": None, "meta": None,
             "summary": None, "clips": [], "logs": [],
+            "owner_session_id": owner_session_id,
         }
         self.jobs[job_id] = job
         return job
@@ -83,7 +98,7 @@ class Store:
 
     async def publish(self, job: dict) -> None:
         self.save(job)
-        await hub.send({"type": "job", "job": job})
+        await hub.send({"type": "job", "job": job}, job.get("owner_session_id") or None)
 
     async def update(self, job: dict, **fields) -> None:
         job.update(fields)
@@ -93,7 +108,8 @@ class Store:
         entry = {"t": time.time(), "line": line}
         job["logs"] = (job["logs"] + [entry])[-200:]
         self.save(job)
-        await hub.send({"type": "log", "job_id": job["id"], **entry})
+        await hub.send({"type": "log", "job_id": job["id"], **entry},
+                       job.get("owner_session_id") or None)
 
     async def progress(self, job: dict, value: float, stage: str | None = None, clip_id: str | None = None) -> None:
         """Progres dikirim ringan (tanpa seluruh job) dan dibatasi ~8x per detik."""
@@ -114,16 +130,18 @@ class Store:
             if stage:
                 job["stage"] = stage
         await hub.send({"type": "progress", "job_id": job["id"], "clip_id": clip_id,
-                        "progress": value, "stage": stage})
+                        "progress": value, "stage": stage},
+                       job.get("owner_session_id") or None)
 
     @staticmethod
     def clip(job: dict, clip_id: str) -> dict | None:
         return next((c for c in job["clips"] if c["id"] == clip_id), None)
 
     async def delete(self, job_id: str) -> None:
-        self.jobs.pop(job_id, None)
+        job = self.jobs.pop(job_id, None)
+        session_id = (job or {}).get("owner_session_id") or None
         await asyncio.to_thread(shutil.rmtree, self.dir(job_id), True)
-        await hub.send({"type": "deleted", "job_id": job_id})
+        await hub.send({"type": "deleted", "job_id": job_id}, session_id)
 
 
 store = Store()

@@ -6,11 +6,12 @@ import json
 import os
 import re
 import shutil
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv, set_key
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import anthropic
@@ -33,6 +34,41 @@ def spawn(coro) -> None:
     t = asyncio.create_task(coro)
     tasks.add(t)
     t.add_done_callback(tasks.discard)
+
+
+# ---------- Sesi anonim ----------
+
+_SESSION_HEADER = "x-session-id"
+_SESSION_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+
+
+def _session_id(x_session_id: str | None = Header(default=None, alias=_SESSION_HEADER)) -> str:
+    """Ambil session ID dari header X-Session-ID.  Kosong/tidak valid → string kosong."""
+    if x_session_id and _SESSION_RE.match(x_session_id.strip().lower()):
+        return x_session_id.strip().lower()
+    return ""
+
+
+def _require_session(x_session_id: str | None = Header(default=None, alias=_SESSION_HEADER)) -> str:
+    sid = _session_id(x_session_id)
+    if not sid:
+        raise HTTPException(401, "Header X-Session-ID tidak valid atau tidak ada.")
+    return sid
+
+
+def _own_job(job: dict, session_id: str) -> dict:
+    """Pastikan job dimiliki oleh session_id ini; kalau tidak, 403."""
+    owner = job.get("owner_session_id", "")
+    # Job lama (sebelum fitur ini) tidak punya owner → bisa diakses tanpa session.
+    if owner and owner != session_id:
+        raise HTTPException(403, "Akses ditolak: bukan pemilik proyek ini.")
+    return job
+
+
+@app.get("/api/session")
+def get_session():
+    """Terbitkan session ID baru (UUIDv4). Frontend menyimpannya di localStorage."""
+    return {"session_id": str(uuid.uuid4())}
 
 
 def get_job(job_id: str) -> dict:
@@ -168,8 +204,14 @@ async def models(provider: str | None = None):
 # ---------- Job ----------
 
 @app.get("/api/jobs")
-def list_jobs():
-    return sorted(store.jobs.values(), key=lambda j: j["created_at"], reverse=True)
+def list_jobs(session_id: str = Depends(_session_id)):
+    jobs = store.jobs.values()
+    if session_id:
+        # Hanya tampilkan job milik sesi ini; job lama tanpa owner ditampilkan semua.
+        jobs = [j for j in jobs if not j.get("owner_session_id") or j["owner_session_id"] == session_id]
+    else:
+        jobs = list(jobs)
+    return sorted(jobs, key=lambda j: j["created_at"], reverse=True)
 
 
 @app.post("/api/jobs")
@@ -177,6 +219,7 @@ async def create_job(
     file: UploadFile | None = File(None),
     url: str = Form(""),
     options: str = Form("{}"),
+    session_id: str = Depends(_session_id),
 ):
     raw = json.loads(options or "{}")
     opts = {
@@ -201,7 +244,7 @@ async def create_job(
     url = url.strip()
 
     if file and file.filename:
-        job = store.create(file.filename, "upload", opts)
+        job = store.create(file.filename, "upload", opts, owner_session_id=session_id)
         ext = (Path(file.filename).suffix or ".mp4").lower()
         if not re.fullmatch(r"\.[a-z0-9]{1,5}", ext):
             ext = ".mp4"
@@ -215,7 +258,7 @@ async def create_job(
             security.validate_video_url(url)
         except security.SecurityValidationError as e:
             raise HTTPException(400, str(e))
-        job = store.create(url, "url", opts)
+        job = store.create(url, "url", opts, owner_session_id=session_id)
         await store.publish(job)
         spawn(pipeline.run(job, None, url))
     else:
@@ -236,8 +279,9 @@ class RerenderIn(BaseModel):
 
 
 @app.post("/api/jobs/{job_id}/rerender")
-async def rerender_all(job_id: str, body: RerenderIn):
+async def rerender_all(job_id: str, body: RerenderIn, session_id: str = Depends(_require_session)):
     job = get_job(job_id)
+    _own_job(job, session_id)
     if not job.get("meta"):
         raise HTTPException(400, "Video sumber belum siap.")
     if body.aspect not in media.ASPECTS or body.layout not in ("face", "crop", "blur"):
@@ -256,8 +300,9 @@ async def rerender_all(job_id: str, body: RerenderIn):
 
 
 @app.delete("/api/jobs/{job_id}")
-async def delete_job(job_id: str):
-    get_job(job_id)
+async def delete_job(job_id: str, session_id: str = Depends(_require_session)):
+    job = get_job(job_id)
+    _own_job(job, session_id)
     await store.delete(job_id)
     return {"ok": True}
 
@@ -278,8 +323,9 @@ def _check_range(job: dict, body: ClipIn) -> None:
 
 
 @app.post("/api/jobs/{job_id}/clips")
-async def add_clip(job_id: str, body: ClipIn):
+async def add_clip(job_id: str, body: ClipIn, session_id: str = Depends(_require_session)):
     job = get_job(job_id)
+    _own_job(job, session_id)
     _check_range(job, body)
     clip = pipeline.new_clip(job, round(body.start, 2), round(body.end, 2),
                              body.title or f"Klip manual {len(job['clips']) + 1}")
@@ -289,8 +335,10 @@ async def add_clip(job_id: str, body: ClipIn):
 
 
 @app.patch("/api/jobs/{job_id}/clips/{clip_id}")
-async def update_clip(job_id: str, clip_id: str, body: ClipIn):
+async def update_clip(job_id: str, clip_id: str, body: ClipIn,
+                      session_id: str = Depends(_require_session)):
     job = get_job(job_id)
+    _own_job(job, session_id)
     clip = store.clip(job, clip_id)
     if not clip:
         raise HTTPException(404, "Klip tidak ditemukan")
@@ -305,8 +353,9 @@ async def update_clip(job_id: str, clip_id: str, body: ClipIn):
 
 
 @app.delete("/api/jobs/{job_id}/clips/{clip_id}")
-async def delete_clip(job_id: str, clip_id: str):
+async def delete_clip(job_id: str, clip_id: str, session_id: str = Depends(_require_session)):
     job = get_job(job_id)
+    _own_job(job, session_id)
     clip = store.clip(job, clip_id)
     if not clip:
         raise HTTPException(404, "Klip tidak ditemukan")
@@ -598,8 +647,10 @@ class PublishIn(BaseModel):
 
 
 @app.post("/api/jobs/{job_id}/clips/{clip_id}/publish")
-async def publish_clip(job_id: str, clip_id: str, body: PublishIn):
+async def publish_clip(job_id: str, clip_id: str, body: PublishIn,
+                       session_id: str = Depends(_require_session)):
     job = get_job(job_id)
+    _own_job(job, session_id)
     clip = store.clip(job, clip_id)
     if not clip or clip["status"] != "ready":
         raise HTTPException(400, "Klip belum siap. Tunggu render selesai.")
@@ -638,8 +689,9 @@ async def publish_clip(job_id: str, clip_id: str, body: PublishIn):
 
 
 @app.post("/api/jobs/{job_id}/clips/{clip_id}/publish/refresh")
-async def refresh_publish(job_id: str, clip_id: str):
+async def refresh_publish(job_id: str, clip_id: str, session_id: str = Depends(_require_session)):
     job = get_job(job_id)
+    _own_job(job, session_id)
     clip = store.clip(job, clip_id)
     pub = (clip or {}).get("publish")
     if not pub:
@@ -667,8 +719,11 @@ async def refresh_publish(job_id: str, clip_id: str):
 # ---------- File media (mendukung Range request untuk seek video) ----------
 
 @app.get("/media/{job_id}/{path:path}")
-def media_file(job_id: str, path: str, download: bool = False):
-    base = store.dir(get_job(job_id)["id"]).resolve()
+def media_file(job_id: str, path: str, download: bool = False,
+               session_id: str = Depends(_session_id)):
+    job = get_job(job_id)
+    _own_job(job, session_id)
+    base = store.dir(job["id"]).resolve()
     target = (base / path).resolve()
     if base not in target.parents or not target.is_file():
         raise HTTPException(404)
@@ -678,17 +733,22 @@ def media_file(job_id: str, path: str, download: bool = False):
 # ---------- Realtime ----------
 
 @app.websocket("/ws")
-async def ws(websocket: WebSocket):
+async def ws(websocket: WebSocket, session_id: str = ""):
     await websocket.accept()
-    hub.sockets.add(websocket)
+    # Validasi session_id dari query string (?session_id=...)
+    sid = session_id.strip().lower() if _SESSION_RE.match((session_id or "").strip().lower()) else ""
+    hub.add(websocket, sid)
     try:
-        await websocket.send_json({"type": "snapshot", "jobs": list_jobs()})
+        # Snapshot hanya berisi job milik sesi ini (atau job lama tanpa owner).
+        my_jobs = [j for j in store.jobs.values()
+                   if not j.get("owner_session_id") or j["owner_session_id"] == sid]
+        await websocket.send_json({"type": "snapshot", "jobs": sorted(my_jobs, key=lambda j: j["created_at"], reverse=True)})
         while True:
             await websocket.receive_text()  # ping dari browser
     except WebSocketDisconnect:
         pass
     finally:
-        hub.sockets.discard(websocket)
+        hub.remove(websocket)
 
 
 @app.middleware("http")
