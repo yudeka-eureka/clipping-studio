@@ -14,7 +14,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from dotenv import load_dotenv, set_key
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import anthropic
@@ -23,13 +23,16 @@ from google.genai import errors as genai_errors
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, security, system, transcribe
+from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, ratelimit, security, system, transcribe
 from .jobs import hub, store
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / ".env"
 load_dotenv(ENV_FILE)
 PUBLIC_MODE = os.environ.get("PUBLIC_MODE", "false").strip().lower() in ("1", "true", "yes", "on")
+JOB_RATE_LIMIT = max(1, int(os.environ.get("JOB_RATE_LIMIT", "5")))
+JOB_RATE_WINDOW_SECONDS = max(1, int(os.environ.get("JOB_RATE_WINDOW_SECONDS", "3600")))
+job_rate_limiter = ratelimit.JobRateLimiter(JOB_RATE_LIMIT, JOB_RATE_WINDOW_SECONDS)
 SESSION_COOKIE = "clipping_session"
 CURRENT_SESSION: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_session", default=None)
 
@@ -183,6 +186,12 @@ def get_config():
         "max_filesize_mb": security.max_filesize_mb(),
         "max_duration_minutes": security.max_duration_minutes(),
         "allowed_domains": sorted(security.allowed_domains()),
+        "limits": {
+            "jobs_per_window": JOB_RATE_LIMIT,
+            "window_seconds": JOB_RATE_WINDOW_SECONDS,
+            "max_concurrent_jobs": pipeline.MAX_CONCURRENT_JOBS,
+            "max_concurrent_renders": pipeline.MAX_CONCURRENT_RENDERS,
+        },
     }
 
 
@@ -244,6 +253,7 @@ def list_jobs():
 
 @app.post("/api/jobs")
 async def create_job(
+    request: Request,
     file: UploadFile | None = File(None),
     url: str = Form(""),
     options: str = Form("{}"),
@@ -251,6 +261,15 @@ async def create_job(
     x_ai_key: str | None = Header(None),
     x_ai_model: str | None = Header(None),
 ):
+    if PUBLIC_MODE:
+        rate_key = current_session_id() or (request.client.host if request.client else "unknown")
+        allowed, retry_after = job_rate_limiter.allow(rate_key)
+        if not allowed:
+            raise HTTPException(
+                429,
+                f"Batas pembuatan proyek tercapai ({JOB_RATE_LIMIT} per jam). Coba lagi nanti.",
+                headers={"Retry-After": str(retry_after)},
+            )
     ai_context = _request_ai_context(x_ai_provider, x_ai_key, x_ai_model)
     raw = json.loads(options or "{}")
     opts = {
