@@ -46,6 +46,15 @@ VERIFIED_DOMAINS: set[str] = {
 
 DEFAULT_MAX_FILESIZE_MB: int = 500
 DEFAULT_MAX_DURATION_MINUTES: int = 45
+DEFAULT_JOB_RETENTION_HOURS: int = 24
+
+ALLOWED_VIDEO_EXTENSIONS: set[str] = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
+ALLOWED_VIDEO_MIMES: set[str] = {
+    "video/mp4",
+    "video/quicktime",
+    "video/webm",
+    "video/x-matroska",
+}
 
 
 def max_filesize_mb() -> int:
@@ -70,6 +79,99 @@ def max_duration_minutes() -> int:
 
 def max_duration_seconds() -> int:
     return max_duration_minutes() * 60
+
+
+def job_retention_hours() -> int:
+    try:
+        val = int(os.environ.get("JOB_RETENTION_HOURS", "").strip() or DEFAULT_JOB_RETENTION_HOURS)
+        return max(1, val)
+    except (ValueError, TypeError):
+        return DEFAULT_JOB_RETENTION_HOURS
+
+
+def job_retention_seconds() -> int:
+    return job_retention_hours() * 3600
+
+
+def detect_video_mime(header: bytes) -> str | None:
+    """Deteksi tipe MIME kontainer video dari header magic bytes.
+
+    Mendukung:
+    - video/mp4 (ISO Base Media File Format: mp41, mp42, isom, iso2, avc1, dash, dll)
+    - video/quicktime (Apple QuickTime MOV: qt  , moov, wide)
+    - video/webm (EBML container dengan DocType webm)
+    - video/x-matroska (EBML container dengan DocType matroska)
+
+    Mengembalikan tipe MIME jika valid, atau None jika bukan kontainer video valid.
+    """
+    if not header or len(header) < 8:
+        return None
+
+    # 1. EBML Header (WebM / Matroska MKV): 0x1A 0x45 0xDF 0xA3
+    if header.startswith(b"\x1a\x45\xdf\xa3"):
+        sample = header[:128]
+        if b"matroska" in sample:
+            return "video/x-matroska"
+        if b"webm" in sample:
+            return "video/webm"
+        # Secara standar EBML didominasi webm / matroska
+        return "video/webm"
+
+    # 2. ISO Base Media File Format (MP4 / QuickTime / M4V)
+    # Box header: [4 bytes box size][4 bytes box type]
+    box_type = header[4:8]
+    if box_type == b"ftyp":
+        major_brand = header[8:12] if len(header) >= 12 else b""
+        if major_brand == b"qt  ":
+            return "video/quicktime"
+        mp4_brands = (
+            b"isom", b"iso2", b"mp41", b"mp42", b"mp4v", b"dash",
+            b"avc1", b"MSNV", b"NDSC", b"NSDC", b"M4V ", b"M4A ",
+            b"M4B ", b"M4P ", b"f4v ", b"kddi"
+        )
+        if major_brand in mp4_brands:
+            return "video/mp4"
+
+        # Periksa compatible brands jika ada
+        compatible = header[16:128]
+        if b"qt  " in compatible:
+            return "video/quicktime"
+        if any(b in compatible for b in mp4_brands):
+            return "video/mp4"
+        return "video/mp4"
+
+    # QuickTime legacy atoms tanpa ftyp box di awal (moov, wide, mdat, free, skip)
+    if box_type in (b"moov", b"wide", b"mdat", b"free", b"skip"):
+        return "video/quicktime"
+
+    return None
+
+
+def validate_video_header(header: bytes) -> str:
+    """Validasi magic bytes dan kembalikan MIME type video.
+
+    Melempar SecurityValidationError jika header bukan video yang didukung.
+    """
+    mime = detect_video_mime(header)
+    if not mime:
+        raise SecurityValidationError(
+            "Berkas bukan format video yang valid. "
+            "Hanya kontainer video (MP4, WebM, MOV, MKV) yang diizinkan."
+        )
+    return mime
+
+
+def detect_image_mime(header: bytes) -> str | None:
+    """Deteksi tipe MIME gambar (PNG, JPEG, WebP) dari magic bytes."""
+    if not header or len(header) < 4:
+        return None
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith(b"RIFF") and len(header) >= 12 and header[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 def allowed_domains() -> set[str]:

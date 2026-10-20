@@ -10,6 +10,8 @@ from pathlib import Path
 
 from fastapi import WebSocket
 
+from . import security
+
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "jobs"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -41,6 +43,8 @@ hub = Hub()
 
 
 class Store:
+    DATA_DIR: Path = DATA_DIR
+
     def __init__(self) -> None:
         self.jobs: dict[str, dict] = {}
         self._last_progress: dict[str, float] = {}
@@ -61,7 +65,10 @@ class Store:
             self.jobs[job["id"]] = job
 
     def dir(self, job_id: str) -> Path:
-        return DATA_DIR / job_id
+        target = (self.DATA_DIR / job_id).resolve()
+        if self.DATA_DIR.resolve() not in target.parents and target != self.DATA_DIR.resolve():
+            raise ValueError(f"Job ID tidak valid: {job_id}")
+        return target
 
     @staticmethod
     def public_job(job: dict) -> dict:
@@ -155,6 +162,54 @@ class Store:
         await asyncio.to_thread(shutil.rmtree, self.dir(job_id), True)
         await hub.send({"type": "deleted", "job_id": job_id},
                        job.get("owner_session_id") if job else None)
+
+    async def purge_expired(self, retention_seconds: float | None = None) -> list[str]:
+        """Hapus seluruh folder proyek di data/jobs/<id> yang sudah melewati masa retensi."""
+        if retention_seconds is None:
+            retention_seconds = security.job_retention_seconds()
+        now = time.time()
+        cutoff = now - retention_seconds
+        purged = []
+
+        # 1. Periksa job yang tersimpan di memori
+        for job_id, job in list(self.jobs.items()):
+            created_at = job.get("created_at") or 0
+            # Jika job masih aktif berjalan dan belum lewat batas retensi + 1 jam, pertahankan
+            if job.get("status") not in ("done", "error") and now - created_at < retention_seconds + 3600:
+                continue
+            if created_at < cutoff:
+                await self.delete(job_id)
+                purged.append(job_id)
+
+        # 2. Periksa folder yatim piatu (orphaned) atau file upload sementara di DATA_DIR
+        try:
+            if self.DATA_DIR.exists():
+                for entry in list(self.DATA_DIR.iterdir()):
+                    if entry.name.startswith("."):
+                        try:
+                            if entry.is_dir():
+                                for sub in list(entry.iterdir()):
+                                    if sub.stat().st_mtime < now - 3600:
+                                        sub.unlink(missing_ok=True)
+                            elif entry.is_file():
+                                if entry.stat().st_mtime < now - 3600:
+                                    entry.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        continue
+
+                    if entry.is_dir() and entry.name not in self.jobs:
+                        try:
+                            st = entry.stat()
+                            if st.st_mtime < cutoff:
+                                await asyncio.to_thread(shutil.rmtree, entry, True)
+                                purged.append(entry.name)
+                        except OSError:
+                            pass
+        except OSError:
+            pass
+
+        return purged
 
 
 store = Store()

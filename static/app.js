@@ -429,6 +429,26 @@ document.querySelectorAll(".tab").forEach((tab) => {
 });
 
 function setFile(file) {
+  if (file) {
+    const maxMb = state.config?.max_filesize_mb || 500;
+    const maxBytes = maxMb * 1024 * 1024;
+    if (file.size > maxBytes) {
+      toast(`Ukuran file (${(file.size / 1e6).toFixed(1)} MB) melebihi batas maksimum ${maxMb} MB.`, true);
+      $("#in-file").value = "";
+      state.file = null;
+      $("#drop-label").textContent = "Tarik video ke sini atau klik untuk memilih";
+      return;
+    }
+    const ext = "." + (file.name.split(".").pop() || "").toLowerCase();
+    const allowed = [".mp4", ".mov", ".m4v", ".webm", ".mkv"];
+    if (!allowed.includes(ext)) {
+      toast(`Format file '${ext}' tidak didukung. Pilih video MP4, MOV, WEBM, atau MKV.`, true);
+      $("#in-file").value = "";
+      state.file = null;
+      $("#drop-label").textContent = "Tarik video ke sini atau klik untuk memilih";
+      return;
+    }
+  }
   state.file = file;
   state.fileDuration = null;
   updateEstimate();
@@ -464,6 +484,10 @@ $("#form-new").onsubmit = (e) => {
   const fd = new FormData();
   if (state.src === "file") {
     if (!state.file) return toast("Pilih file video dulu.", true);
+    const maxMb = state.config?.max_filesize_mb || 500;
+    if (state.file.size > maxMb * 1024 * 1024) {
+      return toast(`Ukuran file melebihi batas maksimum ${maxMb} MB.`, true);
+    }
     fd.append("file", state.file);
   } else {
     const url = $("#in-url").value.trim();
@@ -581,6 +605,23 @@ function renderJob() {
   const sum = $("#job-summary");
   sum.hidden = !job.summary;
   if (job.summary) sum.innerHTML = `<h2>Ringkasan AI</h2><p class="muted">${esc(job.summary)}</p>`;
+
+  const retHours = state.config?.job_retention_hours || 24;
+  let retMsg = `Klip Anda akan disimpan selama ${retHours} jam. Segera unduh hasil klip Anda.`;
+  if (job.created_at) {
+    const expiresAt = job.created_at + retHours * 3600;
+    const remainingSec = expiresAt - Date.now() / 1000;
+    if (remainingSec > 0) {
+      const remainingHours = Math.floor(remainingSec / 3600);
+      const remainingMins = Math.floor((remainingSec % 3600) / 60);
+      const timeLeftStr = remainingHours > 0 ? `${remainingHours} jam ${remainingMins} menit` : `${remainingMins} menit`;
+      retMsg = `Klip Anda akan disimpan selama ${retHours} jam (sisa waktu: ~${timeLeftStr}). Segera unduh hasil klip Anda.`;
+    } else {
+      retMsg = `Masa simpan klip (${retHours} jam) telah terlewati. Klip dapat dibersihkan sewaktu-waktu.`;
+    }
+  }
+  const retWarn = $("#job-retention-msg");
+  if (retWarn) retWarn.textContent = retMsg;
 
   renderJobUsage(job);
 
@@ -1054,9 +1095,18 @@ $("#btn-delete-job").onclick = async () => {
 };
 
 // ---------- Pengaturan ----------
+function updateRetentionUI() {
+  const retHours = state.config?.job_retention_hours || 24;
+  const notice = $("#retention-new-notice");
+  if (notice) {
+    notice.innerHTML = `Klip Anda akan disimpan selama <strong>${retHours} jam</strong>. Segera unduh hasil klip Anda.`;
+  }
+}
+
 async function loadConfig() {
   state.config = applyStoredAi(await api("/api/config"));
   fillSettings();
+  updateRetentionUI();
   if (!state.config.has_key) showSettings();
 }
 

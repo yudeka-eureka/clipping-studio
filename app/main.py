@@ -12,6 +12,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv, set_key
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -33,7 +34,39 @@ PUBLIC_MODE = os.environ.get("PUBLIC_MODE", "false").strip().lower() in ("1", "t
 SESSION_COOKIE = "clipping_session"
 CURRENT_SESSION: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_session", default=None)
 
-app = FastAPI(title="Clipping Studio")
+PURGE_INTERVAL_SECONDS: int = int(os.environ.get("PURGE_INTERVAL_SECONDS", "1800"))
+
+
+async def _retention_purge_loop(stop_event: asyncio.Event) -> None:
+    """Asyncio task berkala yang memindai dan menghapus folder proyek yang melewati masa retensi."""
+    while not stop_event.is_set():
+        try:
+            await store.purge_expired()
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=PURGE_INTERVAL_SECONDS)
+            break
+        except asyncio.TimeoutError:
+            pass
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    stop_event = asyncio.Event()
+    purge_task = asyncio.create_task(_retention_purge_loop(stop_event))
+    try:
+        yield
+    finally:
+        stop_event.set()
+        purge_task.cancel()
+        try:
+            await purge_task
+        except asyncio.CancelledError:
+            pass
+
+
+app = FastAPI(title="Clipping Studio", lifespan=lifespan)
 tasks: set[asyncio.Task] = set()
 
 
@@ -104,6 +137,7 @@ class ConfigIn(BaseModel):
     media: dict[str, str] | None = None  # CLOUDINARY_* / R2_*; secret kosong = tidak diubah
     max_filesize_mb: int | None = None
     max_duration_minutes: int | None = None
+    job_retention_hours: int | None = None
 
 
 def _request_ai_context(provider_name: str | None, key: str | None, model: str | None,
@@ -182,6 +216,7 @@ def get_config():
         "aspects": list(media.ASPECTS),
         "max_filesize_mb": security.max_filesize_mb(),
         "max_duration_minutes": security.max_duration_minutes(),
+        "job_retention_hours": security.job_retention_hours(),
         "allowed_domains": sorted(security.allowed_domains()),
     }
 
@@ -216,6 +251,8 @@ def save_config(cfg: ConfigIn):
         _set_env("MAX_FILESIZE_MB", str(cfg.max_filesize_mb))
     if cfg.max_duration_minutes is not None and cfg.max_duration_minutes > 0:
         _set_env("MAX_DURATION_MINUTES", str(cfg.max_duration_minutes))
+    if cfg.job_retention_hours is not None and cfg.job_retention_hours > 0:
+        _set_env("JOB_RETENTION_HOURS", str(cfg.job_retention_hours))
     return get_config()
 
 
@@ -275,19 +312,60 @@ async def create_job(
     url = url.strip()
 
     if file and file.filename:
-        job = store.create(file.filename, "upload", opts)
-        if PUBLIC_MODE:
-            job["owner_session_id"] = current_session_id()
-        if ai_context:
-            job["_ai_context"] = ai_context
-        ext = (Path(file.filename).suffix or ".mp4").lower()
-        if not re.fullmatch(r"\.[a-z0-9]{1,5}", ext):
-            ext = ".mp4"
-        dest = store.dir(job["id"]) / f"source{ext}"
-        with dest.open("wb") as out:
-            await asyncio.to_thread(shutil.copyfileobj, file.file, out, 4 * 1024 * 1024)
-        await store.publish(job)
-        spawn(pipeline.run(job, dest, None))
+        ext = (Path(file.filename).suffix or "").lower()
+        if ext not in security.ALLOWED_VIDEO_EXTENSIONS:
+            raise HTTPException(
+                400,
+                f"Format file '{ext or 'unknown'}' tidak didukung. "
+                f"Gunakan kontainer video yang diizinkan: {', '.join(sorted(security.ALLOWED_VIDEO_EXTENSIONS))}."
+            )
+
+        tmp_dir = store.DATA_DIR / ".tmp_uploads"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp_path = tmp_dir / f"upload_{uuid4().hex}{ext}"
+
+        max_bytes = security.max_filesize_bytes()
+        total_bytes = 0
+        first_chunk = True
+
+        try:
+            with tmp_path.open("wb") as out:
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    if first_chunk:
+                        first_chunk = False
+                        mime = security.detect_video_mime(chunk)
+                        if not mime:
+                            raise HTTPException(
+                                400,
+                                "Berkas bukan format video yang valid (header berkas/magic bytes tidak valid). "
+                                "Hanya MP4, WebM, QuickTime (MOV), dan Matroska (MKV) yang diizinkan."
+                            )
+                    total_bytes += len(chunk)
+                    if total_bytes > max_bytes:
+                        raise HTTPException(
+                            400,
+                            f"Ukuran berkas melebihi batas maksimum ({security.max_filesize_mb()} MB)."
+                        )
+                    out.write(chunk)
+
+            if total_bytes == 0:
+                raise HTTPException(400, "Berkas video kosong.")
+
+            safe_filename = Path(file.filename).name
+            job = store.create(safe_filename, "upload", opts)
+            if PUBLIC_MODE:
+                job["owner_session_id"] = current_session_id()
+            if ai_context:
+                job["_ai_context"] = ai_context
+            dest = store.dir(job["id"]) / f"source{ext}"
+            shutil.move(str(tmp_path), str(dest))
+            await store.publish(job)
+            spawn(pipeline.run(job, dest, None))
+        finally:
+            tmp_path.unlink(missing_ok=True)
     elif url:
         try:
             security.validate_video_url(url)
@@ -427,17 +505,51 @@ def get_branding():
     return branding.public()
 
 
-async def _save_upload(file: UploadFile, name: str) -> Path:
-    tmp = branding.DIR.parent / f".upload-{name}"
+async def _save_upload(file: UploadFile, name: str, is_image_only: bool = False) -> Path:
+    ext = (Path(file.filename or "").suffix or "").lower()
+    if is_image_only:
+        if ext not in branding.IMAGE_EXT:
+            raise HTTPException(400, f"Format {ext or '?'} tidak didukung untuk logo. Pakai: {', '.join(sorted(branding.IMAGE_EXT))}")
+        max_bytes = 20 * 1024 * 1024  # Maksimal 20 MB untuk logo
+    else:
+        if ext not in branding.IMAGE_EXT | branding.VIDEO_EXT:
+            raise HTTPException(400, f"Format {ext or '?'} tidak didukung. Pakai: {', '.join(sorted(branding.IMAGE_EXT | branding.VIDEO_EXT))}")
+        max_bytes = security.max_filesize_bytes() if ext in branding.VIDEO_EXT else 20 * 1024 * 1024
+
+    tmp = branding.DIR.parent / f".upload-{name}-{uuid4().hex[:8]}{ext}"
     tmp.parent.mkdir(parents=True, exist_ok=True)
-    with tmp.open("wb") as out:
-        await asyncio.to_thread(shutil.copyfileobj, file.file, out, 4 * 1024 * 1024)
-    return tmp
+    total_bytes = 0
+    first_chunk = True
+
+    try:
+        with tmp.open("wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                if first_chunk:
+                    first_chunk = False
+                    if ext in branding.IMAGE_EXT:
+                        if not security.detect_image_mime(chunk):
+                            raise HTTPException(400, "Berkas bukan format gambar yang valid.")
+                    elif ext in branding.VIDEO_EXT:
+                        if not security.detect_video_mime(chunk):
+                            raise HTTPException(400, "Berkas bukan format video yang valid.")
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    raise HTTPException(400, "Ukuran berkas melebihi batas maksimum.")
+                out.write(chunk)
+        if total_bytes == 0:
+            raise HTTPException(400, "Berkas kosong.")
+        return tmp
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 @app.post("/api/branding/logos")
 async def add_logo(file: UploadFile = File(...), label: str = Form("")):
-    tmp = await _save_upload(file, "logo")
+    tmp = await _save_upload(file, "logo", is_image_only=True)
     try:
         added = await asyncio.to_thread(branding.add_logo, tmp, file.filename or "", label)
     except ValueError as e:
@@ -487,7 +599,7 @@ class DefaultBumperIn(BaseModel):
 
 @app.post("/api/branding/bumpers")
 async def add_bumper(file: UploadFile = File(...), label: str = Form("")):
-    tmp = await _save_upload(file, "bumper")
+    tmp = await _save_upload(file, "bumper", is_image_only=False)
     try:
         added = await asyncio.to_thread(branding.add_bumper, tmp, file.filename or "", label)
     except ValueError as e:

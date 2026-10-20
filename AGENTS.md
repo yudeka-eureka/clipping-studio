@@ -29,7 +29,7 @@ Tabel ini ringkasan. Semua pilihan tiap perintah ada di [docs/cli.md](docs/cli.m
 | `run SOURCE` | Pipeline penuh: unduh/salin → AI pilih klip → render |
 | `cut SOURCE --start X --end Y` | Potong satu klip tanpa AI (`--job ID` memakai video proyek yang ada) |
 | `rerender JOB [CLIP...]` | Render ulang dengan `--aspect`, `--layout`, `--start/--end`, `--title` |
-| `jobs`, `show JOB`, `rm JOB` | Daftar / detail (`--logs`) / hapus proyek. `JOB` boleh awalan id atau `last` |
+| `jobs`, `show JOB`, `rm JOB`, `purge` | Daftar / detail (`--logs`) / hapus proyek / bersihkan proyek kedaluwarsa (TTL). `JOB` boleh awalan id atau `last` |
 | `transcribe SOURCE` | Transkrip Whisper lokal, `--format text\|srt\|json` (json = waktu per kata) |
 | `estimate SOURCE` | Perkiraan token & biaya penyedia AI yang aktif |
 | `usage` | Token & biaya yang sudah terpakai per proyek |
