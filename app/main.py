@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv, set_key
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import anthropic
@@ -27,6 +27,7 @@ from .jobs import hub, store
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / ".env"
 load_dotenv(ENV_FILE)
+PUBLIC_MODE = os.environ.get("PUBLIC_MODE", "false").strip().lower() in ("1", "true", "yes", "on")
 
 app = FastAPI(title="Clipping Studio")
 tasks: set[asyncio.Task] = set()
@@ -77,6 +78,20 @@ class ConfigIn(BaseModel):
     max_duration_minutes: int | None = None
 
 
+def _request_ai_context(provider_name: str | None, key: str | None, model: str | None,
+                        *, required: bool = True) -> dict | None:
+    if not PUBLIC_MODE:
+        return None
+    name = (provider_name or "").strip().lower()
+    if name not in analysis.PROVIDERS:
+        raise HTTPException(400, "Header X-AI-Provider tidak valid.")
+    secret = (key or "").strip()
+    if required and not secret:
+        raise HTTPException(400, "Header X-AI-Key wajib diisi dalam PUBLIC_MODE.")
+    selected_model = (model or "").strip() or analysis.PROVIDERS[name]["default_model"]
+    return {"provider": name, "key": secret, "model": selected_model}
+
+
 def _hint(env: str) -> str:
     value = os.environ.get(env, "")
     return f"…{value[-4:]}" if value else ""
@@ -99,8 +114,9 @@ def _providers() -> dict:
     return {
         name: {
             "label": spec["label"], "video": spec["video"],
-            "has_key": bool(os.environ.get(spec["env"], "").strip()),
-            "key_hint": _hint(spec["env"]), "model": analysis.model_name(name),
+            "has_key": False if PUBLIC_MODE else bool(os.environ.get(spec["env"], "").strip()),
+            "key_hint": "" if PUBLIC_MODE else _hint(spec["env"]),
+            "model": spec["default_model"] if PUBLIC_MODE else analysis.model_name(name),
             "default_model": spec["default_model"],
         }
         for name, spec in analysis.PROVIDERS.items()
@@ -111,12 +127,15 @@ def _providers() -> dict:
 def get_config():
     current = analysis.provider()
     key = os.environ.get(analysis.PROVIDERS[current]["env"], "")
+    if PUBLIC_MODE:
+        key = ""
     return {
         "provider": current,
+        "public_mode": PUBLIC_MODE,
         "providers": _providers(),
         "has_key": bool(key),
         "key_hint": f"…{key[-4:]}" if key else "",
-        "model": analysis.model_name(),
+        "model": analysis.PROVIDERS[current]["default_model"] if PUBLIC_MODE else analysis.model_name(),
         "ffmpeg": media.FFMPEG,
         "subtitles_supported": media.SUBTITLES_SUPPORTED,
         "face_tracking": facetrack.available(),
@@ -144,11 +163,11 @@ def save_config(cfg: ConfigIn):
     ENV_FILE.touch(mode=0o600, exist_ok=True)
     target = cfg.provider if cfg.provider in analysis.PROVIDERS else analysis.provider()
     spec = analysis.PROVIDERS[target]
-    if cfg.provider in analysis.PROVIDERS:
+    if cfg.provider in analysis.PROVIDERS and not PUBLIC_MODE:
         _set_env("AI_PROVIDER", cfg.provider)
-    if cfg.api_key is not None and cfg.api_key.strip():
+    if cfg.api_key is not None and cfg.api_key.strip() and not PUBLIC_MODE:
         _set_env(spec["env"], cfg.api_key.strip())
-    if cfg.model:
+    if cfg.model and not PUBLIC_MODE:
         _set_env(spec["model_env"], cfg.model.strip())
     for field, env, allowed in (("whisper_model", "WHISPER_MODEL", transcribe.MODELS),
                                 ("whisper_language", "WHISPER_LANGUAGE", transcribe.LANGUAGES)):
@@ -173,10 +192,13 @@ def save_config(cfg: ConfigIn):
 
 
 @app.get("/api/models")
-async def models(provider: str | None = None):
-    name = provider if provider in analysis.PROVIDERS else analysis.provider()
+async def models(provider: str | None = None, x_ai_provider: str | None = Header(None),
+                 x_ai_key: str | None = Header(None), x_ai_model: str | None = Header(None)):
+    context = _request_ai_context(x_ai_provider or provider, x_ai_key, x_ai_model)
+    name = context["provider"] if context else provider if provider in analysis.PROVIDERS else analysis.provider()
     try:
-        return {"provider": name, "models": await asyncio.to_thread(analysis.list_models, name)}
+        key = context["key"] if context else None
+        return {"provider": name, "models": await asyncio.to_thread(analysis.list_models, name, key)}
     except genai_errors.APIError as e:
         raise HTTPException(400, f"Gemini API ({e.code}): {e.message}")
     except (anthropic.APIStatusError, openai.APIStatusError) as e:
@@ -189,7 +211,8 @@ async def models(provider: str | None = None):
 
 @app.get("/api/jobs")
 def list_jobs():
-    return sorted(store.jobs.values(), key=lambda j: j["created_at"], reverse=True)
+    return [store.public_job(job) for job in
+            sorted(store.jobs.values(), key=lambda j: j["created_at"], reverse=True)]
 
 
 @app.post("/api/jobs")
@@ -197,7 +220,11 @@ async def create_job(
     file: UploadFile | None = File(None),
     url: str = Form(""),
     options: str = Form("{}"),
+    x_ai_provider: str | None = Header(None),
+    x_ai_key: str | None = Header(None),
+    x_ai_model: str | None = Header(None),
 ):
+    ai_context = _request_ai_context(x_ai_provider, x_ai_key, x_ai_model)
     raw = json.loads(options or "{}")
     opts = {
         "num_clips": max(1, min(15, int(raw.get("num_clips", 3)))),
@@ -222,6 +249,8 @@ async def create_job(
 
     if file and file.filename:
         job = store.create(file.filename, "upload", opts)
+        if ai_context:
+            job["_ai_context"] = ai_context
         ext = (Path(file.filename).suffix or ".mp4").lower()
         if not re.fullmatch(r"\.[a-z0-9]{1,5}", ext):
             ext = ".mp4"
@@ -236,11 +265,13 @@ async def create_job(
         except security.SecurityValidationError as e:
             raise HTTPException(400, str(e))
         job = store.create(url, "url", opts)
+        if ai_context:
+            job["_ai_context"] = ai_context
         await store.publish(job)
         spawn(pipeline.run(job, None, url))
     else:
         raise HTTPException(400, "Pilih file video atau masukkan link yang valid.")
-    return job
+    return store.public_job(job)
 
 
 class RerenderIn(BaseModel):
@@ -496,10 +527,14 @@ def save_pricing(body: PricingIn):
 
 
 @app.get("/api/estimate")
-def estimate(duration: float, num_clips: int = 3, max_len: int = 90, subtitles: bool = True):
-    provider = analysis.provider()
-    est = pricing.estimate(max(0.0, duration), analysis.model_name(), num_clips, max_len, subtitles, provider)
-    return {**est, "model": analysis.model_name(), "provider": provider,
+def estimate(duration: float, num_clips: int = 3, max_len: int = 90, subtitles: bool = True,
+             x_ai_provider: str | None = Header(None), x_ai_key: str | None = Header(None),
+             x_ai_model: str | None = Header(None)):
+    context = _request_ai_context(x_ai_provider, x_ai_key, x_ai_model, required=False)
+    provider = context["provider"] if context else analysis.provider()
+    model = context["model"] if context else analysis.model_name()
+    est = pricing.estimate(max(0.0, duration), model, num_clips, max_len, subtitles, provider)
+    return {**est, "model": model, "provider": provider,
             "provider_label": analysis.PROVIDERS[provider]["label"], "usd_idr": pricing.usd_idr()}
 
 

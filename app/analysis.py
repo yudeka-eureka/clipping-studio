@@ -162,32 +162,37 @@ def b64(data: bytes) -> str:
 
 def analyze(source: Path | object, opts: dict, duration: float, words: list[dict] | None = None,
             frames: list[tuple[float, bytes]] | None = None,
-            on_state: Callable[[str], None] | None = None) -> tuple[Analysis, dict]:
-    """Jalankan analisis dengan penyedia yang sedang dipilih."""
-    name = provider()
+            on_state: Callable[[str], None] | None = None,
+            provider_name: str | None = None, api_key_value: str | None = None,
+            model: str | None = None) -> tuple[Analysis, dict]:
+    """Jalankan analisis dengan konfigurasi global atau konteks request."""
+    name = provider_name or provider()
+    key = api_key_value or api_key(name)
+    selected_model = model or model_name(name)
     if name == "gemini":
         from . import gemini
 
-        return gemini.analyze(api_key(), model_name(), source, opts, duration)
+        return gemini.analyze(key, selected_model, source, opts, duration)
     if name == "anthropic":
         from . import provider_anthropic
 
-        return provider_anthropic.analyze(api_key(), model_name(), opts, duration, words or [], frames or [])
+        return provider_anthropic.analyze(key, selected_model, opts, duration, words or [], frames or [])
     from . import provider_openai
 
-    return provider_openai.analyze(api_key(), model_name(), opts, duration, words or [], frames or [])
+    return provider_openai.analyze(key, selected_model, opts, duration, words or [], frames or [])
 
 
-def list_models(name: str | None = None) -> list[str]:
+def list_models(name: str | None = None, api_key_value: str | None = None) -> list[str]:
     name = name or provider()
+    key = api_key_value or api_key(name)
     if name == "gemini":
         from . import gemini
 
-        return gemini.list_models(api_key(name))
+        return gemini.list_models(key)
     if name == "anthropic":
         from . import provider_anthropic
 
-        return provider_anthropic.list_models(api_key(name))
+        return provider_anthropic.list_models(key)
     from . import provider_openai
 
-    return provider_openai.list_models(api_key(name))
+    return provider_openai.list_models(key)
