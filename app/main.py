@@ -21,7 +21,7 @@ from google.genai import errors as genai_errors
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, system, transcribe
+from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, security, system, transcribe
 from .jobs import hub, store
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -73,6 +73,8 @@ class ConfigIn(BaseModel):
     buffer_api_key: str | None = None
     media_host: str | None = None
     media: dict[str, str] | None = None  # CLOUDINARY_* / R2_*; secret kosong = tidak diubah
+    max_filesize_mb: int | None = None
+    max_duration_minutes: int | None = None
 
 
 def _hint(env: str) -> str:
@@ -131,6 +133,9 @@ def get_config():
         "media": {f: (_hint(f) if f in mediahost.SECRET_FIELDS else os.environ.get(f, ""))
                   for fields in mediahost.FIELDS.values() for f in fields},
         "aspects": list(media.ASPECTS),
+        "max_filesize_mb": security.max_filesize_mb(),
+        "max_duration_minutes": security.max_duration_minutes(),
+        "allowed_domains": sorted(security.allowed_domains()),
     }
 
 
@@ -160,6 +165,10 @@ def save_config(cfg: ConfigIn):
         # Isian kosong tidak menimpa nilai tersimpan (mencegah kredensial terhapus tanpa sengaja).
         if name in allowed and value:
             _set_env(name, value)
+    if cfg.max_filesize_mb is not None and cfg.max_filesize_mb > 0:
+        _set_env("MAX_FILESIZE_MB", str(cfg.max_filesize_mb))
+    if cfg.max_duration_minutes is not None and cfg.max_duration_minutes > 0:
+        _set_env("MAX_DURATION_MINUTES", str(cfg.max_duration_minutes))
     return get_config()
 
 
@@ -221,7 +230,11 @@ async def create_job(
             await asyncio.to_thread(shutil.copyfileobj, file.file, out, 4 * 1024 * 1024)
         await store.publish(job)
         spawn(pipeline.run(job, dest, None))
-    elif re.match(r"^https?://", url):
+    elif url:
+        try:
+            security.validate_video_url(url)
+        except security.SecurityValidationError as e:
+            raise HTTPException(400, str(e))
         job = store.create(url, "url", opts)
         await store.publish(job)
         spawn(pipeline.run(job, None, url))
@@ -319,7 +332,7 @@ async def delete_clip(job_id: str, clip_id: str):
         raise HTTPException(404, "Klip tidak ditemukan")
     if clip["status"] in ("queued", "rendering"):
         raise HTTPException(409, "Klip sedang dirender.")
-    for key in ("file", "srt"):
+    for key in ("file", "srt", "vtt"):
         if clip.get(key):
             (store.dir(job_id) / clip[key]).unlink(missing_ok=True)
     job["clips"].remove(clip)

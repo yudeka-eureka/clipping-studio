@@ -12,7 +12,7 @@ from typing import Callable
 import yt_dlp
 from google.genai import errors as genai_errors
 
-from . import analysis, branding, buffer, facetrack, gemini, media, mediahost, pricing, silence, transcribe
+from . import analysis, branding, buffer, facetrack, gemini, media, mediahost, pricing, security, silence, transcribe
 from .jobs import store
 
 # Satu analisis penuh sekaligus; render klip boleh paralel terbatas.
@@ -30,14 +30,49 @@ def model_name() -> str:
 
 def _download(job: dict, url: str, loop: asyncio.AbstractEventLoop) -> Path:
     out_dir = store.dir(job["id"])
+    max_filesize = security.max_filesize_bytes()
+    max_duration = security.max_duration_seconds()
+    reject_reason: str | None = None
 
     def hook(d: dict) -> None:
         if d["status"] == "downloading":
+            downloaded = d.get("downloaded_bytes", 0)
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
-            pct = (d.get("downloaded_bytes", 0) / total) if total else 0
+            if downloaded > max_filesize:
+                raise RuntimeError(
+                    f"Ukuran unduhan ({downloaded / (1024 * 1024):.1f} MB) melebihi "
+                    f"batas maksimum ({int(max_filesize / (1024 * 1024))} MB)."
+                )
+            if total and total > max_filesize:
+                raise RuntimeError(
+                    f"Perkiraan ukuran video ({total / (1024 * 1024):.1f} MB) melebihi "
+                    f"batas maksimum ({int(max_filesize / (1024 * 1024))} MB)."
+                )
+            pct = (downloaded / total) if total else 0
             speed = d.get("_speed_str", "").strip()
             asyncio.run_coroutine_threadsafe(
                 store.progress(job, pct, f"Mengunduh video… {speed}"), loop)
+
+    def match_filter(info_dict: dict, *, incomplete: bool = False) -> str | None:
+        nonlocal reject_reason
+        dur = info_dict.get("duration")
+        if dur and dur > max_duration:
+            dur_min = int(dur // 60)
+            dur_sec = int(dur % 60)
+            max_min = int(max_duration // 60)
+            reject_reason = (
+                f"Durasi video ({dur_min} menit {dur_sec} detik) melebihi "
+                f"batas maksimum ({max_min} menit)."
+            )
+            return reject_reason
+        size = info_dict.get("filesize") or info_dict.get("filesize_approx")
+        if size and size > max_filesize:
+            reject_reason = (
+                f"Ukuran video ({size / (1024 * 1024):.1f} MB) melebihi "
+                f"batas maksimum ({int(max_filesize / (1024 * 1024))} MB)."
+            )
+            return reject_reason
+        return None
 
     opts = {
         "format": "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/bv*[height<=1080]+ba/b",
@@ -47,16 +82,39 @@ def _download(job: dict, url: str, loop: asyncio.AbstractEventLoop) -> Path:
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+        "max_filesize": max_filesize,
+        "match_filter": match_filter,
         "progress_hooks": [hook],
+        "socket_timeout": 30,
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        job["name"] = info.get("title") or job["name"]
-    files = sorted(out_dir.glob("source.*"), key=lambda p: p.stat().st_size, reverse=True)
-    files = [f for f in files if f.suffix not in (".part", ".ytdl")]
-    if not files:
-        raise RuntimeError("Video gagal diunduh.")
-    return files[0]
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if reject_reason:
+                raise RuntimeError(reject_reason)
+            job["name"] = info.get("title") or job["name"]
+        files = sorted(out_dir.glob("source.*"), key=lambda p: p.stat().st_size, reverse=True)
+        files = [f for f in files if f.suffix not in (".part", ".ytdl")]
+        if not files:
+            if reject_reason:
+                raise RuntimeError(reject_reason)
+            raise RuntimeError("Video gagal diunduh atau melebihi batas ukuran/durasi yang diizinkan.")
+        src_file = files[0]
+        if src_file.stat().st_size > max_filesize:
+            src_file.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"Ukuran video ({src_file.stat().st_size / (1024 * 1024):.1f} MB) melebihi "
+                f"batas maksimum ({int(max_filesize / (1024 * 1024))} MB)."
+            )
+        return src_file
+    except Exception:
+        # Batalkan unduhan dan bersihkan file unduhan parsial / sumber secara aman
+        for f in out_dir.glob("source.*"):
+            try:
+                f.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
 
 
 def _sanitize(suggestions: list[gemini.ClipSuggestion], duration: float, opts: dict) -> list[gemini.ClipSuggestion]:
@@ -79,7 +137,7 @@ def new_clip(job: dict, start: float, end: float, title: str, **extra) -> dict:
     clip = {
         "id": uuid.uuid4().hex[:8], "title": title, "start": start, "end": end,
         "hook": "", "reason": "", "score": None, "hashtags": [], "captions": [], "ai_captions": [],
-        "status": "pending", "progress": 0.0, "error": None, "file": None, "srt": None,
+        "status": "pending", "progress": 0.0, "error": None, "file": None, "srt": None, "vtt": None,
         "version": 0,
     }
     clip.update(extra)
@@ -165,8 +223,9 @@ async def render(job: dict, clip: dict) -> None:
             base = f"clip_{clip['id']}"
             src = store.dir(job["id"]) / job["source"]
             out = clips_dir / f"{base}.mp4"
-            srt_path, ass_path = clips_dir / f"{base}.srt", clips_dir / f"{base}.ass"
+            srt_path, vtt_path, ass_path = clips_dir / f"{base}.srt", clips_dir / f"{base}.vtt", clips_dir / f"{base}.ass"
             srt_path.unlink(missing_ok=True)
+            vtt_path.unlink(missing_ok=True)
             ass_path.unlink(missing_ok=True)
             meta = job["meta"]
             if "fps" not in meta:  # proyek lama
@@ -208,6 +267,7 @@ async def render(job: dict, clip: dict) -> None:
                     captions = silence.remap_items(clip["ai_captions"], segments, clip["start"])
             clip["captions"] = captions
             has_srt = subs and media.write_srt(captions, srt_path)
+            has_vtt = subs and media.write_vtt(captions, vtt_path)
 
             width, height = media.output_size(meta["width"], meta["height"], opts["aspect"])
             title = clip["title"] if opts.get("show_title") else None
@@ -227,6 +287,7 @@ async def render(job: dict, clip: dict) -> None:
                 await store.log(job, f"🎨 “{clip['title']}”: {' + '.join(extras)} ditempel.")
             clip.update(status="ready", progress=1.0, stage=None, file=f"clips/{out.name}",
                         srt=f"clips/{srt_path.name}" if has_srt else None,
+                        vtt=f"clips/{vtt_path.name}" if has_vtt else None,
                         duration_out=round(out_duration, 2), version=clip.get("version", 0) + 1)
             await store.log(job, f"✅ Klip siap: {clip['title']}")
         except Exception as e:  # noqa: BLE001
@@ -296,6 +357,7 @@ async def publish(job: dict, clip: dict, channels: list[dict], text: str, mode: 
 async def prepare_source(job: dict, upload_path: Path | None, url: str | None) -> tuple[Path, dict]:
     """Siapkan file sumber (unduh kalau perlu) lalu baca metadatanya. Dipakai mode web & CLI."""
     if url:
+        security.validate_video_url(url)
         await store.update(job, status="downloading", stage="Mengunduh video…", progress=0)
         await store.log(job, f"Mengunduh dari {url}")
         src = await asyncio.to_thread(_download, job, url, asyncio.get_running_loop())
@@ -303,6 +365,15 @@ async def prepare_source(job: dict, upload_path: Path | None, url: str | None) -
         assert upload_path
         src = upload_path
     meta = await media.probe(src)
+    max_duration = security.max_duration_seconds()
+    if meta.get("duration", 0) > max_duration:
+        src.unlink(missing_ok=True)
+        dur_min = int(meta["duration"] // 60)
+        dur_sec = int(meta["duration"] % 60)
+        max_min = int(max_duration // 60)
+        raise RuntimeError(
+            f"Durasi video ({dur_min} menit {dur_sec} detik) melebihi batas maksimum ({max_min} menit)."
+        )
     job.update(source=src.name, meta=meta)
     await store.log(job, f"Video: {meta['width']}x{meta['height']}, {meta['duration']:.0f} detik"
                          + ("" if meta["has_audio"] else " (tanpa audio)"))

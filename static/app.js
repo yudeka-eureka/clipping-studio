@@ -71,6 +71,9 @@ function handleEvent(ev) {
       else if (state.current) showNew();
       break;
     case "job":
+      if (ev.job.id === state.current && ev.job.status === "error" && state.jobs[ev.job.id]?.status !== "error") {
+        toast(`Gagal: ${ev.job.error}`, true);
+      }
       if ((ev.job.usage || []).length !== (state.jobs[ev.job.id]?.usage || []).length) scheduleUsageRefresh();
       state.jobs[ev.job.id] = ev.job;
       renderJobList();
@@ -416,6 +419,9 @@ $("#form-new").onsubmit = (e) => {
   } else {
     const url = $("#in-url").value.trim();
     if (!url) return toast("Masukkan link video.", true);
+    if (!url.startsWith("https://")) {
+      return toast("Hanya URL dengan protokol https:// yang diizinkan.", true);
+    }
     fd.append("url", url);
   }
   fd.append("options", JSON.stringify({
@@ -444,9 +450,15 @@ $("#form-new").onsubmit = (e) => {
   xhr.onload = () => {
     btn.disabled = false;
     bar.hidden = true;
-    $("#form-msg").textContent = "";
     const data = JSON.parse(xhr.responseText || "{}");
-    if (xhr.status >= 400) return toast(data.detail || "Gagal membuat proyek", true);
+    if (xhr.status >= 400) {
+      const err = data.detail || "Gagal membuat proyek";
+      $("#form-msg").textContent = err;
+      $("#form-msg").className = "small err";
+      return toast(err, true);
+    }
+    $("#form-msg").textContent = "";
+    $("#form-msg").className = "muted small";
     state.jobs[data.id] = data;
     setFile(null);
     $("#in-file").value = "";
@@ -593,6 +605,7 @@ function renderClips(job) {
             <button data-act="publish">📤 Posting</button>
             <a class="btn dl" data-kind="mp4" hidden>⬇ MP4</a>
             <a class="btn dl-srt" hidden>⬇ SRT</a>
+            <a class="btn dl-vtt" hidden>⬇ VTT</a>
             <button data-act="delete" class="ghost danger">🗑</button>
           </div>
         </div>`;
@@ -645,6 +658,11 @@ function updateCard(job, clip, card) {
     const srt = $(".dl-srt", card);
     srt.hidden = !clip.srt;
     if (clip.srt) srt.href = `/media/${job.id}/${clip.srt}?download=1`;
+    const vtt = $(".dl-vtt", card);
+    if (vtt) {
+      vtt.hidden = !clip.vtt;
+      if (clip.vtt) vtt.href = `/media/${job.id}/${clip.vtt}?download=1`;
+    }
   } else {
     const label = { pending: "Menunggu…", queued: "Antre render…", rendering: clip.stage || "Merender…", error: "Gagal render" }[clip.status];
     if (!$(".overlay", player)) player.innerHTML = `<div class="overlay"><div class="lbl"></div><div class="bar"><div></div></div><div class="pct muted small"></div></div>`;

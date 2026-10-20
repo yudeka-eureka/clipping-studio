@@ -27,10 +27,10 @@ ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / ".env"
 load_dotenv(ENV_FILE)
 
-from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, system, transcribe  # noqa: E402
+from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, security, system, transcribe  # noqa: E402
 from .jobs import hub, store  # noqa: E402
 
-URL_RE = re.compile(r"^https?://")
+URL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
 
 
 # ---------- keluaran ----------
@@ -66,6 +66,7 @@ def clip_view(job: dict, clip: dict) -> dict:
         "captions": len(clip.get("captions") or []),
         "file": str(base / clip["file"]) if clip.get("file") else None,
         "srt": str(base / clip["srt"]) if clip.get("srt") else None,
+        "vtt": str(base / clip["vtt"]) if clip.get("vtt") else None,
         "publish": clip.get("publish"),
     }
 
@@ -167,6 +168,10 @@ async def source_job(args, opts: dict) -> tuple[dict, Path | None, str | None]:
     """Buat proyek baru dari file lokal atau link."""
     src = args.source
     if URL_RE.match(src):
+        try:
+            security.validate_video_url(src)
+        except security.SecurityValidationError as e:
+            fail(str(e), args)
         return store.create(src, "url", opts), None, src
     path = Path(src).expanduser().resolve()
     if not path.is_file():
@@ -206,6 +211,8 @@ async def cmd_doctor(args) -> None:
         "data_dir": str(store.dir("")), "jobs": len(store.jobs),
         "disk": disk, "disk_status": disk_status,
         "active_jobs": sum(j.get("status") not in ("done", "error") for j in store.jobs.values()),
+        "max_filesize_mb": security.max_filesize_mb(),
+        "max_duration_minutes": security.max_duration_minutes(),
     }
     mark = lambda ok: "✓" if ok else "✗"  # noqa: E731
     text = "\n".join([
@@ -221,6 +228,7 @@ async def cmd_doctor(args) -> None:
         + (f" (kurang: {', '.join(info['media_host_missing'])})" if info["media_host_missing"] else ""),
         f"{mark(info['disk_status'] == 'ok')} disk               {info['disk']['free_gb']:.2f} GB bebas / {info['disk']['total_gb']:.2f} GB ({info['disk_status']})",
         f"  data               {info['data_dir']} ({info['jobs']} proyek)",
+        f"  batas unduh        maks {info['max_filesize_mb']} MB, durasi {info['max_duration_minutes']} menit",
     ])
     emit(args, info, text)
 
@@ -332,6 +340,13 @@ async def cmd_transcribe(args) -> None:
         rel = [{**c, "start": c["start"] - args.start, "end": c["end"] - args.start} for c in captions]
         with tempfile.NamedTemporaryFile("r+", suffix=".srt") as tmp:
             media.write_srt(rel, Path(tmp.name))
+            sys.stdout.write(Path(tmp.name).read_text())
+    elif args.format == "vtt":
+        import tempfile
+
+        rel = [{**c, "start": c["start"] - args.start, "end": c["end"] - args.start} for c in captions]
+        with tempfile.NamedTemporaryFile("r+", suffix=".vtt") as tmp:
+            media.write_vtt(rel, Path(tmp.name))
             sys.stdout.write(Path(tmp.name).read_text())
     else:
         for c in captions:
@@ -469,7 +484,8 @@ async def cmd_publish_status(args) -> None:
 
 SETTABLE = ["AI_PROVIDER", "GEMINI_API_KEY", "GEMINI_MODEL", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
             "OPENAI_API_KEY", "OPENAI_MODEL", "WHISPER_MODEL", "WHISPER_LANGUAGE", "BUFFER_API_KEY",
-            "MEDIA_HOST", *mediahost.FIELDS["cloudinary"], *mediahost.FIELDS["r2"]]
+            "MEDIA_HOST", *mediahost.FIELDS["cloudinary"], *mediahost.FIELDS["r2"],
+            "MAX_FILESIZE_MB", "MAX_DURATION_MINUTES", "ALLOWED_DOMAINS"]
 
 
 def _set_env(name: str, value: str) -> None:
@@ -677,7 +693,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--job")
     sp.add_argument("--start", type=float, default=0.0)
     sp.add_argument("--end", type=float)
-    sp.add_argument("--format", default="text", choices=["text", "srt", "json"])
+    sp.add_argument("--format", default="text", choices=["text", "srt", "vtt", "json"])
     sp.set_defaults(func=cmd_transcribe)
 
     sp = sub.add_parser("estimate", help="perkiraan token & biaya AI sebelum proses")
