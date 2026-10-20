@@ -408,6 +408,9 @@ Nilai yang bisa diatur:
 | `MEDIA_HOST` | `cloudinary` atau `r2` |
 | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | Hosting Cloudinary |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_URL` | Hosting Cloudflare R2 |
+| `MAX_FILESIZE_MB` | Batas ukuran video unduhan (default: `500` MB) |
+| `MAX_DURATION_MINUTES` | Batas durasi video sumber (default: `45` menit) |
+| `ALLOWED_DOMAINS` | Domain tambahan yang diizinkan selain penyedia terverifikasi (dipisah koma) |
 
 ---
 
