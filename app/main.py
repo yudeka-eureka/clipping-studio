@@ -21,7 +21,7 @@ from google.genai import errors as genai_errors
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, security, transcribe
+from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, security, system, transcribe
 from .jobs import hub, store
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +43,23 @@ def get_job(job_id: str) -> dict:
     if not job:
         raise HTTPException(404, "Job tidak ditemukan")
     return job
+
+
+# ---------- Kesehatan sistem ----------
+
+@app.get("/api/system/health")
+def get_system_health():
+    disk = system.disk_info(store.dir(""))
+    active_jobs = sum(job.get("status") not in ("done", "error") for job in store.jobs.values())
+    active_tasks = sum(not task.done() for task in tasks)
+    return {
+        "status": system.disk_status(disk["free_gb"]),
+        "disk": disk,
+        "ffmpeg_installed": bool(media.FFMPEG),
+        "active_jobs": active_jobs,
+        "active_tasks": active_tasks,
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
 
 
 # ---------- Pengaturan ----------
