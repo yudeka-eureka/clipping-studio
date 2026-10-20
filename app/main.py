@@ -7,6 +7,8 @@ import os
 import re
 import shutil
 import uuid
+import tempfile
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +20,7 @@ import anthropic
 import openai
 from google.genai import errors as genai_errors
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, security, transcribe
 from .jobs import hub, store
@@ -717,6 +720,47 @@ async def refresh_publish(job_id: str, clip_id: str, session_id: str = Depends(_
 
 
 # ---------- File media (mendukung Range request untuk seek video) ----------
+
+@app.get("/api/jobs/{job_id}/download-all")
+def download_all_clips(job_id: str):
+    job = get_job(job_id)
+    base = store.dir(job["id"]).resolve()
+    files: list[Path] = []
+
+    for clip in job.get("clips", []):
+        if clip.get("status") != "ready" or not clip.get("file"):
+            continue
+        for relative in (clip["file"], clip.get("srt")):
+            if not relative:
+                continue
+            target = (base / relative).resolve()
+            if base not in target.parents or not target.is_file():
+                continue
+            if target.suffix.lower() not in (".mp4", ".srt"):
+                continue
+            files.append(target)
+
+    if not files:
+        raise HTTPException(400, "Belum ada klip yang siap diunduh")
+
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", job.get("name") or job["id"]).strip("._")
+    safe_name = (safe_name or job["id"])[:80]
+    temp = tempfile.NamedTemporaryFile(prefix=f"clips_{safe_name}_", suffix=".zip", delete=False)
+    temp_path = Path(temp.name)
+    temp.close()
+    try:
+        with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in files:
+                archive.write(path, arcname=path.name)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+    return FileResponse(
+        temp_path,
+        media_type="application/zip",
+        filename=f"clips_{safe_name}.zip",
+        background=BackgroundTask(temp_path.unlink, missing_ok=True),
+    )
 
 @app.get("/media/{job_id}/{path:path}")
 def media_file(job_id: str, path: str, download: bool = False,

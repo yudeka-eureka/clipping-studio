@@ -20,6 +20,14 @@
     <aside class="sidebar">
       <button id="btn-new" class="primary block">+ Proyek baru</button>
       <button id="btn-usage" class="ghost block usage-btn">📊 Pemakaian AI <span id="usage-month" class="muted small"></span></button>
+      <div class="sidebar-search">
+        <input type="search" id="search-job" placeholder="Cari proyek..." class="input-search" />
+        <div class="status-filters" role="group" aria-label="Filter status proyek">
+          <button type="button" class="btn-filter active" data-status="all">Semua</button>
+          <button type="button" class="btn-filter" data-status="ready">Selesai</button>
+          <button type="button" class="btn-filter" data-status="running">Proses</button>
+        </div>
+      </div>
       <div id="job-list" class="job-list"></div>
     </aside>
 
@@ -281,6 +289,7 @@
             <select id="fmt-logo" class="auto" title="Logo untuk proyek ini"></select>
             <select id="fmt-intro" class="auto" title="Bumper pembuka"></select>
             <select id="fmt-outro" class="auto" title="Bumper penutup"></select>
+            <a class="btn ghost" id="btn-dl-all" hidden>Unduh Semua (.zip)</a>
             <button class="primary" id="btn-rerender-all">↻ Render ulang semua</button>
           </div>
           <details class="targets">
