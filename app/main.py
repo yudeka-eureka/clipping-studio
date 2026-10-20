@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv, set_key
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import anthropic
@@ -42,36 +42,55 @@ def spawn(coro) -> None:
 # ---------- Sesi anonim ----------
 
 _SESSION_HEADER = "x-session-id"
+_SESSION_COOKIE = "session_id"
 _SESSION_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
 
-def _session_id(x_session_id: str | None = Header(default=None, alias=_SESSION_HEADER)) -> str:
-    """Ambil session ID dari header X-Session-ID.  Kosong/tidak valid → string kosong."""
+def _session_id(
+    request: Request,
+    x_session_id: str | None = Header(default=None, alias=_SESSION_HEADER),
+) -> str:
+    """Ambil session ID dari header X-Session-ID atau Cookie session_id.  Kosong/tidak valid → string kosong."""
     if x_session_id and _SESSION_RE.match(x_session_id.strip().lower()):
         return x_session_id.strip().lower()
+    cookie_sid = request.cookies.get(_SESSION_COOKIE)
+    if cookie_sid and _SESSION_RE.match(cookie_sid.strip().lower()):
+        return cookie_sid.strip().lower()
     return ""
 
 
-def _require_session(x_session_id: str | None = Header(default=None, alias=_SESSION_HEADER)) -> str:
-    sid = _session_id(x_session_id)
+def _require_session(
+    request: Request,
+    x_session_id: str | None = Header(default=None, alias=_SESSION_HEADER),
+) -> str:
+    sid = _session_id(request, x_session_id)
     if not sid:
-        raise HTTPException(401, "Header X-Session-ID tidak valid atau tidak ada.")
+        raise HTTPException(401, "Header X-Session-ID atau cookie session_id tidak valid atau tidak ada.")
     return sid
 
 
 def _own_job(job: dict, session_id: str) -> dict:
     """Pastikan job dimiliki oleh session_id ini; kalau tidak, 403."""
+    sid = session_id if isinstance(session_id, str) else ""
     owner = job.get("owner_session_id", "")
     # Job lama (sebelum fitur ini) tidak punya owner → bisa diakses tanpa session.
-    if owner and owner != session_id:
+    if owner and owner != sid:
         raise HTTPException(403, "Akses ditolak: bukan pemilik proyek ini.")
     return job
 
 
 @app.get("/api/session")
-def get_session():
-    """Terbitkan session ID baru (UUIDv4). Frontend menyimpannya di localStorage."""
-    return {"session_id": str(uuid.uuid4())}
+def get_session(response: Response):
+    """Terbitkan session ID baru (UUIDv4). Frontend menyimpannya di localStorage & cookie."""
+    sid = str(uuid.uuid4())
+    response.set_cookie(
+        key=_SESSION_COOKIE,
+        value=sid,
+        path="/",
+        samesite="lax",
+        max_age=31536000,
+    )
+    return {"session_id": sid}
 
 
 def get_job(job_id: str) -> dict:
@@ -208,10 +227,11 @@ async def models(provider: str | None = None):
 
 @app.get("/api/jobs")
 def list_jobs(session_id: str = Depends(_session_id)):
+    sid = session_id if isinstance(session_id, str) else ""
     jobs = store.jobs.values()
-    if session_id:
+    if sid:
         # Hanya tampilkan job milik sesi ini; job lama tanpa owner ditampilkan semua.
-        jobs = [j for j in jobs if not j.get("owner_session_id") or j["owner_session_id"] == session_id]
+        jobs = [j for j in jobs if not j.get("owner_session_id") or j["owner_session_id"] == sid]
     else:
         jobs = list(jobs)
     return sorted(jobs, key=lambda j: j["created_at"], reverse=True)
@@ -246,8 +266,10 @@ async def create_job(
     opts["max_len"] = max(opts["max_len"], opts["min_len"] + 5)
     url = url.strip()
 
+    creator_sid = session_id if (isinstance(session_id, str) and session_id) else str(uuid.uuid4())
+
     if file and file.filename:
-        job = store.create(file.filename, "upload", opts, owner_session_id=session_id)
+        job = store.create(file.filename, "upload", opts, owner_session_id=creator_sid)
         ext = (Path(file.filename).suffix or ".mp4").lower()
         if not re.fullmatch(r"\.[a-z0-9]{1,5}", ext):
             ext = ".mp4"
@@ -261,7 +283,7 @@ async def create_job(
             security.validate_video_url(url)
         except security.SecurityValidationError as e:
             raise HTTPException(400, str(e))
-        job = store.create(url, "url", opts, owner_session_id=session_id)
+        job = store.create(url, "url", opts, owner_session_id=creator_sid)
         await store.publish(job)
         spawn(pipeline.run(job, None, url))
     else:
@@ -722,8 +744,9 @@ async def refresh_publish(job_id: str, clip_id: str, session_id: str = Depends(_
 # ---------- File media (mendukung Range request untuk seek video) ----------
 
 @app.get("/api/jobs/{job_id}/download-all")
-def download_all_clips(job_id: str):
+def download_all_clips(job_id: str, session_id: str = Depends(_session_id)):
     job = get_job(job_id)
+    _own_job(job, session_id)
     base = store.dir(job["id"]).resolve()
     files: list[Path] = []
 
@@ -777,10 +800,14 @@ def media_file(job_id: str, path: str, download: bool = False,
 # ---------- Realtime ----------
 
 @app.websocket("/ws")
-async def ws(websocket: WebSocket, session_id: str = ""):
+async def ws(websocket: WebSocket):
     await websocket.accept()
-    # Validasi session_id dari query string (?session_id=...)
-    sid = session_id.strip().lower() if _SESSION_RE.match((session_id or "").strip().lower()) else ""
+    # Ambil session_id dari Cookie atau Header, tanpa query params
+    sid = websocket.cookies.get(_SESSION_COOKIE, "").strip().lower()
+    if not _SESSION_RE.match(sid):
+        sid = websocket.headers.get(_SESSION_HEADER, "").strip().lower()
+        if not _SESSION_RE.match(sid):
+            sid = ""
     hub.add(websocket, sid)
     try:
         # Snapshot hanya berisi job milik sesi ini (atau job lama tanpa owner).
@@ -796,9 +823,20 @@ async def ws(websocket: WebSocket, session_id: str = ""):
 
 
 @app.middleware("http")
-async def no_stale_ui(request, call_next):
+async def no_stale_ui(request: Request, call_next):
     """Antarmuka selalu divalidasi ulang, supaya versi lama tidak nyangkut di cache browser."""
     response = await call_next(request)
+    x_sid = request.headers.get(_SESSION_HEADER)
+    if x_sid and _SESSION_RE.match(x_sid.strip().lower()):
+        sid = x_sid.strip().lower()
+        if request.cookies.get(_SESSION_COOKIE) != sid:
+            response.set_cookie(
+                key=_SESSION_COOKIE,
+                value=sid,
+                path="/",
+                samesite="lax",
+                max_age=31536000,
+            )
     if request.url.path.startswith(("/branding/", "/static/")) or request.url.path in ("/", "/app.js", "/style.css", "/index.html"):
         response.headers["Cache-Control"] = "no-cache"
     return response

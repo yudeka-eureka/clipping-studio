@@ -12,7 +12,7 @@ const LAYOUT_LABEL = { face: "fokus wajah", crop: "crop tengah", blur: "latar bl
 const RUNNING = new Set(["queued", "downloading", "preparing", "analyzing", "rendering"]);
 
 // ---------- Sesi anonim ----------
-// Session ID disimpan di localStorage. Kalau belum ada, minta ke server.
+// Session ID disimpan di localStorage & cookie. Kalau belum ada, minta ke server.
 let _sessionId = "";
 
 async function initSession() {
@@ -20,6 +20,7 @@ async function initSession() {
     const stored = localStorage.getItem("sessionId");
     if (stored && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(stored)) {
       _sessionId = stored;
+      try { document.cookie = `session_id=${_sessionId}; path=/; SameSite=Lax; max-age=31536000`; } catch {}
       return;
     }
   } catch {}
@@ -28,7 +29,10 @@ async function initSession() {
     const res = await fetch("/api/session");
     const data = await res.json();
     _sessionId = data.session_id;
-    try { localStorage.setItem("sessionId", _sessionId); } catch {}
+    try {
+      localStorage.setItem("sessionId", _sessionId);
+      document.cookie = `session_id=${_sessionId}; path=/; SameSite=Lax; max-age=31536000`;
+    } catch {}
   } catch (err) {
     console.warn("Gagal mendapatkan session ID:", err);
   }
@@ -73,8 +77,7 @@ async function api(path, opts = {}) {
 
 // ---------- Realtime (WebSocket) ----------
 function connect() {
-  const sid = _sessionId ? `?session_id=${encodeURIComponent(_sessionId)}` : "";
-  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws${sid}`);
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   let ping;
   ws.onopen = () => {
     $("#conn").className = "pill on";
