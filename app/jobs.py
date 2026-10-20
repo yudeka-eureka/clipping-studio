@@ -64,7 +64,19 @@ class Store:
     @staticmethod
     def public_job(job: dict) -> dict:
         """Remove transient secrets before persistence or sending to clients."""
-        return {key: value for key, value in job.items() if key != "_ai_context"}
+        context = job.get("_ai_context") or {}
+        secret = context.get("key")
+
+        def scrub(value):
+            if isinstance(value, str) and secret:
+                return value.replace(secret, "[REDACTED]")
+            if isinstance(value, dict):
+                return {key: scrub(item) for key, item in value.items() if key != "_ai_context"}
+            if isinstance(value, list):
+                return [scrub(item) for item in value]
+            return value
+
+        return scrub(job)
 
     @staticmethod
     def redact(job: dict, line: str) -> str:
