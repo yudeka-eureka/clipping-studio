@@ -37,6 +37,11 @@
         <h1>Buat klip dari video panjang</h1>
         <p class="muted">AI Gemini menonton video, memilih momen terbaik, lalu klip dirender di komputer ini. Progres tampil realtime.</p>
 
+        <div class="retention-notice">
+          <span class="icon">⏰</span>
+          <span id="retention-new-notice">Klip Anda akan disimpan selama <strong>24 jam</strong>. Segera unduh hasil klip Anda.</span>
+        </div>
+
         <div class="tabs" role="tablist">
           <button class="tab active" data-src="file">📁 File lokal</button>
           <button class="tab" data-src="url">🔗 Link video</button>
@@ -255,6 +260,11 @@
             <div id="job-sub" class="muted small"></div>
           </div>
           <button id="btn-delete-job" class="ghost danger">Hapus proyek</button>
+        </div>
+
+        <div id="job-retention-warn" class="retention-notice">
+          <span class="icon">⏰</span>
+          <span id="job-retention-msg">Klip Anda akan disimpan selama 24 jam. Segera unduh hasil klip Anda.</span>
         </div>
 
         <div id="job-status" class="card status">

@@ -320,6 +320,16 @@ async def cmd_rm(args) -> None:
     emit(args, {"ok": True, "deleted": job["id"]}, f"Proyek {job['id']} dihapus.")
 
 
+async def cmd_purge(args) -> None:
+    hours = args.hours
+    retention_sec = hours * 3600 if hours is not None else security.job_retention_seconds()
+    effective_hours = hours if hours is not None else security.job_retention_hours()
+    purged = await store.purge_expired(retention_sec)
+    emit(args, {"ok": True, "purged": purged, "count": len(purged), "retention_hours": effective_hours},
+         f"Dibersihkan {len(purged)} proyek (melewati batas retensi {effective_hours} jam)."
+         if purged else f"Tidak ada proyek yang melewati batas retensi ({effective_hours} jam).")
+
+
 async def cmd_transcribe(args) -> None:
     if args.job:
         job = find_job(args.job, args)
@@ -687,6 +697,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("rm", help="hapus proyek beserta filenya")
     sp.add_argument("job")
     sp.set_defaults(func=cmd_rm)
+
+    sp = sub.add_parser("purge", help="hapus proyek yang sudah melewati masa retensi (TTL)")
+    sp.add_argument("--hours", type=int, default=None, help="batas retensi dalam jam (default dari JOB_RETENTION_HOURS / 24 jam)")
+    sp.set_defaults(func=cmd_purge)
 
     sp = sub.add_parser("transcribe", help="transkrip lokal (Whisper) dengan waktu per kata")
     sp.add_argument("source", nargs="?")

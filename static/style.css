@@ -195,6 +195,8 @@ dialog { max-height: 90vh; overflow: auto; }
 .usage-grid .v { font-weight: 600; font-variant-numeric: tabular-nums; }
 .job-item .cost { margin-left: auto; font-variant-numeric: tabular-nums; }
 .warn { color: var(--warn); background: #f0b42914; border: 1px solid #f0b42955; border-radius: 8px; padding: 6px 10px; }
+.retention-notice { display: flex; align-items: center; gap: 10px; color: var(--warn); background: rgba(240, 180, 41, 0.12); border: 1px solid rgba(240, 180, 41, 0.35); border-radius: var(--radius); padding: 10px 14px; font-size: 13px; line-height: 1.4; margin-bottom: 16px; }
+.retention-notice .icon { font-size: 18px; flex-shrink: 0; }
 .accounts { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 10px; }
 .account-row { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 13px; }
 .account-row .hint { color: var(--muted); font-size: 12px; }

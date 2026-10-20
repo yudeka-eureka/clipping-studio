@@ -39,6 +39,7 @@ atau awalannya.
 | [`jobs`](#jobs) | Daftar proyek | gratis |
 | [`show`](#show) | Detail satu proyek beserta klipnya | gratis |
 | [`rm`](#rm) | Hapus proyek beserta filenya | gratis, **permanen** |
+| [`purge`](#purge) | Hapus proyek yang sudah melewati batas retensi (TTL) | gratis |
 | [`transcribe`](#transcribe) | Transkrip Whisper lokal | gratis |
 | [`estimate`](#estimate) | Perkiraan token & biaya sebelum proses | gratis |
 | [`usage`](#usage) | Token & biaya yang sudah terpakai | gratis |
@@ -181,6 +182,22 @@ Detail satu proyek: status, ringkasan AI, semua klip beserta path filenya, dan p
 
 **Menghapus permanen** video sumber, semua klip, transkrip, dan catatan pemakaian proyek tersebut.
 Tidak ada konfirmasi dan tidak bisa dibatalkan.
+
+---
+
+## purge
+
+Membersihkan proyek-proyek yang usianya sudah melewati batas masa simpan (TTL). Berguna untuk cron job otomatis atau pembersihan berkala server.
+
+```bash
+./clip purge                               # hapus proyek > 24 jam (sesuai JOB_RETENTION_HOURS)
+./clip purge --hours 48                    # hapus proyek > 48 jam
+./clip purge --json                        # keluaran JSON untuk cron job / monitoring
+```
+
+| Argumen | Default | Arti |
+|---|---|---|
+| `--hours N` | `24` (atau `JOB_RETENTION_HOURS`) | Batas retensi dalam jam |
 
 ---
 
