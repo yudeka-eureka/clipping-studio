@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 import re
@@ -10,6 +11,7 @@ import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import UUID, uuid4
 
 from dotenv import load_dotenv, set_key
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -28,6 +30,8 @@ ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / ".env"
 load_dotenv(ENV_FILE)
 PUBLIC_MODE = os.environ.get("PUBLIC_MODE", "false").strip().lower() in ("1", "true", "yes", "on")
+SESSION_COOKIE = "clipping_session"
+CURRENT_SESSION: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_session", default=None)
 
 app = FastAPI(title="Clipping Studio")
 tasks: set[asyncio.Task] = set()
@@ -39,9 +43,33 @@ def spawn(coro) -> None:
     t.add_done_callback(tasks.discard)
 
 
+def current_session_id() -> str | None:
+    return CURRENT_SESSION.get()
+
+
+def valid_session_id(value: str | None) -> str | None:
+    try:
+        parsed = UUID(value or "")
+    except (ValueError, AttributeError):
+        return None
+    return str(parsed) if parsed.version == 4 else None
+
+
+def owned_jobs(session_id: str | None = None) -> list[dict]:
+    jobs = sorted(store.jobs.values(), key=lambda j: j["created_at"], reverse=True)
+    if PUBLIC_MODE:
+        owner = session_id or current_session_id()
+        jobs = [job for job in jobs if job.get("owner_session_id") == owner]
+    return jobs
+
+
+def visible_jobs(session_id: str | None = None) -> list[dict]:
+    return [store.public_job(job) for job in owned_jobs(session_id)]
+
+
 def get_job(job_id: str) -> dict:
     job = store.jobs.get(job_id)
-    if not job:
+    if not job or (PUBLIC_MODE and job.get("owner_session_id") != current_session_id()):
         raise HTTPException(404, "Job tidak ditemukan")
     return job
 
@@ -211,8 +239,7 @@ async def models(provider: str | None = None, x_ai_provider: str | None = Header
 
 @app.get("/api/jobs")
 def list_jobs():
-    return [store.public_job(job) for job in
-            sorted(store.jobs.values(), key=lambda j: j["created_at"], reverse=True)]
+    return visible_jobs()
 
 
 @app.post("/api/jobs")
@@ -249,6 +276,8 @@ async def create_job(
 
     if file and file.filename:
         job = store.create(file.filename, "upload", opts)
+        if PUBLIC_MODE:
+            job["owner_session_id"] = current_session_id()
         if ai_context:
             job["_ai_context"] = ai_context
         ext = (Path(file.filename).suffix or ".mp4").lower()
@@ -265,6 +294,8 @@ async def create_job(
         except security.SecurityValidationError as e:
             raise HTTPException(400, str(e))
         job = store.create(url, "url", opts)
+        if PUBLIC_MODE:
+            job["owner_session_id"] = current_session_id()
         if ai_context:
             job["_ai_context"] = ai_context
         await store.publish(job)
@@ -556,7 +587,7 @@ def usage():
             bucket["usd"] += e["cost_usd"]
 
     total, month, per_model, per_day, projects = empty(), empty(), {}, {}, []
-    for job in store.jobs.values():
+    for job in owned_jobs():
         entries = job.get("usage") or []
         proj = {"id": job["id"], "name": job["name"], "created_at": job["created_at"],
                 "clips": len(job["clips"]), "video_seconds": (job.get("meta") or {}).get("duration"),
@@ -579,7 +610,7 @@ def usage():
 async def recalculate_usage():
     """Hitung ulang biaya semua catatan dengan pengaturan harga saat ini (tier/harga manual)."""
     count = 0
-    for job in store.jobs.values():
+    for job in owned_jobs():
         if job.get("usage"):
             job["usage"] = [pricing.with_cost(e) for e in job["usage"]]
             count += len(job["usage"])
@@ -775,24 +806,33 @@ def media_file(job_id: str, path: str, download: bool = False):
 
 @app.websocket("/ws")
 async def ws(websocket: WebSocket):
+    session_id = valid_session_id(websocket.cookies.get(SESSION_COOKIE))
+    if not session_id:
+        session_id = str(uuid4())
     await websocket.accept()
-    hub.sockets.add(websocket)
+    hub.sockets[websocket] = session_id
     try:
-        await websocket.send_json({"type": "snapshot", "jobs": list_jobs()})
+        await websocket.send_json({"type": "snapshot", "jobs": visible_jobs(session_id)})
         while True:
             await websocket.receive_text()  # ping dari browser
     except WebSocketDisconnect:
         pass
     finally:
-        hub.sockets.discard(websocket)
+        hub.sockets.pop(websocket, None)
 
 
 @app.middleware("http")
 async def no_stale_ui(request, call_next):
     """Antarmuka selalu divalidasi ulang, supaya versi lama tidak nyangkut di cache browser."""
+    session_id = valid_session_id(request.cookies.get(SESSION_COOKIE)) or str(uuid4())
+    token = CURRENT_SESSION.set(session_id)
     response = await call_next(request)
+    if not valid_session_id(request.cookies.get(SESSION_COOKIE)):
+        response.set_cookie(SESSION_COOKIE, session_id, httponly=True, secure=PUBLIC_MODE,
+                            samesite="lax", max_age=60 * 60 * 24 * 365)
     if request.url.path.startswith(("/branding/", "/static/")) or request.url.path in ("/", "/app.js", "/style.css", "/index.html"):
         response.headers["Cache-Control"] = "no-cache"
+    CURRENT_SESSION.reset(token)
     return response
 
 

@@ -18,21 +18,23 @@ class Hub:
     """Semua browser yang terbuka menerima event yang sama secara realtime."""
 
     def __init__(self) -> None:
-        self.sockets: set[WebSocket] = set()
+        self.sockets: dict[WebSocket, str] = {}
         # Pendengar lokal (dipakai mode command line untuk menampilkan progres).
         self.listeners: list = []
 
-    async def send(self, event: dict) -> None:
+    async def send(self, event: dict, session_id: str | None = None) -> None:
         for listen in list(self.listeners):
             listen(event)
         dead = []
-        for ws in list(self.sockets):
+        for ws, socket_session in list(self.sockets.items()):
+            if session_id and socket_session != session_id:
+                continue
             try:
                 await ws.send_json(event)
             except Exception:
                 dead.append(ws)
         for ws in dead:
-            self.sockets.discard(ws)
+            self.sockets.pop(ws, None)
 
 
 hub = Hub()
@@ -71,7 +73,11 @@ class Store:
             if isinstance(value, str) and secret:
                 return value.replace(secret, "[REDACTED]")
             if isinstance(value, dict):
-                return {key: scrub(item) for key, item in value.items() if key != "_ai_context"}
+                return {
+                    key: scrub(item)
+                    for key, item in value.items()
+                    if key not in ("_ai_context", "owner_session_id")
+                }
             if isinstance(value, list):
                 return [scrub(item) for item in value]
             return value
@@ -106,7 +112,7 @@ class Store:
 
     async def publish(self, job: dict) -> None:
         self.save(job)
-        await hub.send({"type": "job", "job": self.public_job(job)})
+        await hub.send({"type": "job", "job": self.public_job(job)}, job.get("owner_session_id"))
 
     async def update(self, job: dict, **fields) -> None:
         job.update(fields)
@@ -117,7 +123,7 @@ class Store:
         entry = {"t": time.time(), "line": line}
         job["logs"] = (job["logs"] + [entry])[-200:]
         self.save(job)
-        await hub.send({"type": "log", "job_id": job["id"], **entry})
+        await hub.send({"type": "log", "job_id": job["id"], **entry}, job.get("owner_session_id"))
 
     async def progress(self, job: dict, value: float, stage: str | None = None, clip_id: str | None = None) -> None:
         """Progres dikirim ringan (tanpa seluruh job) dan dibatasi ~8x per detik."""
@@ -138,16 +144,17 @@ class Store:
             if stage:
                 job["stage"] = stage
         await hub.send({"type": "progress", "job_id": job["id"], "clip_id": clip_id,
-                        "progress": value, "stage": stage})
+                        "progress": value, "stage": stage}, job.get("owner_session_id"))
 
     @staticmethod
     def clip(job: dict, clip_id: str) -> dict | None:
         return next((c for c in job["clips"] if c["id"] == clip_id), None)
 
     async def delete(self, job_id: str) -> None:
-        self.jobs.pop(job_id, None)
+        job = self.jobs.pop(job_id, None)
         await asyncio.to_thread(shutil.rmtree, self.dir(job_id), True)
-        await hub.send({"type": "deleted", "job_id": job_id})
+        await hub.send({"type": "deleted", "job_id": job_id},
+                       job.get("owner_session_id") if job else None)
 
 
 store = Store()
