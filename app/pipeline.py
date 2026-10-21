@@ -16,8 +16,10 @@ from . import analysis, branding, buffer, facetrack, gemini, media, mediahost, p
 from .jobs import store
 
 # Satu analisis penuh sekaligus; render klip boleh paralel terbatas.
-pipeline_lock = asyncio.Semaphore(1)
-render_lock = asyncio.Semaphore(max(1, min(3, (os.cpu_count() or 2) // 4)))
+MAX_CONCURRENT_JOBS = max(1, int(os.environ.get("MAX_CONCURRENT_JOBS", "1")))
+MAX_CONCURRENT_RENDERS = max(1, int(os.environ.get("MAX_CONCURRENT_RENDERS", "1")))
+pipeline_lock = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
+render_lock = asyncio.Semaphore(MAX_CONCURRENT_RENDERS)
 
 
 def api_key() -> str:
