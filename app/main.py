@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / ".env"
 load_dotenv(ENV_FILE)
 PUBLIC_MODE = os.environ.get("PUBLIC_MODE", "false").strip().lower() in ("1", "true", "yes", "on")
+RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "true" if PUBLIC_MODE else "true").strip().lower() in ("1", "true", "yes", "on")
 JOB_RATE_LIMIT = max(1, int(os.environ.get("JOB_RATE_LIMIT", "5")))
 JOB_RATE_WINDOW_SECONDS = max(1, int(os.environ.get("JOB_RATE_WINDOW_SECONDS", "3600")))
 job_rate_limiter = ratelimit.JobRateLimiter(JOB_RATE_LIMIT, JOB_RATE_WINDOW_SECONDS)
@@ -91,6 +92,25 @@ def valid_session_id(value: str | None) -> str | None:
     return str(parsed) if parsed.version == 4 else None
 
 
+def get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        client_ip = forwarded.split(",")[0].strip()
+        if client_ip:
+            return client_ip
+    if request.client and request.client.host:
+        return request.client.host
+    return "127.0.0.1"
+
+
+def get_rate_keys(request: Request) -> list[str]:
+    keys = [f"ip:{get_client_ip(request)}"]
+    cookie_session = valid_session_id(request.cookies.get(SESSION_COOKIE))
+    if cookie_session:
+        keys.append(f"sess:{cookie_session}")
+    return keys
+
+
 def owned_jobs(session_id: str | None = None) -> list[dict]:
     jobs = sorted(store.jobs.values(), key=lambda j: j["created_at"], reverse=True)
     if PUBLIC_MODE:
@@ -141,6 +161,7 @@ class ConfigIn(BaseModel):
     max_filesize_mb: int | None = None
     max_duration_minutes: int | None = None
     job_retention_hours: int | None = None
+    execution_timeout_minutes: int | None = None
 
 
 def _request_ai_context(provider_name: str | None, key: str | None, model: str | None,
@@ -226,6 +247,7 @@ def get_config():
             "window_seconds": JOB_RATE_WINDOW_SECONDS,
             "max_concurrent_jobs": pipeline.MAX_CONCURRENT_JOBS,
             "max_concurrent_renders": pipeline.MAX_CONCURRENT_RENDERS,
+            "execution_timeout_minutes": security.execution_timeout_minutes(),
         },
     }
 
@@ -262,6 +284,8 @@ def save_config(cfg: ConfigIn):
         _set_env("MAX_DURATION_MINUTES", str(cfg.max_duration_minutes))
     if cfg.job_retention_hours is not None and cfg.job_retention_hours > 0:
         _set_env("JOB_RETENTION_HOURS", str(cfg.job_retention_hours))
+    if cfg.execution_timeout_minutes is not None and cfg.execution_timeout_minutes > 0:
+        _set_env("EXECUTION_TIMEOUT_MINUTES", str(cfg.execution_timeout_minutes))
     return get_config()
 
 
@@ -298,9 +322,9 @@ async def create_job(
     x_ai_key: str | None = Header(None),
     x_ai_model: str | None = Header(None),
 ):
-    if PUBLIC_MODE:
-        rate_key = current_session_id() or (request.client.host if request.client else "unknown")
-        allowed, retry_after = job_rate_limiter.allow(rate_key)
+    if RATE_LIMIT_ENABLED or PUBLIC_MODE:
+        rate_keys = get_rate_keys(request)
+        allowed, retry_after = job_rate_limiter.allow(*rate_keys)
         if not allowed:
             raise HTTPException(
                 429,
@@ -428,6 +452,10 @@ async def rerender_all(job_id: str, body: RerenderIn):
                           logo_id=body.logo_id, intro_id=body.intro_id, outro_id=body.outro_id)
     if body.channels is not None:
         job["options"]["channels"] = body.channels[:20]
+    job["status"] = "rendering"
+    job["stage"] = "Menunggu antrean..."
+    for clip in job["clips"]:
+        clip.update(status="queued", stage="Menunggu antrean...", progress=0.0, error=None)
     await store.publish(job)
     for clip in job["clips"]:
         spawn(pipeline.render(job, clip))
@@ -461,7 +489,8 @@ async def add_clip(job_id: str, body: ClipIn):
     job = get_job(job_id)
     _check_range(job, body)
     clip = pipeline.new_clip(job, round(body.start, 2), round(body.end, 2),
-                             body.title or f"Klip manual {len(job['clips']) + 1}")
+                             body.title or f"Klip manual {len(job['clips']) + 1}",
+                             status="queued", stage="Menunggu antrean...")
     await store.publish(job)
     spawn(pipeline.render(job, clip))
     return clip
@@ -476,9 +505,11 @@ async def update_clip(job_id: str, clip_id: str, body: ClipIn):
     if clip["status"] in ("queued", "rendering"):
         raise HTTPException(409, "Klip sedang dirender.")
     _check_range(job, body)
-    clip.update(start=round(body.start, 2), end=round(body.end, 2))
+    clip.update(start=round(body.start, 2), end=round(body.end, 2),
+                status="queued", stage="Menunggu antrean...", progress=0.0, error=None)
     if body.title:
         clip["title"] = body.title
+    await store.publish(job)
     spawn(pipeline.render(job, clip))
     return clip
 

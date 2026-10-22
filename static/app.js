@@ -54,7 +54,7 @@ function applyStoredAi(cfg) {
 }
 
 const STATUS_LABEL = {
-  queued: "Antre", downloading: "Mengunduh", preparing: "Menyiapkan", analyzing: "Analisis AI",
+  queued: "Menunggu antrean...", downloading: "Mengunduh", preparing: "Menyiapkan", analyzing: "Analisis AI",
   rendering: "Render", done: "Selesai", error: "Gagal",
 };
 const LAYOUT_LABEL = { face: "fokus wajah", crop: "crop tengah", blur: "latar blur" };
@@ -570,7 +570,7 @@ function renderStatus(job) {
     pct = job.clips.reduce((a, c) => a + (c.status === "ready" ? 1 : c.progress || 0), 0) / job.clips.length;
   }
   const indeterminate = job.status === "analyzing";
-  $("#job-stage").textContent = job.status === "error" ? `Gagal: ${job.error}` : job.stage;
+  $("#job-stage").textContent = job.status === "error" ? `Gagal: ${job.error}` : (job.stage || (job.status === "queued" ? "Menunggu antrean..." : ""));
   $("#job-pct").textContent = indeterminate || job.status === "queued" ? "…" : `${Math.round(pct * 100)}%`;
   $("#job-bar").style.width = (indeterminate ? 100 : pct * 100) + "%";
   $("#job-bar").style.opacity = indeterminate ? ".35" : "1";
@@ -755,7 +755,7 @@ function updateCard(job, clip, card) {
       if (clip.vtt) vtt.href = `/media/${job.id}/${clip.vtt}?download=1`;
     }
   } else {
-    const label = { pending: "Menunggu…", queued: "Antre render…", rendering: clip.stage || "Merender…", error: "Gagal render" }[clip.status];
+    const label = { pending: "Menunggu…", queued: clip.stage || "Menunggu antrean...", rendering: clip.stage || "Merender…", error: "Gagal render" }[clip.status];
     if (!$(".overlay", player)) player.innerHTML = `<div class="overlay"><div class="lbl"></div><div class="bar"><div></div></div><div class="pct muted small"></div></div>`;
     $(".lbl", player).textContent = label;
     updateClipProgress(clip.id, clip.progress || 0);
