@@ -15,6 +15,7 @@ import bisect
 import math
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -53,7 +54,7 @@ def available() -> bool:
         return False
 
 
-def _frames(src: Path, start: float, dur: float, src_w: int, src_h: int):
+def _frames(src: Path, start: float, dur: float, src_w: int, src_h: int, max_seconds: float = 600.0):
     h = max(2, int(round(ANALYSIS_W * src_h / src_w / 2)) * 2)
     cmd = [
         FFMPEG, "-hide_banner", "-loglevel", "error", "-ss", f"{start:.3f}", "-i", str(src),
@@ -62,9 +63,12 @@ def _frames(src: Path, start: float, dur: float, src_w: int, src_h: int):
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     size = ANALYSIS_W * h * 3
+    start_time = time.monotonic()
     try:
         assert proc.stdout
         while True:
+            if time.monotonic() - start_time > max_seconds:
+                raise RuntimeError(f"Ekstraksi frame wajah melebihi batas waktu ({int(max_seconds)} detik).")
             buf = proc.stdout.read(size)
             if len(buf) < size:
                 break

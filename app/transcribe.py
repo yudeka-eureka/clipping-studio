@@ -51,12 +51,15 @@ def _model(name: str):
     return _models[name]
 
 
-def _load_audio(src: Path, start: float, end: float) -> np.ndarray:
+def _load_audio(src: Path, start: float, end: float, timeout: float = 60.0) -> np.ndarray:
     cmd = [
         FFMPEG, "-hide_banner", "-loglevel", "error", "-ss", f"{start:.3f}", "-i", str(src),
         "-t", f"{end - start:.3f}", "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "s16le", "pipe:1",
     ]
-    raw = subprocess.run(cmd, capture_output=True, check=True).stdout
+    try:
+        raw = subprocess.run(cmd, capture_output=True, check=True, timeout=timeout).stdout
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"FFmpeg ekstraksi audio melebihi batas waktu ({int(timeout)} detik).") from e
     return np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
 
 

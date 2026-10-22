@@ -9,6 +9,8 @@ from typing import Awaitable, Callable
 
 import imageio_ffmpeg
 
+from . import security
+
 FFMPEG = shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
 
 ProgressCb = Callable[[float], Awaitable[None]]
@@ -27,23 +29,46 @@ class FFmpegError(RuntimeError):
     pass
 
 
+class FFmpegTimeoutError(FFmpegError):
+    pass
+
+
 def _supports_filter(name: str) -> bool:
     import subprocess
 
-    out = subprocess.run([FFMPEG, "-hide_banner", "-filters"], capture_output=True, text=True).stdout
-    return re.search(rf"\s{name}\s", out) is not None
+    try:
+        out = subprocess.run([FFMPEG, "-hide_banner", "-filters"], capture_output=True, text=True, timeout=10).stdout
+        return re.search(rf"\s{name}\s", out) is not None
+    except Exception:
+        return False
 
 
 SUBTITLES_SUPPORTED = _supports_filter("subtitles")
 
 
-async def probe(path: Path) -> dict:
+async def probe(path: Path, timeout: float = 30.0) -> dict:
     """Ambil durasi, resolusi, dan ada/tidaknya audio dari output `ffmpeg -i`."""
     proc = await asyncio.create_subprocess_exec(
         FFMPEG, "-hide_banner", "-i", str(path),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
-    _, err = await proc.communicate()
+    try:
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        raise FFmpegTimeoutError(f"FFmpeg probe melebihi batas waktu ({int(timeout)} detik).")
+    except asyncio.CancelledError:
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        raise
+
     text = err.decode(errors="replace")
     m = re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", text)
     if not m:
@@ -64,8 +89,10 @@ async def probe(path: Path) -> dict:
 
 
 async def run_ffmpeg(args: list[str], duration: float, on_progress: ProgressCb | None = None,
-                     cwd: Path | None = None) -> None:
+                     cwd: Path | None = None, timeout: float | None = None) -> None:
     """Jalankan ffmpeg dan laporkan progres (0-1) secara realtime dari `-progress pipe:1`."""
+    if timeout is None:
+        timeout = float(security.execution_timeout_seconds())
     proc = await asyncio.create_subprocess_exec(
         FFMPEG, "-hide_banner", "-y", "-nostats", "-progress", "pipe:1", *args,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd,
@@ -89,8 +116,27 @@ async def run_ffmpeg(args: list[str], duration: float, on_progress: ProgressCb |
             stderr_tail.append(raw.decode(errors="replace").rstrip())
             del stderr_tail[:-20]
 
-    await asyncio.gather(read_stdout(), read_stderr())
-    code = await proc.wait()
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(read_stdout(), read_stderr(), proc.wait()),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        raise FFmpegTimeoutError(f"Proses FFmpeg melebihi batas waktu ({int(timeout)} detik).")
+    except asyncio.CancelledError:
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        raise
+
+    code = proc.returncode
     if code != 0:
         raise FFmpegError("ffmpeg gagal:\n" + "\n".join(stderr_tail[-8:]))
     if on_progress:

@@ -102,7 +102,7 @@ class Store:
         (self.dir(job_id) / "clips").mkdir(parents=True)
         job = {
             "id": job_id, "name": name, "source_type": source_type, "options": options,
-            "created_at": time.time(), "status": "queued", "stage": "Menunggu antrean…",
+            "created_at": time.time(), "status": "queued", "stage": "Menunggu antrean...",
             "progress": 0.0, "error": None, "source": None, "meta": None,
             "summary": None, "clips": [], "logs": [],
         }
