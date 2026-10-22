@@ -325,6 +325,9 @@ async def create_job(
     if RATE_LIMIT_ENABLED or PUBLIC_MODE:
         rate_keys = get_rate_keys(request)
         allowed, retry_after = job_rate_limiter.allow(*rate_keys)
+    if PUBLIC_MODE:
+        rate_key = current_session_id() or (request.client.host if request.client else "unknown")
+        allowed, retry_after = job_rate_limiter.allow(rate_key)
         if not allowed:
             raise HTTPException(
                 429,

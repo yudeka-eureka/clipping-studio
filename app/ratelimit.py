@@ -14,11 +14,7 @@ class JobRateLimiter:
         self._lock = threading.Lock()
 
     def allow(self, *keys: str, now: float | None = None) -> tuple[bool, int]:
-        """Return (allowed, retry_after_seconds) for a new job request.
-        
-        Mendukung satu atau beberapa key (misal: IP dan session ID). Jika salah satu key
-        telah mencapai batas kuota, permintaan ditolak dan tidak ada kuota yang dikurangi.
-        """
+        """Return (allowed, retry_after_seconds) for a new job request."""
         current = time.monotonic() if now is None else now
         cutoff = current - self.window_seconds
         valid_keys = [k for k in keys if k]
