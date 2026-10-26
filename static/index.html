@@ -12,6 +12,8 @@
     <div class="brand">✂️ Clipping Studio <span class="muted">lokal · Gemini API</span></div>
     <div class="topbar-right">
       <span id="conn" class="pill off" title="Koneksi realtime ke server lokal">● offline</span>
+      <button id="btn-auth-open" class="ghost" type="button">🔑 Masuk / Daftar</button>
+      <button id="btn-user-badge" class="ghost user-badge" type="button" hidden>👤 <span id="topbar-username"></span></button>
       <button id="btn-settings" class="ghost">⚙ Pengaturan</button>
     </div>
   </header>
@@ -32,6 +34,74 @@
     </aside>
 
     <main id="main">
+      <!-- Autentikasi Pengguna: Masuk & Daftar -->
+      <section id="view-auth" class="card narrow" hidden>
+        <div class="job-head">
+          <div>
+            <h1 id="auth-heading">Masuk ke Akun</h1>
+            <p class="muted small" id="auth-sub">Kelola token kredensial dan simpan preferensi studio Anda.</p>
+          </div>
+          <button type="button" class="ghost" id="btn-auth-back">← Kembali</button>
+        </div>
+
+        <div class="tabs" role="tablist">
+          <button type="button" class="tab active" id="tab-login" data-auth-tab="login">Masuk</button>
+          <button type="button" class="tab" id="tab-register" data-auth-tab="register">Daftar Akun Baru</button>
+        </div>
+
+        <div id="auth-alert" class="alert-box" hidden></div>
+
+        <!-- Form Masuk -->
+        <form id="form-login" class="auth-pane">
+          <label>Username atau Email
+            <input type="text" id="login-identifier" autocomplete="username" placeholder="mis. username atau nama@domain.com" required />
+          </label>
+          <label>Kata Sandi
+            <div class="password-field">
+              <input type="password" id="login-password" autocomplete="current-password" placeholder="••••••••" required />
+              <button type="button" class="btn-toggle-pwd" data-for="login-password" title="Lihat kata sandi">👁</button>
+            </div>
+          </label>
+          <div class="auth-actions">
+            <button type="submit" class="primary block" id="btn-login-submit">Masuk ke Akun</button>
+          </div>
+          <p class="muted small text-center auth-switch">
+            Belum punya akun? <button type="button" class="link-btn" id="link-switch-to-reg">Daftar akun baru di sini</button>
+          </p>
+        </form>
+
+        <!-- Form Daftar -->
+        <form id="form-register" class="auth-pane" hidden>
+          <label>Username
+            <input type="text" id="reg-username" autocomplete="username" placeholder="mis. creator_studio" required pattern="[A-Za-z0-9_-]{3,50}" />
+            <span class="muted small">3–50 karakter alfanumerik (huruf, angka, _, -).</span>
+          </label>
+          <label>Alamat Email
+            <input type="email" id="reg-email" autocomplete="email" placeholder="nama@domain.com" required />
+          </label>
+          <label>Kata Sandi
+            <div class="password-field">
+              <input type="password" id="reg-password" autocomplete="new-password" placeholder="Minimal 6 karakter" required minlength="6" />
+              <button type="button" class="btn-toggle-pwd" data-for="reg-password" title="Lihat kata sandi">👁</button>
+            </div>
+            <span class="muted small">Minimal 6 karakter.</span>
+          </label>
+          <div class="auth-info-card">
+            <div class="info-icon">🔑</div>
+            <div class="info-text">
+              <strong>Token Kredensial Otomatis</strong>
+              <div class="muted small">Setelah pendaftaran berhasil, Anda otomatis diberikan Token Kredensial unik yang tersimpan di MySQL untuk autentikasi API/CLI dan dapat diatur kapan saja di menu Pengaturan.</div>
+            </div>
+          </div>
+          <div class="auth-actions">
+            <button type="submit" class="primary block" id="btn-reg-submit">Daftar Akun Baru &amp; Buat Token</button>
+          </div>
+          <p class="muted small text-center auth-switch">
+            Sudah punya akun? <button type="button" class="link-btn" id="link-switch-to-login">Masuk di sini</button>
+          </p>
+        </form>
+      </section>
+
       <!-- Form proyek baru -->
       <section id="view-new" class="card narrow">
         <h1>Buat klip dari video panjang</h1>
@@ -160,6 +230,63 @@
               <div class="muted small">Tersimpan di komputer ini (<code>.env</code> dan folder <code>data/</code>).</div>
             </div>
             <button type="button" class="ghost" id="btn-settings-back">← Kembali</button>
+          </div>
+
+          <!-- Kartu Akun & Token Kredensial Pengguna -->
+          <div class="card" id="settings-user-card">
+            <div class="row between">
+              <h2>Akun &amp; Token Kredensial Pengguna</h2>
+              <div id="settings-user-logged-actions" hidden>
+                <button type="button" class="ghost danger small-btn" id="btn-user-logout">Keluar</button>
+              </div>
+            </div>
+            <p class="muted small">Data akun tersimpan aman di server MySQL. Token kredensial digunakan untuk akses API dan CLI tanpa perlu login ulang.</p>
+
+            <!-- Tampilan saat belum login -->
+            <div id="settings-user-guest" class="user-guest-box">
+              <p class="small">Anda belum masuk. Masuk atau buat akun baru untuk mendapatkan Token Kredensial permanen.</p>
+              <button type="button" class="primary small-btn" id="btn-settings-open-auth">🔑 Masuk / Daftar Akun</button>
+            </div>
+
+            <!-- Tampilan saat sudah login -->
+            <div id="settings-user-authenticated" hidden>
+              <div class="user-profile-summary">
+                <div class="profile-col">
+                  <span class="muted small">Username</span>
+                  <strong id="user-display-username">-</strong>
+                </div>
+                <div class="profile-col">
+                  <span class="muted small">Email</span>
+                  <strong id="user-display-email">-</strong>
+                </div>
+                <div class="profile-col">
+                  <span class="muted small">Terdaftar Sejak</span>
+                  <span id="user-display-joined" class="muted small">-</span>
+                </div>
+              </div>
+
+              <div class="token-section">
+                <label class="flat">Token Kredensial Aktif</label>
+                <div class="token-field-row">
+                  <input type="password" id="user-token-display" readonly class="token-input" />
+                  <button type="button" class="ghost small-btn" id="btn-toggle-token" title="Tampilkan atau sembunyikan token">👁 Tampilkan</button>
+                  <button type="button" class="ghost small-btn" id="btn-copy-token" title="Salin token ke papan klip">📋 Salin</button>
+                </div>
+                <p class="muted small">Kirim token ini pada header HTTP <code>Authorization: Bearer &lt;token&gt;</code> atau <code>X-Auth-Token: &lt;token&gt;</code> untuk setiap request API/CLI.</p>
+              </div>
+
+              <div class="token-management">
+                <div class="row between wrap">
+                  <label class="flat">Pengaturan Token Kredensial</label>
+                  <button type="button" class="ghost small-btn" id="btn-regen-token" title="Buat token acak baru dari sistem">↻ Buat Token Acak Baru</button>
+                </div>
+                <div class="row wrap" style="margin-top: 8px;">
+                  <input type="text" id="in-custom-token" placeholder="Ketik token kustom baru (min 8 karakter: huruf, angka, _, -, .)" class="grow" />
+                  <button type="button" class="primary small-btn" id="btn-save-custom-token">Simpan Token Kustom</button>
+                </div>
+                <div id="token-feedback" class="small" hidden></div>
+              </div>
+            </div>
           </div>
       <div class="card">
         <h2>AI pemilih klip</h2>

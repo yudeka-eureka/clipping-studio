@@ -15,7 +15,7 @@ from uuid import UUID, uuid4
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv, set_key
-from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import anthropic
@@ -24,7 +24,7 @@ from google.genai import errors as genai_errors
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, ratelimit, security, system, transcribe
+from . import analysis, branding, buffer, db, facetrack, media, mediahost, pipeline, pricing, ratelimit, security, system, transcribe
 from .jobs import hub, store
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -36,7 +36,9 @@ JOB_RATE_LIMIT = max(1, int(os.environ.get("JOB_RATE_LIMIT", "5")))
 JOB_RATE_WINDOW_SECONDS = max(1, int(os.environ.get("JOB_RATE_WINDOW_SECONDS", "3600")))
 job_rate_limiter = ratelimit.JobRateLimiter(JOB_RATE_LIMIT, JOB_RATE_WINDOW_SECONDS)
 SESSION_COOKIE = "clipping_session"
+USER_TOKEN_COOKIE = "clipping_user_token"
 CURRENT_SESSION: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_session", default=None)
+CURRENT_USER: contextvars.ContextVar[dict | None] = contextvars.ContextVar("current_user", default=None)
 
 PURGE_INTERVAL_SECONDS: int = int(os.environ.get("PURGE_INTERVAL_SECONDS", "1800"))
 
@@ -57,6 +59,8 @@ async def _retention_purge_loop(stop_event: asyncio.Event) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Inisialisasi database MySQL untuk manajemen akun pengguna
+    db.init_db()
     stop_event = asyncio.Event()
     purge_task = asyncio.create_task(_retention_purge_loop(stop_event))
     try:
@@ -82,6 +86,29 @@ def spawn(coro) -> None:
 
 def current_session_id() -> str | None:
     return CURRENT_SESSION.get()
+
+
+def current_user() -> dict | None:
+    return CURRENT_USER.get()
+
+
+def resolve_user_from_request(request: Request) -> dict | None:
+    """Ambil data pengguna dari header Authorization (Bearer), X-Auth-Token, atau cookie."""
+    token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+    if not token:
+        token = request.headers.get("X-Auth-Token", "").strip() or None
+    if not token:
+        token = request.cookies.get(USER_TOKEN_COOKIE)
+
+    if token:
+        try:
+            return db.get_user_by_token(token)
+        except Exception:
+            return None
+    return None
 
 
 def valid_session_id(value: str | None) -> str | None:
@@ -325,9 +352,6 @@ async def create_job(
     if RATE_LIMIT_ENABLED or PUBLIC_MODE:
         rate_keys = get_rate_keys(request)
         allowed, retry_after = job_rate_limiter.allow(*rate_keys)
-    if PUBLIC_MODE:
-        rate_key = current_session_id() or (request.client.host if request.client else "unknown")
-        allowed, retry_after = job_rate_limiter.allow(rate_key)
         if not allowed:
             raise HTTPException(
                 429,
@@ -967,6 +991,120 @@ def media_file(job_id: str, path: str, download: bool = False):
     return FileResponse(target, filename=target.name if download else None)
 
 
+# ---------- Autentikasi Pengguna & Token Kredensial ----------
+
+class RegisterBody(BaseModel):
+    username: str
+    email: str
+    password: str
+
+
+class LoginBody(BaseModel):
+    username_or_email: str
+    password: str
+
+
+class CustomTokenBody(BaseModel):
+    token: str
+
+
+@app.post("/api/auth/register")
+def auth_register(req: RegisterBody, response: Response):
+    try:
+        user = db.register_user(req.username, req.email, req.password)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Gagal mendaftarkan pengguna: {e}")
+
+    response.set_cookie(
+        USER_TOKEN_COOKIE,
+        user["token_credential"],
+        httponly=True,
+        secure=PUBLIC_MODE,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 30,
+    )
+    return {"ok": True, "user": user}
+
+
+@app.post("/api/auth/login")
+def auth_login(req: LoginBody, response: Response):
+    try:
+        user = db.authenticate_user(req.username_or_email, req.password)
+    except Exception as e:
+        raise HTTPException(500, f"Gagal memproses autentikasi: {e}")
+
+    if not user:
+        raise HTTPException(401, "Username/email atau kata sandi tidak valid.")
+
+    response.set_cookie(
+        USER_TOKEN_COOKIE,
+        user["token_credential"],
+        httponly=True,
+        secure=PUBLIC_MODE,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 30,
+    )
+    return {"ok": True, "user": user}
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request):
+    user = CURRENT_USER.get() or resolve_user_from_request(request)
+    return {"ok": True, "user": user}
+
+
+@app.post("/api/auth/token/regenerate")
+def auth_regenerate_token(request: Request, response: Response):
+    user = CURRENT_USER.get() or resolve_user_from_request(request)
+    if not user:
+        raise HTTPException(401, "Silakan masuk terlebih dahulu.")
+    try:
+        new_token = db.regenerate_token(user["id"])
+    except Exception as e:
+        raise HTTPException(500, f"Gagal membuat token baru: {e}")
+
+    response.set_cookie(
+        USER_TOKEN_COOKIE,
+        new_token,
+        httponly=True,
+        secure=PUBLIC_MODE,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 30,
+    )
+    return {"ok": True, "token_credential": new_token}
+
+
+@app.patch("/api/auth/token")
+def auth_update_custom_token(req: CustomTokenBody, request: Request, response: Response):
+    user = CURRENT_USER.get() or resolve_user_from_request(request)
+    if not user:
+        raise HTTPException(401, "Silakan masuk terlebih dahulu.")
+    try:
+        updated_token = db.update_custom_token(user["id"], req.token)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Gagal memperbarui token: {e}")
+
+    response.set_cookie(
+        USER_TOKEN_COOKIE,
+        updated_token,
+        httponly=True,
+        secure=PUBLIC_MODE,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 30,
+    )
+    return {"ok": True, "token_credential": updated_token}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(response: Response):
+    response.delete_cookie(USER_TOKEN_COOKIE)
+    return {"ok": True}
+
+
 # ---------- Realtime ----------
 
 @app.websocket("/ws")
@@ -987,17 +1125,23 @@ async def ws(websocket: WebSocket):
 
 
 @app.middleware("http")
-async def no_stale_ui(request, call_next):
+async def no_stale_ui(request: Request, call_next):
     """Antarmuka selalu divalidasi ulang, supaya versi lama tidak nyangkut di cache browser."""
     session_id = valid_session_id(request.cookies.get(SESSION_COOKIE)) or str(uuid4())
-    token = CURRENT_SESSION.set(session_id)
-    response = await call_next(request)
+    token_sess = CURRENT_SESSION.set(session_id)
+    user = resolve_user_from_request(request)
+    token_user = CURRENT_USER.set(user)
+    try:
+        response = await call_next(request)
+    finally:
+        CURRENT_SESSION.reset(token_sess)
+        CURRENT_USER.reset(token_user)
+
     if not valid_session_id(request.cookies.get(SESSION_COOKIE)):
         response.set_cookie(SESSION_COOKIE, session_id, httponly=True, secure=PUBLIC_MODE,
                             samesite="lax", max_age=60 * 60 * 24 * 365)
     if request.url.path.startswith(("/branding/", "/static/")) or request.url.path in ("/", "/app.js", "/style.css", "/index.html"):
         response.headers["Cache-Control"] = "no-cache"
-    CURRENT_SESSION.reset(token)
     return response
 
 

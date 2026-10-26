@@ -2,7 +2,15 @@
 
 const $ = (s, el = document) => el.querySelector(s);
 const state = { jobs: {}, current: null, src: "file", file: null, config: null,
-  searchQuery: "", activeFilter: "all" };
+  searchQuery: "", activeFilter: "all", user: null };
+const ALL_VIEWS = ["#view-new", "#view-job", "#view-usage", "#view-settings", "#view-auth"];
+
+function setView(activeViewId) {
+  for (const v of ALL_VIEWS) {
+    const el = $(v);
+    if (el) el.hidden = v !== activeViewId;
+  }
+}
 const AI_STORAGE_KEY = "clipping-studio-ai";
 
 function storedAi() {
@@ -287,10 +295,7 @@ function renderUsage() {
 
 function showUsage() {
   state.current = null;
-  $("#view-new").hidden = true;
-  $("#view-job").hidden = true;
-  $("#view-usage").hidden = false;
-  $("#view-settings").hidden = true;
+  setView("#view-usage");
   $("#src-video").removeAttribute("src");
   renderJobList();
   renderUsage();
@@ -410,20 +415,17 @@ document.querySelectorAll(".btn-filter").forEach((button) => {
 // ---------- Form proyek baru ----------
 function showNew() {
   state.current = null;
-  $("#view-new").hidden = false;
-  $("#view-job").hidden = true;
-  $("#view-usage").hidden = true;
-  $("#view-settings").hidden = true;
+  setView("#view-new");
   $("#src-video").removeAttribute("src");
   renderJobList();
 }
 $("#btn-new").onclick = showNew;
 
-document.querySelectorAll(".tab").forEach((tab) => {
+document.querySelectorAll("#view-new .tab").forEach((tab) => {
   tab.onclick = () => {
     state.src = tab.dataset.src;
     updateEstimate();
-    document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
+    document.querySelectorAll("#view-new .tab").forEach((t) => t.classList.toggle("active", t === tab));
     document.querySelectorAll("[data-src-pane]").forEach((p) => (p.hidden = p.dataset.srcPane !== state.src));
   };
 });
@@ -550,10 +552,7 @@ $("#form-new").onsubmit = (e) => {
 // ---------- Detail proyek ----------
 function openJob(id) {
   state.current = id;
-  $("#view-new").hidden = true;
-  $("#view-job").hidden = false;
-  $("#view-usage").hidden = true;
-  $("#view-settings").hidden = true;
+  setView("#view-job");
   $("#clips").innerHTML = "";
   delete $("#job-format").dataset.job;
   $("#src-video").removeAttribute("src");
@@ -1470,11 +1469,11 @@ $("#btn-add-account").onclick = async () => {
 function showSettings() {
   state.backTo = state.current ? { view: "job", id: state.current } : { view: $("#view-usage").hidden ? "new" : "usage" };
   state.current = null;
-  for (const v of ["#view-new", "#view-job", "#view-usage"]) $(v).hidden = true;
-  $("#view-settings").hidden = false;
+  setView("#view-settings");
   $("#src-video").removeAttribute("src");
   clearDirty();
   if (state.config) fillSettings();
+  renderUserSettings();
   $("#host-test").textContent = "";
   $("#buffer-test").textContent = "";
   $("#settings-status").textContent = "";
@@ -1603,6 +1602,316 @@ $("#btn-test-host").onclick = async () => {
   }
 };
 
+// ---------- Autentikasi & Akun Pengguna ----------
+
+function updateAuthUI() {
+  const btnAuthOpen = $("#btn-auth-open");
+  const btnUserBadge = $("#btn-user-badge");
+  const topbarUsername = $("#topbar-username");
+
+  if (state.user) {
+    if (btnAuthOpen) btnAuthOpen.hidden = true;
+    if (btnUserBadge) {
+      btnUserBadge.hidden = false;
+      if (topbarUsername) topbarUsername.textContent = state.user.username;
+    }
+  } else {
+    if (btnAuthOpen) btnAuthOpen.hidden = false;
+    if (btnUserBadge) btnUserBadge.hidden = true;
+  }
+  renderUserSettings();
+}
+
+async function checkAuth() {
+  try {
+    const res = await api("/api/auth/me");
+    state.user = res.user || null;
+    updateAuthUI();
+  } catch {
+    state.user = null;
+    updateAuthUI();
+  }
+}
+
+function showAuth(mode = "login") {
+  state.backTo = state.current
+    ? { view: "job", id: state.current }
+    : { view: $("#view-settings").hidden ? ($("#view-usage").hidden ? "new" : "usage") : "settings" };
+  state.current = null;
+  setView("#view-auth");
+  setAuthTab(mode);
+  $("#src-video").removeAttribute("src");
+  const alertEl = $("#auth-alert");
+  if (alertEl) {
+    alertEl.hidden = true;
+    alertEl.textContent = "";
+  }
+  window.scrollTo(0, 0);
+  renderJobList();
+}
+
+function setAuthTab(mode) {
+  const isLogin = mode === "login";
+  $("#tab-login").classList.toggle("active", isLogin);
+  $("#tab-register").classList.toggle("active", !isLogin);
+  $("#form-login").hidden = !isLogin;
+  $("#form-register").hidden = isLogin;
+  $("#auth-heading").textContent = isLogin ? "Masuk ke Akun" : "Daftar Akun Baru";
+  $("#auth-sub").textContent = isLogin
+    ? "Kelola token kredensial dan simpan preferensi studio Anda."
+    : "Daftar sekarang untuk mendapatkan token kredensial otomatis yang tersimpan di MySQL.";
+  const alertEl = $("#auth-alert");
+  if (alertEl) {
+    alertEl.hidden = true;
+    alertEl.textContent = "";
+  }
+}
+
+function renderUserSettings() {
+  const guestBox = $("#settings-user-guest");
+  const authBox = $("#settings-user-authenticated");
+  const loggedActions = $("#settings-user-logged-actions");
+  if (!guestBox || !authBox) return;
+
+  if (state.user) {
+    guestBox.hidden = true;
+    authBox.hidden = false;
+    if (loggedActions) loggedActions.hidden = false;
+
+    $("#user-display-username").textContent = state.user.username;
+    $("#user-display-email").textContent = state.user.email;
+    if (state.user.created_at) {
+      try {
+        const d = new Date(state.user.created_at);
+        $("#user-display-joined").textContent = d.toLocaleDateString("id-ID", {
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+        });
+      } catch {
+        $("#user-display-joined").textContent = state.user.created_at;
+      }
+    } else {
+      $("#user-display-joined").textContent = "-";
+    }
+
+    const tokenInput = $("#user-token-display");
+    if (tokenInput) {
+      tokenInput.value = state.user.token_credential || "";
+    }
+    const tokenFeedback = $("#token-feedback");
+    if (tokenFeedback) {
+      tokenFeedback.textContent = "";
+      tokenFeedback.hidden = true;
+    }
+    const customInput = $("#in-custom-token");
+    if (customInput) customInput.value = "";
+  } else {
+    guestBox.hidden = false;
+    authBox.hidden = true;
+    if (loggedActions) loggedActions.hidden = true;
+  }
+}
+
+// Navigasi & interaksi halaman Auth
+$("#btn-auth-open").onclick = () => showAuth("login");
+$("#btn-user-badge").onclick = () => {
+  showSettings();
+  const card = $("#settings-user-card");
+  if (card) card.scrollIntoView({ behavior: "smooth" });
+};
+$("#btn-settings-open-auth").onclick = () => showAuth("login");
+
+$("#btn-auth-back").onclick = () => {
+  const back = state.backTo || { view: "new" };
+  if (back.view === "job" && state.jobs[back.id]) openJob(back.id);
+  else if (back.view === "settings") showSettings();
+  else if (back.view === "usage") showUsage();
+  else showNew();
+};
+
+$("#tab-login").onclick = () => setAuthTab("login");
+$("#tab-register").onclick = () => setAuthTab("register");
+$("#link-switch-to-reg").onclick = () => setAuthTab("register");
+$("#link-switch-to-login").onclick = () => setAuthTab("login");
+
+// Toggle lihat password
+document.querySelectorAll(".btn-toggle-pwd").forEach((btn) => {
+  btn.onclick = () => {
+    const target = $(`#${btn.dataset.for}`);
+    if (!target) return;
+    const isPwd = target.type === "password";
+    target.type = isPwd ? "text" : "password";
+    btn.textContent = isPwd ? "🙈" : "👁";
+    btn.title = isPwd ? "Sembunyikan kata sandi" : "Lihat kata sandi";
+  };
+});
+
+// Form Login submit
+$("#form-login").onsubmit = async (e) => {
+  e.preventDefault();
+  const btn = $("#btn-login-submit");
+  const alertEl = $("#auth-alert");
+  alertEl.hidden = true;
+  alertEl.className = "alert-box";
+
+  const identifier = $("#login-identifier").value.trim();
+  const password = $("#login-password").value;
+  if (!identifier || !password) return;
+
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = "Memproses...";
+  try {
+    const res = await api("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username_or_email: identifier, password }),
+    });
+    state.user = res.user;
+    updateAuthUI();
+    toast(`Berhasil masuk! Selamat datang, ${state.user.username}`);
+    $("#login-password").value = "";
+
+    if (state.backTo?.view === "settings") showSettings();
+    else if (state.backTo?.view === "job" && state.jobs[state.backTo.id]) openJob(state.backTo.id);
+    else showNew();
+  } catch (err) {
+    alertEl.textContent = err.message;
+    alertEl.className = "alert-box error";
+    alertEl.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+};
+
+// Form Register submit
+$("#form-register").onsubmit = async (e) => {
+  e.preventDefault();
+  const btn = $("#btn-reg-submit");
+  const alertEl = $("#auth-alert");
+  alertEl.hidden = true;
+  alertEl.className = "alert-box";
+
+  const username = $("#reg-username").value.trim();
+  const email = $("#reg-email").value.trim();
+  const password = $("#reg-password").value;
+  if (!username || !email || !password) return;
+
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = "Mendaftarkan...";
+  try {
+    const res = await api("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ username, email, password }),
+    });
+    state.user = res.user;
+    updateAuthUI();
+    toast(`Akun '${state.user.username}' berhasil dibuat! Token kredensial aktif.`);
+    $("#reg-password").value = "";
+    showSettings();
+  } catch (err) {
+    alertEl.textContent = err.message;
+    alertEl.className = "alert-box error";
+    alertEl.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+};
+
+// Interaksi Token Kredensial di Pengaturan
+$("#btn-toggle-token").onclick = () => {
+  const input = $("#user-token-display");
+  const btn = $("#btn-toggle-token");
+  const isPwd = input.type === "password";
+  input.type = isPwd ? "text" : "password";
+  btn.textContent = isPwd ? "🙈 Sembunyikan" : "👁 Tampilkan";
+};
+
+$("#btn-copy-token").onclick = async () => {
+  const token = state.user?.token_credential;
+  if (!token) return;
+  try {
+    await navigator.clipboard.writeText(token);
+    toast("Token kredensial disalin ke papan klip!");
+  } catch {
+    const input = $("#user-token-display");
+    input.type = "text";
+    input.select();
+    document.execCommand("copy");
+    input.type = "password";
+    toast("Token kredensial disalin ke papan klip!");
+  }
+};
+
+$("#btn-regen-token").onclick = async () => {
+  if (!confirm("Buat token acak baru? Token kredensial yang lama tidak akan bisa dipakai lagi.")) return;
+  const btn = $("#btn-regen-token");
+  btn.disabled = true;
+  try {
+    const res = await api("/api/auth/token/regenerate", { method: "POST" });
+    state.user.token_credential = res.token_credential;
+    $("#user-token-display").value = res.token_credential;
+    const fb = $("#token-feedback");
+    fb.textContent = "✓ Token baru berhasil dibuat.";
+    fb.className = "small ok";
+    fb.hidden = false;
+    toast("Token baru berhasil dibuat!");
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+$("#btn-save-custom-token").onclick = async () => {
+  const custom = $("#in-custom-token").value.trim();
+  const fb = $("#token-feedback");
+  fb.hidden = true;
+  if (!custom) {
+    fb.textContent = "Masukkan token kustom yang diinginkan (minimal 8 karakter).";
+    fb.className = "small err";
+    fb.hidden = false;
+    return;
+  }
+  const btn = $("#btn-save-custom-token");
+  btn.disabled = true;
+  try {
+    const res = await api("/api/auth/token", {
+      method: "PATCH",
+      body: JSON.stringify({ token: custom }),
+    });
+    state.user.token_credential = res.token_credential;
+    $("#user-token-display").value = res.token_credential;
+    $("#in-custom-token").value = "";
+    fb.textContent = "✓ Token kustom berhasil disimpan.";
+    fb.className = "small ok";
+    fb.hidden = false;
+    toast("Token kustom berhasil disimpan!");
+  } catch (err) {
+    fb.textContent = `✗ ${err.message}`;
+    fb.className = "small err";
+    fb.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+$("#btn-user-logout").onclick = async () => {
+  if (!confirm("Apakah Anda yakin ingin keluar dari akun?")) return;
+  try {
+    await api("/api/auth/logout", { method: "POST" });
+    state.user = null;
+    updateAuthUI();
+    toast("Anda telah keluar dari akun.");
+  } catch (err) {
+    toast(err.message, true);
+  }
+};
+
+checkAuth();
 loadConfig().then(loadUsage).catch((err) => toast(err.message, true));
 loadBranding();   // pustaka logo dibutuhkan pemilih logo di form proyek & kartu format
 connect();
