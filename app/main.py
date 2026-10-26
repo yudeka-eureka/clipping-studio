@@ -18,9 +18,6 @@ from dotenv import load_dotenv, set_key
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-import anthropic
-import openai
-from google.genai import errors as genai_errors
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
@@ -292,6 +289,12 @@ def save_config(cfg: ConfigIn):
 @app.get("/api/models")
 async def models(provider: str | None = None, x_ai_provider: str | None = Header(None),
                  x_ai_key: str | None = Header(None), x_ai_model: str | None = Header(None)):
+    # Muat SDK provider hanya saat endpoint model digunakan agar startup server
+    # dan test tidak tersendat oleh SDK yang tidak diperlukan.
+    from google.genai import errors as genai_errors
+    import anthropic
+    import openai
+
     context = _request_ai_context(x_ai_provider or provider, x_ai_key, x_ai_model)
     name = context["provider"] if context else provider if provider in analysis.PROVIDERS else analysis.provider()
     try:
@@ -325,9 +328,6 @@ async def create_job(
     if RATE_LIMIT_ENABLED or PUBLIC_MODE:
         rate_keys = get_rate_keys(request)
         allowed, retry_after = job_rate_limiter.allow(*rate_keys)
-    if PUBLIC_MODE:
-        rate_key = current_session_id() or (request.client.host if request.client else "unknown")
-        allowed, retry_after = job_rate_limiter.allow(rate_key)
         if not allowed:
             raise HTTPException(
                 429,
