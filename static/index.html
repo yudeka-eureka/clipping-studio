@@ -131,36 +131,84 @@
             <p class="muted small">Hanya URL https:// dari penyedia video terverifikasi (YouTube, TikTok, Vimeo, dll). Maksimal 45 menit / 500 MB.</p>
           </div>
 
-          <div class="grid">
-            <label>Jumlah klip<input type="number" id="in-num" min="1" max="15" value="3" /></label>
-            <label>Durasi min (dtk)<input type="number" id="in-min" min="5" value="30" /></label>
-            <label>Durasi maks (dtk)<input type="number" id="in-max" min="10" value="90" /></label>
-            <label>Rasio
-              <select id="in-aspect">
-                <option value="9:16">9:16 · TikTok/Reels/Shorts</option>
-                <option value="1:1">1:1 · Feed persegi</option>
-                <option value="4:5">4:5 · Feed Instagram</option>
-                <option value="16:9">16:9 · YouTube</option>
-                <option value="original">Asli</option>
-              </select>
-            </label>
-            <label>Tata letak
-              <select id="in-layout">
-                <option value="face">Fokus wajah (ikuti pembicara)</option>
-                <option value="crop">Crop tengah</option>
-                <option value="blur">Utuh + latar blur</option>
-              </select>
-            </label>
-            <label class="check"><input type="checkbox" id="in-subs" checked /> Subtitle otomatis</label>
-            <label class="check"><input type="checkbox" id="in-trim" checked /> Hapus jeda diam</label>
-            <label class="check"><input type="checkbox" id="in-title" checked /> Judul di atas video</label>
-            <label>Logo<select id="in-logo"></select></label>
-            <label>Bumper pembuka<select id="in-intro"></select></label>
-            <label>Bumper penutup<select id="in-outro"></select></label>
+          <!-- Pilihan Preset Cepat -->
+          <div class="preset-section">
+            <label class="flat"><strong>Preset Cepat Video</strong> <span class="muted small">(Pilih platform target atau atur kustom di bawah)</span></label>
+            <div class="preset-cards" role="radiogroup" aria-label="Preset Cepat Video">
+              <button type="button" class="preset-card active" data-preset="tiktok">
+                <span class="preset-icon">📱</span>
+                <span class="preset-title">TikTok / Reels / Shorts</span>
+                <span class="preset-desc">9:16 · Fokus wajah · Subtitle aktif · 30–60 dtk</span>
+              </button>
+              <button type="button" class="preset-card" data-preset="podcast">
+                <span class="preset-icon">🎙️</span>
+                <span class="preset-title">Podcast Highlight</span>
+                <span class="preset-desc">9:16 · Wajah + judul · Hapus jeda · 45–90 dtk</span>
+              </button>
+              <button type="button" class="preset-card" data-preset="square">
+                <span class="preset-icon">🟦</span>
+                <span class="preset-title">Feed Persegi</span>
+                <span class="preset-desc">1:1 · Crop tengah · Subtitle aktif · 30–60 dtk</span>
+              </button>
+              <button type="button" class="preset-card" data-preset="youtube">
+                <span class="preset-icon">📺</span>
+                <span class="preset-title">YouTube Clip</span>
+                <span class="preset-desc">16:9 · Asli/Crop · Subtitle aktif · 60–90 dtk</span>
+              </button>
+            </div>
           </div>
+
+          <!-- Opsi Utama Sederhana -->
+          <div class="row wrap" style="margin: 12px 0 8px;">
+            <label class="grow" style="max-width: 200px;">Jumlah klip yang diinginkan
+              <input type="number" id="in-num" min="1" max="15" value="3" />
+            </label>
+            <div class="preset-active-summary grow" id="preset-active-summary">
+              <span class="muted small">Preset aktif:</span>
+              <strong id="preset-active-label">TikTok / Reels / Shorts</strong>
+              <span class="muted small" id="preset-active-detail">9:16 · Fokus wajah · Subtitle ON · Hapus jeda ON</span>
+            </div>
+          </div>
+
           <label>Instruksi tambahan untuk AI <span class="muted">(opsional)</span>
             <textarea id="in-instr" rows="2" placeholder="Contoh: fokus pada tips praktis tentang keuangan, hindari bagian iklan"></textarea>
           </label>
+
+          <!-- Pengaturan Lanjutan (Advanced Video Settings) -->
+          <details id="adv-video-settings" class="advanced-settings-box">
+            <summary class="advanced-summary">
+              <span>⚙️ Pengaturan Lanjutan (Advanced Video Settings)</span>
+              <span class="muted small">Atur rasio spesifik, tata letak, durasi, subtitle, jeda diam, logo &amp; bumper</span>
+            </summary>
+            <div class="advanced-inner">
+              <div class="grid">
+                <label>Durasi min (dtk)<input type="number" id="in-min" min="5" value="30" /></label>
+                <label>Durasi maks (dtk)<input type="number" id="in-max" min="10" value="60" /></label>
+                <label>Rasio
+                  <select id="in-aspect">
+                    <option value="9:16">9:16 · TikTok/Reels/Shorts</option>
+                    <option value="1:1">1:1 · Feed persegi</option>
+                    <option value="4:5">4:5 · Feed Instagram</option>
+                    <option value="16:9">16:9 · YouTube</option>
+                    <option value="original">Asli</option>
+                  </select>
+                </label>
+                <label>Tata letak
+                  <select id="in-layout">
+                    <option value="face">Fokus wajah (ikuti pembicara)</option>
+                    <option value="crop">Crop tengah</option>
+                    <option value="blur">Utuh + latar blur</option>
+                  </select>
+                </label>
+                <label class="check"><input type="checkbox" id="in-subs" checked /> Subtitle otomatis</label>
+                <label class="check"><input type="checkbox" id="in-trim" checked /> Hapus jeda diam</label>
+                <label class="check"><input type="checkbox" id="in-title" checked /> Judul di atas video</label>
+                <label>Logo watermark<select id="in-logo"></select></label>
+                <label>Bumper pembuka<select id="in-intro"></select></label>
+                <label>Bumper penutup<select id="in-outro"></select></label>
+              </div>
+            </div>
+          </details>
 
           <details class="targets">
             <summary>🎯 Tujuan posting <span class="muted small" id="new-target-count">(opsional, bisa diatur nanti)</span></summary>
@@ -227,13 +275,21 @@
           <div class="job-head">
             <div>
               <h1>⚙ Pengaturan</h1>
-              <div class="muted small">Tersimpan di komputer ini (<code>.env</code> dan folder <code>data/</code>).</div>
+              <div class="muted small">Tersimpan aman di browser Anda (<code>localStorage</code>) dan akun pengguna.</div>
             </div>
             <button type="button" class="ghost" id="btn-settings-back">← Kembali</button>
           </div>
 
+          <div class="tabs settings-tabs" role="tablist">
+            <button type="button" class="tab active" data-set-tab="account">👤 Akun &amp; Token</button>
+            <button type="button" class="tab" data-set-tab="ai">🤖 Model AI</button>
+            <button type="button" class="tab" data-set-tab="subs">💬 Subtitle</button>
+            <button type="button" class="tab" data-set-tab="brand">🎨 Branding</button>
+            <button type="button" class="tab" data-set-tab="social">📤 Media Sosial</button>
+          </div>
+
           <!-- Kartu Akun & Token Kredensial Pengguna -->
-          <div class="card" id="settings-user-card">
+          <div class="card" id="settings-user-card" data-set-pane="account">
             <div class="row between">
               <h2>Akun &amp; Token Kredensial Pengguna</h2>
               <div id="settings-user-logged-actions" hidden>
@@ -288,7 +344,8 @@
               </div>
             </div>
           </div>
-      <div class="card">
+
+      <div class="card" data-set-pane="ai" hidden>
         <h2>AI pemilih klip</h2>
 
       <label>Penyedia AI (pemilih momen klip)
@@ -307,7 +364,7 @@
         </div>
       </label>
       </div>
-      <div class="card">
+      <div class="card" data-set-pane="subs" hidden>
         <h2>Subtitle</h2>
         <p class="muted small">Waktu subtitle diselaraskan per kata dengan suara memakai Whisper di komputer ini. Model diunduh sekali dari Hugging Face saat pertama dipakai.</p>
 
@@ -316,7 +373,7 @@
         <label>Bahasa<select id="set-lang"></select></label>
       </div>
       </div>
-      <div class="card">
+      <div class="card" data-set-pane="brand" hidden>
         <h2>Logo &amp; penutup klip</h2>
         <p class="muted small">Dipasang saat render. Klip lama perlu <b>Render ulang</b> untuk ikut berubah.</p>
         <label class="flat">Pustaka logo <span class="muted">(tiap proyek bisa memakai logo berbeda)</span></label>
@@ -337,7 +394,7 @@
         <p class="muted small" id="brand-msg"></p>
       </div>
 
-      <div class="card">
+      <div class="card" data-set-pane="social" hidden>
         <h2>Posting ke media sosial (Buffer)</h2>
 
       <label class="flat">Akun Buffer <span class="muted">(boleh lebih dari satu)</span></label>
@@ -370,6 +427,8 @@
       <p class="warn small" id="host-missing" hidden></p>
       <div class="row"><button type="button" class="ghost" id="btn-test-host">↻ Tes hosting</button><span class="muted small" id="host-test"></span></div>
       <div class="row"><button type="button" class="ghost" id="btn-test-buffer">↻ Tes koneksi Buffer</button><span class="muted small" id="buffer-test"></span></div>
+      <p class="muted small" id="set-info"></p>
+      </div>
       <p class="muted small" id="set-info"></p>
       </div>
           <div class="settings-actions">
@@ -458,6 +517,78 @@
       </section>
     </main>
   </div>
+
+  <!-- Modal Studio Klip Layar Penuh (Fullscreen Focused Player & Subtitle Review) -->
+  <dialog id="dlg-clip-fullscreen" class="dlg-fullscreen">
+    <div class="modal-fs-container">
+      <div class="modal-fs-header">
+        <div class="row">
+          <span class="fs-index" id="fs-clip-index">Klip 1 dari 1</span>
+          <span class="fs-badge" id="fs-clip-status">✓ Siap Ditonton</span>
+        </div>
+        <div class="fs-nav-controls">
+          <button type="button" class="ghost small-btn" id="btn-fs-prev" title="Klip Sebelumnya (Panah Kiri)">◀ Sebelumnya</button>
+          <button type="button" class="ghost small-btn" id="btn-fs-next" title="Klip Berikutnya (Panah Kanan)">Berikutnya ▶</button>
+          <button type="button" class="ghost small-btn" id="btn-fs-close" title="Tutup (Esc)">✕ Tutup</button>
+        </div>
+      </div>
+      <div class="modal-fs-body">
+        <!-- Kolom Kiri: Player Frame Vertikal Mobile / Responsif -->
+        <div class="fs-player-pane">
+          <div class="phone-frame" id="fs-phone-frame">
+            <video id="fs-video-player" playsinline controls preload="metadata"></video>
+            <div class="phone-overlay-info">
+              <div class="fs-hook-overlay" id="fs-hook-text"></div>
+              <div class="fs-tags-overlay" id="fs-tags-text"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Kolom Kanan: Detail, Teks & Subtitle, dan Aksi -->
+        <div class="fs-info-pane">
+          <div class="fs-card-section">
+            <div class="row between">
+              <h2 id="fs-title" class="fs-title"></h2>
+              <span class="score" id="fs-score"></span>
+            </div>
+            <div class="row" style="margin-top: 4px; gap: 12px;">
+              <span class="muted small" id="fs-duration"></span>
+              <span class="muted small" id="fs-aspect"></span>
+            </div>
+            <p class="muted small" id="fs-reason" style="margin-top: 8px;"></p>
+          </div>
+
+          <!-- Naskah Teks & Subtitle Sebelum/Sesudah Render Video -->
+          <div class="fs-card-section">
+            <div class="row between">
+              <label class="flat"><strong>📝 Naskah Teks &amp; Subtitle Klip</strong></label>
+              <span class="muted small" id="fs-sub-count"></span>
+            </div>
+            <p class="muted small" style="margin: 4px 0 8px;">Teks dan subtitle diselaraskan per kata agar konsisten dengan video.</p>
+            <div class="fs-transcript-box" id="fs-transcript-list">
+              <p class="muted small">Memuat teks subtitle…</p>
+            </div>
+          </div>
+
+          <!-- Aksi Klip -->
+          <div class="fs-card-section fs-actions-section">
+            <div class="fs-primary-actions">
+              <button type="button" class="primary" id="btn-fs-publish">📤 Posting ke Buffer</button>
+              <a class="btn" id="btn-fs-download-mp4" download>⬇ Unduh MP4</a>
+            </div>
+            <div class="fs-secondary-actions">
+              <a class="btn ghost small-btn" id="btn-fs-download-srt" download>⬇ Subtitle (.srt)</a>
+              <a class="btn ghost small-btn" id="btn-fs-download-vtt" download>⬇ WebVTT (.vtt)</a>
+              <button type="button" class="ghost small-btn" id="btn-fs-copy-caption">📋 Salin Caption</button>
+              <button type="button" class="ghost small-btn" id="btn-fs-edit-src">✎ Edit di Sumber</button>
+              <button type="button" class="ghost small-btn" id="btn-fs-rerender">↻ Render Ulang</button>
+              <button type="button" class="ghost danger small-btn" id="btn-fs-delete">🗑 Hapus Klip</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </dialog>
 
   <dialog id="dlg-publish">
     <form method="dialog" id="form-publish">

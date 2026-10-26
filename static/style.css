@@ -154,7 +154,7 @@ dialog h2.section { margin-top: 20px; }
   .job-list { flex-direction: row; overflow-x: auto; }
   .job-item { min-width: 180px; }
   .grid { grid-template-columns: 1fr 1fr; }
-  main { padding: 12px; }
+  main { padding: 16px; }
 }
 
 label.flat { margin: 0; }
@@ -393,4 +393,451 @@ details.targets[open] summary { margin-bottom: 6px; }
 }
 #token-feedback.err {
   color: var(--err);
+}
+
+/* Batas ergonomis panjang baris teks paragraf */
+p {
+  max-width: 72ch;
+}
+
+/* Preset Cepat Video */
+.preset-section {
+  margin: 14px 0 10px;
+}
+.preset-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+.preset-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  white-space: normal;
+}
+.preset-card:hover {
+  background: var(--panel-2);
+  border-color: var(--accent);
+}
+.preset-card.active {
+  background: rgba(109, 75, 246, 0.12);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.preset-icon {
+  font-size: 20px;
+  margin-bottom: 4px;
+}
+.preset-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+.preset-desc {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  line-height: 1.3;
+}
+.preset-active-summary {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 12px;
+}
+
+/* Pengaturan Lanjutan (Advanced Video Settings) */
+.advanced-settings-box {
+  margin-top: 14px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.advanced-summary {
+  padding: 10px 14px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--panel-2);
+}
+.advanced-inner {
+  padding: 14px;
+  border-top: 1px solid var(--line);
+}
+.advanced-inner .grid {
+  margin: 0;
+}
+
+/* Tab Kategori di Pengaturan */
+.settings-tabs {
+  margin: 10px 0 16px;
+  overflow-x: auto;
+  flex-wrap: wrap;
+}
+
+/* Kartu Klip Ringkas (Compact Clip Cards) */
+.clips {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+.clip-compact {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+.clip-preview-thumb {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: #090a0d;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+.clip-preview-thumb:hover .btn-open-fs {
+  background: var(--accent);
+  color: #fff;
+}
+.thumb-badges {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  gap: 6px;
+  z-index: 2;
+}
+.badge-aspect, .badge-duration, .badge-score {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.badge-score {
+  background: rgba(109, 75, 246, 0.75);
+  font-weight: 600;
+}
+.btn-open-fs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  font-size: 13px;
+  border-radius: 20px;
+  background: rgba(31, 34, 43, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(6px);
+  z-index: 2;
+  cursor: pointer;
+}
+.thumb-status {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: rgba(0, 0, 0, 0.75);
+  color: var(--ok);
+  z-index: 2;
+}
+.thumb-status.run {
+  color: var(--warn);
+}
+.thumb-status.queued {
+  color: var(--muted);
+}
+.clip-compact-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+}
+.clip-compact-title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.clip-compact-hook {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--muted);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.clip-compact-text-preview {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.clip-compact-text-preview .text-snippet {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+.clip-compact-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.more-menu-wrap {
+  position: relative;
+  margin-left: auto;
+}
+.more-dropdown {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 150px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.more-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-decoration: none;
+}
+.more-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.more-item.danger {
+  color: var(--err);
+}
+
+/* Modal Studio Klip Layar Penuh (Fullscreen Focused Player) */
+dialog.dlg-fullscreen {
+  width: min(1060px, 96vw);
+  max-height: 92vh;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+}
+.modal-fs-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: calc(92vh - 24px);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.modal-fs-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.fs-index {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.fs-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: rgba(47, 191, 113, 0.15);
+  color: var(--ok);
+}
+.fs-nav-controls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.modal-fs-body {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) 1fr;
+  flex: 1;
+  overflow: hidden;
+}
+.fs-player-pane {
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  border-right: 1px solid var(--line);
+}
+.phone-frame {
+  position: relative;
+  width: 100%;
+  max-width: 320px;
+  aspect-ratio: 9 / 16;
+  background: #000;
+  border-radius: 18px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.8), 0 0 0 2px rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.phone-frame video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.phone-overlay-info {
+  position: absolute;
+  bottom: 50px;
+  left: 12px;
+  right: 12px;
+  pointer-events: none;
+  z-index: 3;
+}
+.fs-hook-overlay {
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
+  line-height: 1.3;
+}
+.fs-tags-overlay {
+  font-size: 11px;
+  color: var(--accent-2);
+  margin-top: 2px;
+}
+.fs-info-pane {
+  display: flex;
+  flex-direction: column;
+  padding: 18px 20px;
+  overflow-y: auto;
+  gap: 16px;
+}
+.fs-card-section {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+}
+.fs-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0;
+  word-break: break-word;
+}
+.fs-transcript-box {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fs-transcript-line {
+  display: flex;
+  gap: 8px;
+}
+.fs-sub-time {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: var(--accent-2);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.fs-sub-text {
+  color: var(--text);
+}
+.fs-primary-actions {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.fs-primary-actions button, .fs-primary-actions a {
+  flex: 1;
+  text-align: center;
+  padding: 10px;
+  font-weight: 600;
+}
+.fs-secondary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Animasi Status Menganalisis AI */
+.bar > div.analyzing {
+  width: 100% !important;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-2) 50%, var(--accent) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite linear;
+}
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@media (max-width: 800px) {
+  .modal-fs-body {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+  .fs-player-pane {
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
 }

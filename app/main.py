@@ -193,16 +193,27 @@ class ConfigIn(BaseModel):
 
 def _request_ai_context(provider_name: str | None, key: str | None, model: str | None,
                         *, required: bool = True) -> dict | None:
-    if not PUBLIC_MODE:
-        return None
-    name = (provider_name or "").strip().lower()
-    if name not in analysis.PROVIDERS:
-        raise HTTPException(400, "Header X-AI-Provider tidak valid.")
     secret = (key or "").strip()
-    if required and not secret:
+    name = (provider_name or "").strip().lower()
+    if not secret and not name:
+        if PUBLIC_MODE and required:
+            raise HTTPException(400, "Header X-AI-Key wajib diisi dalam PUBLIC_MODE.")
+        return None
+
+    if name and name not in analysis.PROVIDERS:
+        raise HTTPException(400, "Header X-AI-Provider tidak valid.")
+
+    target = name or analysis.provider()
+    if required and not secret and PUBLIC_MODE:
         raise HTTPException(400, "Header X-AI-Key wajib diisi dalam PUBLIC_MODE.")
-    selected_model = (model or "").strip() or analysis.PROVIDERS[name]["default_model"]
-    return {"provider": name, "key": secret, "model": selected_model}
+
+    if not secret:
+        secret = os.environ.get(analysis.PROVIDERS[target]["env"], "")
+        if required and not secret:
+            raise HTTPException(400, f"API key untuk {analysis.PROVIDERS[target]['label']} belum diatur.")
+
+    selected_model = (model or "").strip() or analysis.PROVIDERS[target]["default_model"]
+    return {"provider": target, "key": secret, "model": selected_model}
 
 
 def _hint(env: str) -> str:
