@@ -26,73 +26,49 @@ const USER_TOKEN_KEY = "clipping_user_token";
 const USER_MEDIA_KEY = "clipping_user_media";
 
 function getStoredToken() {
-  return state.user?.token_credential || localStorage.getItem(USER_TOKEN_KEY) || "";
+  return state.user?.token_credential || "";
 }
 
-function storedMedia() {
+async function loadAiCredentials() {
   try {
-    const raw = localStorage.getItem(USER_MEDIA_KEY) || "{}";
-    const v = JSON.parse(raw);
-    return {
-      host: v.host || "default",
-      cloudinary: v.cloudinary || {},
-      r2: v.r2 || {},
-    };
+    const res = await api("/api/credentials/ai");
+    state.aiCredentials = res;
+    if (state.config && res.providers) {
+      for (const [name, p] of Object.entries(res.providers)) {
+        if (state.config.providers?.[name]) {
+          state.config.providers[name].has_key = p.has_key;
+          state.config.providers[name].key_hint = p.key_hint;
+          if (p.model) state.config.providers[name].model = p.model;
+        }
+      }
+      if (res.provider) state.config.provider = res.provider;
+    }
+    return res;
   } catch {
-    return { host: "default", cloudinary: {}, r2: {} };
+    return null;
   }
 }
 
-function saveStoredMedia(host, creds = {}) {
-  const sm = storedMedia();
-  sm.host = host;
-  if (host === "cloudinary" || host === "r2") {
-    sm[host] = { ...(sm[host] || {}), ...creds };
-  }
+async function loadMediaCredentials() {
   try {
-    localStorage.setItem(USER_MEDIA_KEY, JSON.stringify(sm));
-  } catch {}
+    const res = await api("/api/credentials/media");
+    state.mediaCredentials = res;
+    return res;
+  } catch {
+    return null;
+  }
 }
 
 function userHasCustomMedia() {
-  const sm = storedMedia();
-  if (sm.host === "cloudinary") {
-    const c = sm.cloudinary || {};
-    return Boolean(c.cloud_name && c.api_key && c.api_secret);
-  }
-  if (sm.host === "r2") {
-    const r = sm.r2 || {};
-    return Boolean(r.account_id && r.bucket && r.access_key_id && r.secret_access_key && r.public_url);
-  }
-  return false;
+  const mc = state.mediaCredentials;
+  if (!mc) return false;
+  const host = mc.host || "default";
+  return Boolean(mc.configured?.[host]);
 }
 
 function getActiveMediaContext() {
-  const sm = storedMedia();
-  const host = sm.host || "default";
-  if (host === "cloudinary") {
-    return { provider: "cloudinary", credentials: sm.cloudinary || {} };
-  }
-  if (host === "r2") {
-    return { provider: "r2", credentials: sm.r2 || {} };
-  }
-  return { provider: "default", credentials: {} };
-}
-
-function storedAi() {
-  try {
-    const value = JSON.parse(localStorage.getItem(AI_STORAGE_KEY) || "{}");
-    return { provider: value.provider || "", providers: value.providers || {} };
-  } catch {
-    return { provider: "", providers: {} };
-  }
-}
-
-function saveStoredAi(provider, key, model) {
-  const value = storedAi();
-  value.provider = provider;
-  value.providers[provider] = { key: key || "", model: model || "" };
-  localStorage.setItem(AI_STORAGE_KEY, JSON.stringify(value));
+  const host = state.mediaCredentials?.host || "default";
+  return { provider: host, credentials: {} };
 }
 
 function getUserConfig() {
@@ -111,19 +87,14 @@ function saveUserConfig(cfg) {
 }
 
 function aiHeaders(providerOverride) {
-  const saved = storedAi();
   const userCfg = getUserConfig();
-  const provider = providerOverride || userCfg.provider || saved.provider || state.config?.provider || "gemini";
-  const profile = saved.providers[provider] || {};
+  const provider = providerOverride || userCfg.provider || state.aiCredentials?.provider || state.config?.provider || "gemini";
+  const profile = (state.aiCredentials?.providers || {})[provider] || {};
   const configModel = state.config?.providers?.[provider]?.model || "";
-  const headers = {
+  return {
     "X-AI-Provider": provider,
     "X-AI-Model": profile.model || configModel,
   };
-  if (profile.key) {
-    headers["X-AI-Key"] = profile.key;
-  }
-  return headers;
 }
 
 const UNAVAILABLE_MODEL_PATTERNS = ["2.5-flash", "2.5-pro", "2.5-flash-lite", "1.0-pro"];
@@ -135,40 +106,87 @@ function isModelUnavailable(modelName) {
 
 function applyStoredAi(cfg) {
   if (!cfg) return cfg;
-  const saved = storedAi();
   const userCfg = getUserConfig();
-  const provider = userCfg.provider || saved.provider || cfg.provider;
-  let savedModified = false;
-  if (cfg.providers) {
+  const aiCreds = state.aiCredentials || {};
+  const provider = userCfg.provider || aiCreds.provider || cfg.provider;
+
+  if (cfg.providers && aiCreds.providers) {
     for (const [name, p] of Object.entries(cfg.providers)) {
-      const profile = saved.providers[name] || {};
-      if (profile.key) {
+      const profile = aiCreds.providers[name] || {};
+      if (profile.has_key) {
         p.has_key = true;
-        p.key_hint = "…" + profile.key.slice(-4);
+        p.key_hint = profile.key_hint;
       }
       if (profile.model) {
         if (isModelUnavailable(profile.model)) {
           profile.model = p.default_model || "gemini-3.8-flash";
-          savedModified = true;
         }
         p.model = profile.model;
       }
     }
   }
-  if (savedModified) {
-    try { localStorage.setItem(AI_STORAGE_KEY, JSON.stringify(saved)); } catch {}
-  }
+
   cfg.provider = provider;
   if (cfg.providers && cfg.providers[provider]) {
     cfg.model = cfg.providers[provider].model || cfg.model;
     if (isModelUnavailable(cfg.model)) {
       cfg.model = cfg.providers[provider].default_model || "gemini-3.8-flash";
     }
-    cfg.has_key = Boolean(saved.providers[provider]?.key || (!cfg.public_mode && cfg.has_key));
-    cfg.key_hint = saved.providers[provider]?.key
-      ? "…" + saved.providers[provider].key.slice(-4)
-      : (cfg.key_hint || "");
   }
+  if (userCfg.whisper_model && cfg.whisper_models && cfg.whisper_models[userCfg.whisper_model]) {
+    cfg.whisper_model = userCfg.whisper_model;
+  }
+  if (userCfg.whisper_language && cfg.whisper_languages && cfg.whisper_languages[userCfg.whisper_language]) {
+    cfg.whisper_language = userCfg.whisper_language;
+  }
+  return cfg;
+}
+
+// Migrasi satu arah otomatis dari plaintext localStorage ke HTTPOnly Secure cookies terenkripsi
+async function migrateLegacyLocalStorage() {
+  try {
+    const rawAi = localStorage.getItem(AI_STORAGE_KEY);
+    if (rawAi) {
+      const parsed = JSON.parse(rawAi);
+      if (parsed && parsed.providers) {
+        for (const [pName, pData] of Object.entries(parsed.providers)) {
+          if (pData?.key || pData?.model) {
+            await api("/api/credentials/ai", {
+              method: "POST",
+              body: JSON.stringify({ provider: pName, key: pData.key || "", model: pData.model || "" }),
+            }).catch(() => {});
+          }
+        }
+      }
+      localStorage.removeItem(AI_STORAGE_KEY);
+    }
+  } catch {}
+
+  try {
+    const rawMedia = localStorage.getItem(USER_MEDIA_KEY);
+    if (rawMedia) {
+      const parsed = JSON.parse(rawMedia);
+      if (parsed) {
+        if (parsed.host === "cloudinary" && parsed.cloudinary) {
+          await api("/api/credentials/media", {
+            method: "POST",
+            body: JSON.stringify({ host: "cloudinary", credentials: parsed.cloudinary }),
+          }).catch(() => {});
+        } else if (parsed.host === "r2" && parsed.r2) {
+          await api("/api/credentials/media", {
+            method: "POST",
+            body: JSON.stringify({ host: "r2", credentials: parsed.r2 }),
+          }).catch(() => {});
+        }
+      }
+      localStorage.removeItem(USER_MEDIA_KEY);
+    }
+  } catch {}
+
+  try {
+    localStorage.removeItem(USER_TOKEN_KEY);
+  } catch {}
+}
   if (userCfg.whisper_model && cfg.whisper_models && cfg.whisper_models[userCfg.whisper_model]) {
     cfg.whisper_model = userCfg.whisper_model;
   }
@@ -219,6 +237,7 @@ async function api(path, opts = {}) {
     headers["X-Auth-Token"] = token;
   }
   const res = await fetch(path, {
+    credentials: "same-origin",
     ...opts,
     headers,
   });
@@ -787,6 +806,7 @@ $("#form-new").onsubmit = (e) => {
     toast("Tidak bisa terhubung ke server lokal.", true);
   };
   xhr.open("POST", "/api/jobs");
+  xhr.withCredentials = true;
   Object.entries(aiHeaders()).forEach(([name, value]) => xhr.setRequestHeader(name, value));
   const jobToken = getStoredToken();
   if (jobToken) {
@@ -1694,6 +1714,7 @@ function updateRetentionUI() {
 }
 
 async function loadConfig() {
+  await Promise.all([loadAiCredentials(), loadMediaCredentials()]);
   state.config = applyStoredAi(await api("/api/config"));
   fillSettings();
   updateRetentionUI();
@@ -1739,20 +1760,19 @@ function fillProviderFields() {
   $("#provider-note").textContent = PROVIDER_NOTE[name] || "";
   $("#set-key-label").textContent = `Ganti API Key (${p.label})`;
   $("#key-help").innerHTML = (KEY_HELP[name] || "") +
-    " Disimpan secara privat dan aman di browser Anda dan dikirim otomatis saat memproses permintaan.";
+    " Disimpan secara privat dan aman di cookie browser (HTTPOnly, Secure, SameSite, terenkripsi AES-256) sehingga kebal terhadap pencurian skrip XSS.";
   const savedKeyInput = $("#set-key-saved");
   if (savedKeyInput) {
-    const localKey = storedAi().providers[name]?.key;
-    if (localKey) {
-      savedKeyInput.value = `••••••••••••••••••••…${localKey.slice(-4)}`;
-    } else if (p.has_key && p.key_hint) {
-      savedKeyInput.value = `••••••••••••••••••••${p.key_hint}`;
+    if (p.has_key && p.key_hint) {
+      savedKeyInput.value = `••••••••••••••••••••${p.key_hint} (Cookie HttpOnly)`;
+    } else if (p.has_key) {
+      savedKeyInput.value = `•••••••••••••••••••• (Cookie HttpOnly)`;
     } else {
       savedKeyInput.value = "Belum ada API key tersimpan";
     }
   }
   $("#set-key-hint").textContent = p.has_key
-    ? "Key aktif tersimpan di atas. Kosongkan kolom 'Ganti API Key' jika tidak ingin mengubahnya."
+    ? "Key aktif tersimpan di cookie aman di atas. Kosongkan kolom 'Ganti API Key' jika tidak ingin mengubahnya."
     : "Belum ada key yang tersimpan. Masukkan API key baru di kolom 'Ganti API Key'.";
   const sel = $("#set-model");
   const modelToSet = isModelUnavailable(p.model) ? (p.default_model || "gemini-3.8-flash") : p.model;
@@ -1793,10 +1813,10 @@ function fillSettings() {
   for (const [code, label] of Object.entries(cfg.whisper_languages)) lsel.add(new Option(label, code));
   lsel.value = lval;
   renderAccounts(cfg.buffer_accounts || []);
-  const sm = storedMedia();
+  const mc = state.mediaCredentials || { host: "default" };
   const hostSel = $("#set-host");
   if (hostSel && !hostSel.dataset.dirty) {
-    hostSel.value = sm.host || "default";
+    hostSel.value = mc.host || "default";
   }
   showHostFields();
   fillMediaSettings();
@@ -1804,35 +1824,33 @@ function fillSettings() {
 }
 
 function fillMediaSettings() {
-  const sm = storedMedia();
-  const selHost = $("#set-host") ? $("#set-host").value : (sm.host || "default");
+  const mc = state.mediaCredentials || { host: "default", configured: {}, fields: {} };
+  const selHost = $("#set-host") ? $("#set-host").value : (mc.host || "default");
 
-  // Populate Cloudinary fields from localStorage
-  const cData = sm.cloudinary || {};
+  // Isi data Cloudinary dari metadata server (tanpa mengekspos secret)
+  const cFields = mc.fields?.cloudinary || {};
   document.querySelectorAll('[data-host="cloudinary"] [data-media-field]').forEach((inp) => {
     const field = inp.dataset.mediaField;
-    const val = cData[field] || "";
     if (!inp.dataset.dirty) {
       if (inp.type === "password") {
-        inp.value = val;
-        inp.placeholder = val ? "Tersimpan (••••••••)" : "API secret Cloudinary Anda";
+        inp.value = "";
+        inp.placeholder = cFields.has_secret ? "Tersimpan di Cookie HttpOnly (••••••••)" : "API secret Cloudinary Anda";
       } else {
-        inp.value = val;
+        inp.value = cFields[field] || "";
       }
     }
   });
 
-  // Populate R2 fields from localStorage
-  const rData = sm.r2 || {};
+  // Isi data R2 dari metadata server (tanpa mengekspos secret)
+  const rFields = mc.fields?.r2 || {};
   document.querySelectorAll('[data-host="r2"] [data-media-field]').forEach((inp) => {
     const field = inp.dataset.mediaField;
-    const val = rData[field] || "";
     if (!inp.dataset.dirty) {
       if (inp.type === "password") {
-        inp.value = val;
-        inp.placeholder = val ? "Tersimpan (••••••••)" : "Secret Access Key R2";
+        inp.value = "";
+        inp.placeholder = rFields.has_secret ? "Tersimpan di Cookie HttpOnly (••••••••)" : "Secret Access Key R2";
       } else {
-        inp.value = val;
+        inp.value = rFields[field] || "";
       }
     }
   });
@@ -2198,8 +2216,13 @@ $("#btn-load-models").onclick = async () => {
     const key = $("#set-key").value.trim();
     const provider = currentProvider();
     const model = $("#set-model").value;
-    const effectiveKey = key || storedAi().providers[provider]?.key || "";
-    saveStoredAi(provider, effectiveKey, model);
+    if (key || model) {
+      await api("/api/credentials/ai", {
+        method: "POST",
+        body: JSON.stringify({ provider, key: key || null, model }),
+      });
+      await loadAiCredentials();
+    }
     const { models } = await api(`/api/models?provider=${provider}`, {
       headers: aiHeaders(provider),
     });
@@ -2213,7 +2236,11 @@ $("#btn-load-models").onclick = async () => {
       sel.value = current;
     } else if (availableModels.length) {
       sel.value = availableModels[0];
-      saveStoredAi(provider, effectiveKey, availableModels[0]);
+      await api("/api/credentials/ai", {
+        method: "POST",
+        body: JSON.stringify({ provider, key: null, model: availableModels[0] }),
+      }).catch(() => {});
+      await loadAiCredentials();
     }
     toast(`Terhubung ke ${state.config.providers[provider].label} · ${availableModels.length} model aktif tersedia`);
     $("#set-key").value = "";
@@ -2233,34 +2260,51 @@ async function saveSettings() {
   const whisper = $("#set-whisper").value;
   const lang = $("#set-lang").value;
 
-  // Simpan kredensial AI dan preferensi pengguna langsung ke localStorage browser klien
-  saveStoredAi(provider, key || storedAi().providers[provider]?.key, model);
+  // Simpan preferensi UI non-sensitif ke localStorage
   const userCfg = getUserConfig();
   userCfg.provider = provider;
   userCfg.whisper_model = whisper;
   userCfg.whisper_language = lang;
   saveUserConfig(userCfg);
 
-  // Simpan pengaturan hosting kustom langsung ke localStorage (BYOK)
-  const selectedHost = $("#set-host") ? $("#set-host").value : "default";
-  if (selectedHost === "cloudinary" || selectedHost === "r2") {
-    const creds = {};
-    document.querySelectorAll(`[data-host="${selectedHost}"] [data-media-field]`).forEach((inp) => {
-      creds[inp.dataset.mediaField] = inp.value.trim();
-    });
-    saveStoredMedia(selectedHost, creds);
-  } else {
-    saveStoredMedia("default", {});
+  // Simpan kredensial AI ke cookie HttpOnly terenkripsi via API
+  if (key || model) {
+    try {
+      await api("/api/credentials/ai", {
+        method: "POST",
+        body: JSON.stringify({ provider, key: key || null, model }),
+      });
+    } catch (e) {
+      toast("Gagal menyimpan kredensial AI: " + e.message, true);
+    }
   }
-  updateRetentionUI();
 
-  // Perbarui state lokal di memori secara instan
-  if (state.config) {
-    state.config.provider = provider;
-    state.config.whisper_model = whisper;
-    state.config.whisper_language = lang;
-    applyStoredAi(state.config);
+  // Simpan pengaturan hosting kustom langsung ke cookie HttpOnly terenkripsi
+  const selectedHost = $("#set-host") ? $("#set-host").value : "default";
+  const creds = {};
+  if (selectedHost === "cloudinary" || selectedHost === "r2") {
+    document.querySelectorAll(`[data-host="${selectedHost}"] [data-media-field]`).forEach((inp) => {
+      if (inp.value.trim()) {
+        creds[inp.dataset.mediaField] = inp.value.trim();
+      }
+    });
   }
+  try {
+    await api("/api/credentials/media", {
+      method: "POST",
+      body: JSON.stringify({ host: selectedHost, credentials: creds }),
+    });
+  } catch (e) {
+    toast("Gagal menyimpan kredensial media: " + e.message, true);
+  }
+
+  // Bersihkan data lama dari localStorage (zero unencrypted secrets in localStorage)
+  localStorage.removeItem(AI_STORAGE_KEY);
+  localStorage.removeItem(USER_MEDIA_KEY);
+  localStorage.removeItem(USER_TOKEN_KEY);
+
+  await Promise.all([loadAiCredentials(), loadMediaCredentials()]);
+  updateRetentionUI();
 
   // Sinkronkan pengaturan non-kredensial ke server jika bukan public mode
   if (!state.config?.public_mode) {
@@ -2311,9 +2355,17 @@ $("#btn-test-host").onclick = async () => {
     let creds = {};
     if (selectedHost === "cloudinary" || selectedHost === "r2") {
       document.querySelectorAll(`[data-host="${selectedHost}"] [data-media-field]`).forEach((inp) => {
-        creds[inp.dataset.mediaField] = inp.value.trim();
+        if (inp.value.trim()) {
+          creds[inp.dataset.mediaField] = inp.value.trim();
+        }
       });
-      saveStoredMedia(selectedHost, creds);
+      if (Object.keys(creds).length > 0) {
+        await api("/api/credentials/media", {
+          method: "POST",
+          body: JSON.stringify({ host: selectedHost, credentials: creds }),
+        });
+        await loadMediaCredentials();
+      }
     }
     const r = await api("/api/mediahost/test", {
       method: "POST",
@@ -2351,9 +2403,7 @@ async function checkAuth() {
   try {
     const res = await api("/api/auth/me");
     state.user = res.user || null;
-    if (res.user?.token_credential) {
-      localStorage.setItem(USER_TOKEN_KEY, res.user.token_credential);
-    }
+    localStorage.removeItem(USER_TOKEN_KEY);
     updateAuthUI();
   } catch {
     state.user = null;
@@ -2499,9 +2549,7 @@ $("#form-login").onsubmit = async (e) => {
       body: JSON.stringify({ username_or_email: identifier, password }),
     });
     state.user = res.user;
-    if (res.user?.token_credential) {
-      localStorage.setItem(USER_TOKEN_KEY, res.user.token_credential);
-    }
+    localStorage.removeItem(USER_TOKEN_KEY);
     updateAuthUI();
     toast(`Berhasil masuk! Selamat datang, ${state.user.username}`);
     $("#login-password").value = "";
@@ -2541,9 +2589,7 @@ $("#form-register").onsubmit = async (e) => {
       body: JSON.stringify({ username, email, password }),
     });
     state.user = res.user;
-    if (res.user?.token_credential) {
-      localStorage.setItem(USER_TOKEN_KEY, res.user.token_credential);
-    }
+    localStorage.removeItem(USER_TOKEN_KEY);
     updateAuthUI();
     toast(`Akun '${state.user.username}' berhasil dibuat! Token kredensial aktif.`);
     $("#reg-password").value = "";
@@ -2592,7 +2638,7 @@ $("#btn-regen-token").onclick = async () => {
   try {
     const res = await api("/api/auth/token/regenerate", { method: "POST" });
     state.user.token_credential = res.token_credential;
-    localStorage.setItem(USER_TOKEN_KEY, res.token_credential);
+    localStorage.removeItem(USER_TOKEN_KEY);
     $("#user-token-display").value = res.token_credential;
     const fb = $("#token-feedback");
     fb.textContent = "Token baru berhasil dibuat.";
@@ -2624,7 +2670,7 @@ $("#btn-save-custom-token").onclick = async () => {
       body: JSON.stringify({ token: custom }),
     });
     state.user.token_credential = res.token_credential;
-    localStorage.setItem(USER_TOKEN_KEY, res.token_credential);
+    localStorage.removeItem(USER_TOKEN_KEY);
     $("#user-token-display").value = res.token_credential;
     $("#in-custom-token").value = "";
     fb.textContent = "Token kustom berhasil disimpan.";
@@ -2653,7 +2699,10 @@ $("#btn-user-logout").onclick = async () => {
   }
 };
 
-checkAuth();
-loadConfig().then(loadUsage).catch((err) => toast(err.message, true));
-loadBranding();   // pustaka logo dibutuhkan pemilih logo di form proyek & kartu format
-connect();
+(async () => {
+  await migrateLegacyLocalStorage();
+  await checkAuth();
+  await Promise.all([loadConfig(), loadUsage().catch((err) => toast(err.message, true))]);
+  loadBranding();
+  connect();
+})();

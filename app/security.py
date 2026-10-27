@@ -1,10 +1,17 @@
 """Validasi keamanan URL (SSRF & Domain Filtering) dan kuota unduhan video."""
 from __future__ import annotations
 
+import base64
 import ipaddress
+import json
 import os
+import secrets
 import socket
+from typing import Any
 from urllib.parse import urlsplit
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from fastapi import Request, Response
 
 
 class SecurityValidationError(ValueError):
@@ -309,3 +316,110 @@ def validate_video_url(url: str) -> str:
             raise SecurityValidationError(f"Format IP dari hasil resolusi tidak valid: {ip_str}") from e
 
     return url
+
+
+# ---------- Enkripsi & Keamanan Cookie (HttpOnly, Secure, SameSite) ----------
+
+COOKIE_ENCRYPTION_PREFIX = "enc_aes256$"
+USER_TOKEN_COOKIE = "clipping_user_token"
+SESSION_COOKIE = "clipping_session"
+AI_CREDS_COOKIE = "clipping_ai_creds"
+MEDIA_CREDS_COOKIE = "clipping_media_creds"
+
+
+def encrypt_cookie_data(data: Any, master_key: bytes | None = None) -> str:
+    """Enkripsi payload cookie (dict, list, atau str) menggunakan AES-256-GCM dengan random nonce."""
+    if data is None:
+        return ""
+    if master_key is None:
+        from .db import get_token_encryption_key
+        master_key = get_token_encryption_key()
+
+    payload = json.dumps(data) if not isinstance(data, str) else data
+    data_bytes = payload.encode("utf-8")
+    nonce = secrets.token_bytes(12)
+    aesgcm = AESGCM(master_key)
+    ciphertext = aesgcm.encrypt(nonce, data_bytes, None)
+    encoded = base64.urlsafe_b64encode(nonce + ciphertext).decode("ascii")
+    return f"{COOKIE_ENCRYPTION_PREFIX}{encoded}"
+
+
+def decrypt_cookie_data(cookie_val: str | None, master_key: bytes | None = None) -> Any:
+    """Dekripsi nilai cookie terenkripsi AES-256-GCM. Mengembalikan objek asal atau None jika gagal."""
+    if not cookie_val:
+        return None
+    val = cookie_val.strip().strip('"').strip("'")
+    if not val.startswith(COOKIE_ENCRYPTION_PREFIX):
+        # Fallback jika plain json atau plain string
+        try:
+            return json.loads(val)
+        except Exception:
+            return val
+    try:
+        if master_key is None:
+            from .db import get_token_encryption_key
+            master_key = get_token_encryption_key()
+        encoded = val[len(COOKIE_ENCRYPTION_PREFIX):]
+        raw_bytes = base64.urlsafe_b64decode(encoded.encode("ascii"))
+        nonce = raw_bytes[:12]
+        ciphertext = raw_bytes[12:]
+        aesgcm = AESGCM(master_key)
+        plain_bytes = aesgcm.decrypt(nonce, ciphertext, None)
+        text = plain_bytes.decode("utf-8")
+        try:
+            return json.loads(text)
+        except Exception:
+            return text
+    except Exception:
+        return None
+
+
+def is_cookie_secure(request: Request | None = None) -> bool:
+    """Tentukan apakah flag 'Secure' harus aktif pada cookie.
+
+    - Jika COOKIE_SECURE disetel di environment, prioritaskan nilai tersebut.
+    - Jika request melalui HTTPS (atau reverse proxy X-Forwarded-Proto: https), kembalikan True.
+    - Jika request dari localhost / 127.0.0.1 / testserver via plain HTTP, kembalikan False agar tidak memblokir pengembangan lokal / testing.
+    - Default ke nilai PUBLIC_MODE jika di luar kondisi di atas.
+    """
+    explicit = os.environ.get("COOKIE_SECURE")
+    if explicit is not None:
+        return explicit.strip().lower() in ("1", "true", "yes", "on")
+    if request:
+        try:
+            proto = request.headers.get("x-forwarded-proto") or request.scope.get("scheme", "http")
+            if str(proto).lower() == "https":
+                return True
+            host = request.headers.get("host", "").split(":")[0]
+            if host in ("localhost", "127.0.0.1", "testserver"):
+                return False
+        except Exception:
+            pass
+    return os.environ.get("PUBLIC_MODE", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def set_secure_cookie(
+    response: Response,
+    key: str,
+    data: Any,
+    max_age: int = 60 * 60 * 24 * 30,  # 30 hari
+    request: Request | None = None,
+    samesite: str = "lax",
+    httponly: bool = True,
+) -> None:
+    """Set cookie dengan enkripsi AES-256-GCM, HttpOnly, Secure, dan SameSite."""
+    val = encrypt_cookie_data(data)
+    response.set_cookie(
+        key=key,
+        value=val,
+        httponly=httponly,
+        secure=is_cookie_secure(request),
+        samesite=samesite,
+        max_age=max_age,
+        path="/",
+    )
+
+
+def clear_secure_cookie(response: Response, key: str) -> None:
+    """Hapus cookie secara aman."""
+    response.delete_cookie(key=key, path="/")

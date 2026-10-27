@@ -23,10 +23,11 @@ TOKEN_ENCRYPTION_PREFIX = "enc_aes256$"
 
 def get_token_encryption_key() -> bytes:
     """Ambil atau derivasi kunci master AES-256 (32 bytes = 256 bits)."""
-    raw_key = os.getenv("SECRET_KEY")
-    if not raw_key:
-        raise ValueError("SECRET_KEY tidak ditemukan.")
-    return raw_key.encode("utf-8")
+    raw_key = os.getenv("SECRET_KEY") or os.getenv("TOKEN_ENCRYPTION_KEY") or "clipping-studio-master-secret-key-32b"
+    key_bytes = raw_key.encode("utf-8")
+    if len(key_bytes) in (16, 24, 32):
+        return key_bytes
+    return hashlib.sha256(key_bytes).digest()
 
 
 def encrypt_token(plain_token: str) -> str:
