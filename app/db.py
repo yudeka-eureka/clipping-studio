@@ -8,6 +8,9 @@ import os
 import re
 import secrets
 from typing import Any
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import pymysql
 import pymysql.cursors
@@ -20,12 +23,10 @@ TOKEN_ENCRYPTION_PREFIX = "enc_aes256$"
 
 def get_token_encryption_key() -> bytes:
     """Ambil atau derivasi kunci master AES-256 (32 bytes = 256 bits)."""
-    raw_key = (
-        os.environ.get("TOKEN_ENCRYPTION_KEY")
-        or os.environ.get("SECRET_KEY")
-        or "clipping-studio-aes256-master-secret-key-change-in-prod"
-    )
-    return hashlib.sha256(raw_key.encode("utf-8")).digest()
+    raw_key = os.getenv("SECRET_KEY")
+    if not raw_key:
+        raise ValueError("SECRET_KEY tidak ditemukan.")
+    return raw_key.encode("utf-8")
 
 
 def encrypt_token(plain_token: str) -> str:
