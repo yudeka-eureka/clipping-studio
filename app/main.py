@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv, set_key
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
@@ -75,6 +75,16 @@ def spawn(coro) -> None:
     t = asyncio.create_task(coro)
     tasks.add(t)
     t.add_done_callback(tasks.discard)
+
+
+@app.get("/", response_class=HTMLResponse)
+def landing_page():
+    return FileResponse(ROOT / "static" / "landing.html")
+
+
+@app.get("/app", response_class=HTMLResponse)
+def dashboard_page():
+    return FileResponse(ROOT / "static" / "index.html")
 
 
 def current_session_id() -> str | None:
