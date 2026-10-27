@@ -88,9 +88,9 @@ def test_run_ffmpeg_kills_process_on_timeout(monkeypatch):
     async def _test():
         monkeypatch.setattr(security, "execution_timeout_seconds", lambda: 0.2)
 
-        # We call run_ffmpeg with args that would sleep for 10 seconds
+        # We call run_ffmpeg with args that would sleep for 10 seconds (using -re to throttle to real time)
         with pytest.raises(media.FFmpegTimeoutError) as exc_info:
-            await media.run_ffmpeg(["-f", "lavfi", "-i", "nullsrc=s=128x128:d=10", "-f", "null", "-"],
+            await media.run_ffmpeg(["-re", "-f", "lavfi", "-i", "nullsrc=s=128x128:d=10", "-f", "null", "-"],
                                    duration=10.0, timeout=0.2)
 
         assert "melebihi batas waktu" in str(exc_info.value)

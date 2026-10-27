@@ -2,54 +2,197 @@
 
 const $ = (s, el = document) => el.querySelector(s);
 const state = { jobs: {}, current: null, src: "file", file: null, config: null,
-  searchQuery: "", activeFilter: "all" };
-const AI_STORAGE_KEY = "clipping-studio-ai";
+  searchQuery: "", activeFilter: "all", user: null };
+const ALL_VIEWS = ["#view-new", "#view-job", "#view-usage", "#view-settings", "#view-auth"];
 
-function storedAi() {
+function setView(activeViewId) {
+  for (const v of ALL_VIEWS) {
+    const el = $(v);
+    if (el) el.hidden = v !== activeViewId;
+  }
+  const appLayout = $("#app-layout");
+  const sidebar = $("#sidebar");
+  const isSettings = activeViewId === "#view-settings";
+  if (appLayout) {
+    appLayout.classList.toggle("in-settings", isSettings);
+  }
+  if (sidebar) {
+    sidebar.hidden = isSettings;
+  }
+}
+const AI_STORAGE_KEY = "clipping-studio-ai";
+const USER_CONFIG_KEY = "clipping_user_config";
+const USER_TOKEN_KEY = "clipping_user_token";
+const USER_MEDIA_KEY = "clipping_user_media";
+
+function getStoredToken() {
+  return state.user?.token_credential || "";
+}
+
+async function loadAiCredentials() {
   try {
-    const value = JSON.parse(localStorage.getItem(AI_STORAGE_KEY) || "{}");
-    return { provider: value.provider || "", providers: value.providers || {} };
+    const res = await api("/api/credentials/ai");
+    state.aiCredentials = res;
+    if (state.config && res.providers) {
+      for (const [name, p] of Object.entries(res.providers)) {
+        if (state.config.providers?.[name]) {
+          state.config.providers[name].has_key = p.has_key;
+          state.config.providers[name].key_hint = p.key_hint;
+          if (p.model) state.config.providers[name].model = p.model;
+        }
+      }
+      if (res.provider) state.config.provider = res.provider;
+    }
+    return res;
   } catch {
-    return { provider: "", providers: {} };
+    return null;
   }
 }
 
-function saveStoredAi(provider, key, model) {
-  const value = storedAi();
-  value.provider = provider;
-  value.providers[provider] = { key: key || "", model: model || "" };
-  localStorage.setItem(AI_STORAGE_KEY, JSON.stringify(value));
+async function loadMediaCredentials() {
+  try {
+    const res = await api("/api/credentials/media");
+    state.mediaCredentials = res;
+    return res;
+  } catch {
+    return null;
+  }
+}
+
+function userHasCustomMedia() {
+  const mc = state.mediaCredentials;
+  if (!mc) return false;
+  const host = mc.host || "default";
+  return Boolean(mc.configured?.[host]);
+}
+
+function getActiveMediaContext() {
+  const host = state.mediaCredentials?.host || "default";
+  return { provider: host, credentials: {} };
+}
+
+function getUserConfig() {
+  try {
+    const raw = localStorage.getItem(USER_CONFIG_KEY) || "{}";
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+function saveUserConfig(cfg) {
+  try {
+    localStorage.setItem(USER_CONFIG_KEY, JSON.stringify(cfg));
+  } catch {}
 }
 
 function aiHeaders(providerOverride) {
-  if (!state.config?.public_mode) return {};
-  const saved = storedAi();
-  const provider = providerOverride || saved.provider || state.config.provider;
-  const profile = saved.providers[provider] || {};
-  const configModel = state.config.providers?.[provider]?.model || "";
+  const userCfg = getUserConfig();
+  const provider = providerOverride || userCfg.provider || state.aiCredentials?.provider || state.config?.provider || "gemini";
+  const profile = (state.aiCredentials?.providers || {})[provider] || {};
+  const configModel = state.config?.providers?.[provider]?.model || "";
   return {
     "X-AI-Provider": provider,
-    "X-AI-Key": profile.key || "",
     "X-AI-Model": profile.model || configModel,
   };
 }
 
+const UNAVAILABLE_MODEL_PATTERNS = ["2.5-flash", "2.5-pro", "2.5-flash-lite", "1.0-pro"];
+
+function isModelUnavailable(modelName) {
+  if (!modelName) return false;
+  return UNAVAILABLE_MODEL_PATTERNS.some((pat) => modelName.includes(pat));
+}
+
 function applyStoredAi(cfg) {
-  if (!cfg.public_mode) return cfg;
-  const saved = storedAi();
-  const provider = saved.provider || cfg.provider;
-  for (const [name, p] of Object.entries(cfg.providers)) {
-    const profile = saved.providers[name] || {};
-    if (profile.key) {
-      p.has_key = true;
-      p.key_hint = "…" + profile.key.slice(-4);
+  if (!cfg) return cfg;
+  const userCfg = getUserConfig();
+  const aiCreds = state.aiCredentials || {};
+  const provider = userCfg.provider || aiCreds.provider || cfg.provider;
+
+  if (cfg.providers && aiCreds.providers) {
+    for (const [name, p] of Object.entries(cfg.providers)) {
+      const profile = aiCreds.providers[name] || {};
+      if (profile.has_key) {
+        p.has_key = true;
+        p.key_hint = profile.key_hint;
+      }
+      if (profile.model) {
+        if (isModelUnavailable(profile.model)) {
+          profile.model = p.default_model || "gemini-3.8-flash";
+        }
+        p.model = profile.model;
+      }
     }
-    if (profile.model) p.model = profile.model;
   }
+
   cfg.provider = provider;
-  cfg.model = cfg.providers[provider]?.model || cfg.model;
-  cfg.has_key = Boolean(saved.providers[provider]?.key);
-  cfg.key_hint = cfg.has_key ? "…" + saved.providers[provider].key.slice(-4) : "";
+  if (cfg.providers && cfg.providers[provider]) {
+    cfg.model = cfg.providers[provider].model || cfg.model;
+    if (isModelUnavailable(cfg.model)) {
+      cfg.model = cfg.providers[provider].default_model || "gemini-3.8-flash";
+    }
+  }
+  if (userCfg.whisper_model && cfg.whisper_models && cfg.whisper_models[userCfg.whisper_model]) {
+    cfg.whisper_model = userCfg.whisper_model;
+  }
+  if (userCfg.whisper_language && cfg.whisper_languages && cfg.whisper_languages[userCfg.whisper_language]) {
+    cfg.whisper_language = userCfg.whisper_language;
+  }
+  return cfg;
+}
+
+// Migrasi satu arah otomatis dari plaintext localStorage ke HTTPOnly Secure cookies terenkripsi
+async function migrateLegacyLocalStorage() {
+  try {
+    const rawAi = localStorage.getItem(AI_STORAGE_KEY);
+    if (rawAi) {
+      const parsed = JSON.parse(rawAi);
+      if (parsed && parsed.providers) {
+        for (const [pName, pData] of Object.entries(parsed.providers)) {
+          if (pData?.key || pData?.model) {
+            await api("/api/credentials/ai", {
+              method: "POST",
+              body: JSON.stringify({ provider: pName, key: pData.key || "", model: pData.model || "" }),
+            }).catch(() => {});
+          }
+        }
+      }
+      localStorage.removeItem(AI_STORAGE_KEY);
+    }
+  } catch {}
+
+  try {
+    const rawMedia = localStorage.getItem(USER_MEDIA_KEY);
+    if (rawMedia) {
+      const parsed = JSON.parse(rawMedia);
+      if (parsed) {
+        if (parsed.host === "cloudinary" && parsed.cloudinary) {
+          await api("/api/credentials/media", {
+            method: "POST",
+            body: JSON.stringify({ host: "cloudinary", credentials: parsed.cloudinary }),
+          }).catch(() => {});
+        } else if (parsed.host === "r2" && parsed.r2) {
+          await api("/api/credentials/media", {
+            method: "POST",
+            body: JSON.stringify({ host: "r2", credentials: parsed.r2 }),
+          }).catch(() => {});
+        }
+      }
+      localStorage.removeItem(USER_MEDIA_KEY);
+    }
+  } catch {}
+
+  try {
+    localStorage.removeItem(USER_TOKEN_KEY);
+  } catch {}
+}
+  if (userCfg.whisper_model && cfg.whisper_models && cfg.whisper_models[userCfg.whisper_model]) {
+    cfg.whisper_model = userCfg.whisper_model;
+  }
+  if (userCfg.whisper_language && cfg.whisper_languages && cfg.whisper_languages[userCfg.whisper_language]) {
+    cfg.whisper_language = userCfg.whisper_language;
+  }
   return cfg;
 }
 
@@ -84,9 +227,19 @@ function toast(msg, isError = false) {
   toastTimer = setTimeout(() => (el.hidden = true), 4000);
 }
 async function api(path, opts = {}) {
+  const token = getStoredToken();
+  const headers = {
+    ...(opts.body && !(opts.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+    ...(opts.headers || {}),
+  };
+  if (token && !headers["Authorization"] && !headers["authorization"]) {
+    headers["Authorization"] = `Bearer ${token}`;
+    headers["X-Auth-Token"] = token;
+  }
   const res = await fetch(path, {
-    headers: opts.body && !(opts.body instanceof FormData) ? { "Content-Type": "application/json" } : {},
+    credentials: "same-origin",
     ...opts,
+    headers,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
@@ -194,7 +347,7 @@ function renderJobUsage(job) {
   if (!entries.length) {
     // Proyek lama yang sudah dianalisis sebelum pencatatan token ada.
     card.hidden = !(job.summary && job.status === "done");
-    card.innerHTML = `<h2>🤖 Pemakaian AI</h2><p class="muted small">Tidak tercatat: proyek ini dianalisis sebelum fitur pencatatan token ditambahkan.</p>`;
+    card.innerHTML = `<h2><svg class="icon icon-brand" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Pemakaian AI</h2><p class="muted small">Tidak tercatat: proyek ini dianalisis sebelum fitur pencatatan token ditambahkan.</p>`;
     return;
   }
   const sum = (k) => entries.reduce((a, e) => a + (e[k] || 0), 0);
@@ -206,7 +359,7 @@ function renderJobUsage(job) {
   const item = (k, v) => `<div><div class="k">${k}</div><div class="v">${v}</div></div>`;
   card.hidden = false;
   card.innerHTML = `
-    <div class="row between"><h2>🤖 Pemakaian AI</h2><span class="muted small">${esc(models)} · ${entries.length} panggilan</span></div>
+    <div class="row between"><h2><svg class="icon icon-brand" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Pemakaian AI</h2><span class="muted small">${esc(models)} · ${entries.length} panggilan</span></div>
     <div class="usage-grid">
       ${item("Biaya", unpriced ? "harga model belum diatur" : tier === "free" ? "Gratis (tier Free)" : fmtMoney(usd))}
       ${item("Per klip AI", tier === "free" ? "—" : perClip)}
@@ -287,10 +440,7 @@ function renderUsage() {
 
 function showUsage() {
   state.current = null;
-  $("#view-new").hidden = true;
-  $("#view-job").hidden = true;
-  $("#view-usage").hidden = false;
-  $("#view-settings").hidden = true;
+  setView("#view-usage");
   $("#src-video").removeAttribute("src");
   renderJobList();
   renderUsage();
@@ -354,7 +504,7 @@ function updateEstimate() {
     try {
       const e = await api(`/api/estimate?${q}`, { headers: aiHeaders() });
       const money = e.tier === "free" ? "gratis (tier Free)" : e.usd == null ? "harga model belum diatur" : `≈ ${fmtMoney(e.usd)}`;
-      box.innerHTML = `🤖 Perkiraan pemakaian AI (${esc(e.provider_label || "")} · ${esc(e.model)}): ~${fmtTokens(e.prompt_tokens)} token input + ~${fmtTokens(e.output_tokens)} output → <b>${money}</b>` +
+      box.innerHTML = `<svg class="icon icon-brand" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Perkiraan pemakaian AI (${esc(e.provider_label || "")} · ${esc(e.model)}): ~${fmtTokens(e.prompt_tokens)} token input + ~${fmtTokens(e.output_tokens)} output → <b>${money}</b>` +
         (e.low_res ? ` <span class="muted">· video &gt; 20 menit dianalisis resolusi rendah</span>` : "");
       box.hidden = false;
     } catch {
@@ -363,6 +513,118 @@ function updateEstimate() {
   }, 250);
 }
 ["#in-num", "#in-max", "#in-subs"].forEach((sel) => $(sel).addEventListener("input", updateEstimate));
+
+// Format Cepat (Presets)
+const PRESETS = {
+  tiktok: {
+    name: "TikTok / Reels / Shorts",
+    aspect: "9:16",
+    layout: "face",
+    min_len: 30,
+    max_len: 60,
+    subtitles: true,
+    remove_silence: true,
+    show_title: true,
+    detail: "9:16 · Fokus wajah · Subtitle ON · Hapus jeda ON",
+  },
+  podcast: {
+    name: "Podcast Highlight",
+    aspect: "9:16",
+    layout: "face",
+    min_len: 45,
+    max_len: 90,
+    subtitles: true,
+    remove_silence: true,
+    show_title: true,
+    detail: "9:16 · Wajah + judul · Hapus jeda ON · 45–90 dtk",
+  },
+  square: {
+    name: "Feed Persegi",
+    aspect: "1:1",
+    layout: "crop",
+    min_len: 30,
+    max_len: 60,
+    subtitles: true,
+    remove_silence: true,
+    show_title: true,
+    detail: "1:1 · Crop tengah · Subtitle ON · 30–60 dtk",
+  },
+  youtube: {
+    name: "YouTube Clip",
+    aspect: "16:9",
+    layout: "original",
+    min_len: 60,
+    max_len: 90,
+    subtitles: true,
+    remove_silence: false,
+    show_title: true,
+    detail: "16:9 · Landscape Asli · Subtitle ON · 60–90 dtk",
+  },
+};
+
+function applyPreset(presetKey) {
+  const p = PRESETS[presetKey];
+  if (!p) return;
+  document.querySelectorAll(".preset-card").forEach((c) => {
+    c.classList.toggle("active", c.dataset.preset === presetKey);
+  });
+  if ($("#in-aspect")) $("#in-aspect").value = p.aspect;
+  if ($("#in-layout")) $("#in-layout").value = p.layout;
+  if ($("#in-min")) $("#in-min").value = p.min_len;
+  if ($("#in-max")) $("#in-max").value = p.max_len;
+  if ($("#in-subs")) $("#in-subs").checked = p.subtitles;
+  if ($("#in-trim")) $("#in-trim").checked = p.remove_silence;
+  if ($("#in-title")) $("#in-title").checked = p.show_title;
+  const lbl = $("#preset-active-label");
+  if (lbl) lbl.textContent = p.name;
+  const det = $("#preset-active-detail");
+  if (det) det.textContent = p.detail;
+  updateEstimate();
+}
+
+function checkActivePreset() {
+  const aspect = $("#in-aspect")?.value;
+  const layout = $("#in-layout")?.value;
+  const min = Number($("#in-min")?.value);
+  const max = Number($("#in-max")?.value);
+  const subs = $("#in-subs")?.checked;
+  const trim = $("#in-trim")?.checked;
+  const title = $("#in-title")?.checked;
+
+  let matchedKey = null;
+  for (const [key, p] of Object.entries(PRESETS)) {
+    if (p.aspect === aspect && p.layout === layout && p.min_len === min && p.max_len === max &&
+        p.subtitles === subs && p.remove_silence === trim && p.show_title === title) {
+      matchedKey = key;
+      break;
+    }
+  }
+
+  document.querySelectorAll(".preset-card").forEach((c) => {
+    c.classList.toggle("active", c.dataset.preset === matchedKey);
+  });
+
+  const lbl = $("#preset-active-label");
+  const det = $("#preset-active-detail");
+  if (matchedKey) {
+    if (lbl) lbl.textContent = PRESETS[matchedKey].name;
+    if (det) det.textContent = PRESETS[matchedKey].detail;
+  } else {
+    if (lbl) lbl.textContent = "Kustom";
+    if (det) det.textContent = `${aspect} · ${LAYOUT_LABEL[layout] || layout} · ${min}–${max} dtk · Subtitle ${subs ? "ON" : "OFF"}`;
+  }
+}
+
+document.querySelectorAll(".preset-card").forEach((card) => {
+  card.addEventListener("click", () => applyPreset(card.dataset.preset));
+});
+["#in-aspect", "#in-layout", "#in-min", "#in-max", "#in-subs", "#in-trim", "#in-title"].forEach((sel) => {
+  const el = $(sel);
+  if (el) el.addEventListener("change", () => {
+    checkActivePreset();
+    updateEstimate();
+  });
+});
 
 // ---------- Sidebar ----------
 function renderJobList() {
@@ -410,20 +672,17 @@ document.querySelectorAll(".btn-filter").forEach((button) => {
 // ---------- Form proyek baru ----------
 function showNew() {
   state.current = null;
-  $("#view-new").hidden = false;
-  $("#view-job").hidden = true;
-  $("#view-usage").hidden = true;
-  $("#view-settings").hidden = true;
+  setView("#view-new");
   $("#src-video").removeAttribute("src");
   renderJobList();
 }
 $("#btn-new").onclick = showNew;
 
-document.querySelectorAll(".tab").forEach((tab) => {
+document.querySelectorAll("#view-new .tab").forEach((tab) => {
   tab.onclick = () => {
     state.src = tab.dataset.src;
     updateEstimate();
-    document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
+    document.querySelectorAll("#view-new .tab").forEach((t) => t.classList.toggle("active", t === tab));
     document.querySelectorAll("[data-src-pane]").forEach((p) => (p.hidden = p.dataset.srcPane !== state.src));
   };
 });
@@ -497,6 +756,8 @@ $("#form-new").onsubmit = (e) => {
     }
     fd.append("url", url);
   }
+  const customMedia = userHasCustomMedia();
+  const retHours = customMedia ? (state.config?.custom_retention_hours || 24) : (state.config?.server_retention_hours || 8);
   fd.append("options", JSON.stringify({
     num_clips: +$("#in-num").value, min_len: +$("#in-min").value, max_len: +$("#in-max").value,
     aspect: $("#in-aspect").value, layout: $("#in-layout").value,
@@ -506,6 +767,8 @@ $("#form-new").onsubmit = (e) => {
     intro_id: logoOptionToOption($("#in-intro").value),
     outro_id: logoOptionToOption($("#in-outro").value),
     channels: state.newTargets || [],
+    has_custom_media: customMedia,
+    retention_hours: retHours,
   }));
 
   // XHR supaya progres upload file besar terlihat realtime.
@@ -543,17 +806,20 @@ $("#form-new").onsubmit = (e) => {
     toast("Tidak bisa terhubung ke server lokal.", true);
   };
   xhr.open("POST", "/api/jobs");
+  xhr.withCredentials = true;
   Object.entries(aiHeaders()).forEach(([name, value]) => xhr.setRequestHeader(name, value));
+  const jobToken = getStoredToken();
+  if (jobToken) {
+    xhr.setRequestHeader("Authorization", `Bearer ${jobToken}`);
+    xhr.setRequestHeader("X-Auth-Token", jobToken);
+  }
   xhr.send(fd);
 };
 
 // ---------- Detail proyek ----------
 function openJob(id) {
   state.current = id;
-  $("#view-new").hidden = true;
-  $("#view-job").hidden = false;
-  $("#view-usage").hidden = true;
-  $("#view-settings").hidden = true;
+  setView("#view-job");
   $("#clips").innerHTML = "";
   delete $("#job-format").dataset.job;
   $("#src-video").removeAttribute("src");
@@ -573,7 +839,8 @@ function renderStatus(job) {
   $("#job-stage").textContent = job.status === "error" ? `Gagal: ${job.error}` : (job.stage || (job.status === "queued" ? "Menunggu antrean..." : ""));
   $("#job-pct").textContent = indeterminate || job.status === "queued" ? "…" : `${Math.round(pct * 100)}%`;
   $("#job-bar").style.width = (indeterminate ? 100 : pct * 100) + "%";
-  $("#job-bar").style.opacity = indeterminate ? ".35" : "1";
+  $("#job-bar").style.opacity = indeterminate ? "1" : "1";
+  $("#job-bar").classList.toggle("analyzing", indeterminate);
 }
 
 function renderLog(job) {
@@ -606,8 +873,10 @@ function renderJob() {
   sum.hidden = !job.summary;
   if (job.summary) sum.innerHTML = `<h2>Ringkasan AI</h2><p class="muted">${esc(job.summary)}</p>`;
 
-  const retHours = state.config?.job_retention_hours || 24;
-  let retMsg = `Klip Anda akan disimpan selama ${retHours} jam. Segera unduh hasil klip Anda.`;
+  const custom = Boolean(job.has_custom_media || (job.retention_hours && job.retention_hours > 8));
+  const retHours = job.retention_hours || (custom ? 24 : 8);
+  const hostLabel = custom ? "Hosting Pribadi" : "Server Default";
+  let retMsg = `Klip Anda akan disimpan selama ${retHours} jam (${hostLabel}). Segera unduh hasil klip Anda.`;
   if (job.created_at) {
     const expiresAt = job.created_at + retHours * 3600;
     const remainingSec = expiresAt - Date.now() / 1000;
@@ -615,9 +884,9 @@ function renderJob() {
       const remainingHours = Math.floor(remainingSec / 3600);
       const remainingMins = Math.floor((remainingSec % 3600) / 60);
       const timeLeftStr = remainingHours > 0 ? `${remainingHours} jam ${remainingMins} menit` : `${remainingMins} menit`;
-      retMsg = `Klip Anda akan disimpan selama ${retHours} jam (sisa waktu: ~${timeLeftStr}). Segera unduh hasil klip Anda.`;
+      retMsg = `Klip Anda akan disimpan selama ${retHours} jam (${hostLabel}, sisa waktu: ~${timeLeftStr}). Segera unduh hasil klip Anda.`;
     } else {
-      retMsg = `Masa simpan klip (${retHours} jam) telah terlewati. Klip dapat dibersihkan sewaktu-waktu.`;
+      retMsg = `Masa simpan klip (${retHours} jam - ${hostLabel}) telah terlewati. Klip dapat dibersihkan sewaktu-waktu.`;
     }
   }
   const retWarn = $("#job-retention-msg");
@@ -664,7 +933,18 @@ function renderJob() {
   renderClips(job);
 }
 
-// ---------- Kartu klip (diperbarui di tempat supaya video yang sedang diputar tidak reset) ----------
+// ---------- Kartu klip ringkas & Studio Layar Penuh ----------
+function clipTextPreview(clip) {
+  const cues = (clip.captions && clip.captions.length ? clip.captions : (clip.ai_captions || []));
+  if (cues && cues.length) {
+    return cues.map((c) => c.text).filter(Boolean).join(" ");
+  }
+  if (clip.hook) return clip.hook;
+  return clip.reason || "Teks subtitle disiapkan otomatis dari transkrip saat klip dianalisis.";
+}
+
+let currentFsClipId = null;
+
 function renderClips(job) {
   const wrap = $("#clips");
   const ids = new Set(job.clips.map((c) => c.id));
@@ -674,93 +954,340 @@ function renderClips(job) {
     let card = wrap.querySelector(`[data-id="${clip.id}"]`);
     if (!card) {
       card = document.createElement("div");
-      card.className = "clip";
+      card.className = "clip-compact";
       card.dataset.id = clip.id;
       card.innerHTML = `
-        <div class="player r-${job.options.aspect.replace(":", "-")}"></div>
-        <div class="body">
-          <div class="row between"><input class="title grow" title="Judul yang tampil di atas video" /><span class="score" hidden></span></div>
-          <div class="hook small"></div>
-          <div class="reason muted small"></div>
-          <div class="tags"></div>
-          <div class="times">
-            <input class="time c-start" /> <span class="muted">→</span> <input class="time c-end" />
-            <span class="dur muted small"></span>
+        <div class="clip-preview-thumb" data-act="open-fs" title="Klik untuk membuka Studio Layar Penuh">
+          <div class="thumb-badges">
+            <span class="badge-aspect">${job.options.aspect || "9:16"}</span>
+            <span class="badge-duration dur"></span>
+            <span class="badge-score score" hidden></span>
           </div>
-          <div class="err" hidden></div>
+          <div class="thumb-status"></div>
+          <button type="button" class="btn-open-fs" data-act="open-fs">
+            <svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 3 19 12 5 21 5 3"/></svg> Buka Studio
+          </button>
+        </div>
+        <div class="clip-compact-body">
+          <div class="row between" style="align-items:flex-start;">
+            <h4 class="clip-compact-title" title=""></h4>
+          </div>
+          <div class="clip-compact-hook"></div>
+          <div class="clip-compact-text-preview" title="Teks narasi / subtitle awal">
+            <svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <span class="text-snippet"></span>
+          </div>
           <div class="pubstate" hidden></div>
-          <div class="actions">
-            <button data-act="rerender">↻ Render ulang</button>
-            <button data-act="load">✎ Edit di sumber</button>
-            <button data-act="copy">📋 Caption</button>
-            <button data-act="publish">📤 Posting</button>
-            <a class="btn dl" data-kind="mp4" hidden>⬇ MP4</a>
-            <a class="btn dl-srt" hidden>⬇ SRT</a>
-            <a class="btn dl-vtt" hidden>⬇ VTT</a>
-            <button data-act="delete" class="ghost danger">🗑</button>
+          <div class="clip-compact-actions">
+            <button type="button" class="btn-sm btn-primary" data-act="open-fs">Buka Studio</button>
+            <button type="button" class="btn-sm" data-act="load" title="Buka di timeline editor sumber">
+              <svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg> Edit
+            </button>
+            <div class="more-menu-wrap">
+              <button type="button" class="btn-sm btn-more" aria-label="Menu Opsi">•••</button>
+              <div class="more-dropdown" hidden>
+                <button type="button" class="more-item" data-act="copy">
+                  <svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg> Salin Caption
+                </button>
+                <button type="button" class="more-item" data-act="publish">
+                  <svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg> Post ke Buffer
+                </button>
+                <a class="more-item dl-mp4" download hidden>Unduh MP4</a>
+                <a class="more-item dl-srt" download hidden>Unduh SRT</a>
+                <a class="more-item dl-vtt" download hidden>Unduh VTT</a>
+                <button type="button" class="more-item" data-act="rerender">Render Ulang</button>
+                <button type="button" class="more-item danger" data-act="delete">
+                  <svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> Hapus Klip
+                </button>
+              </div>
+            </div>
           </div>
         </div>`;
     }
     if (wrap.children[i] !== card) wrap.insertBefore(card, wrap.children[i] || null);
     updateCard(job, clip, card);
   });
+
+  if (currentFsClipId) {
+    const dlg = $("#dlg-clip-fullscreen");
+    if (dlg && dlg.open) {
+      const idx = sorted.findIndex((c) => c.id === currentFsClipId);
+      if (idx !== -1) {
+        renderFullscreenModal(job, sorted, idx);
+      }
+    }
+  }
 }
 
 function updateCard(job, clip, card) {
-  const titleInput = $(".title", card);
-  if (document.activeElement !== titleInput) titleInput.value = clip.title;
+  const titleEl = $(".clip-compact-title", card);
+  if (titleEl) {
+    titleEl.textContent = clip.title;
+    titleEl.title = clip.title;
+  }
   const score = $(".score", card);
-  score.hidden = clip.score == null;
-  score.textContent = `🔥 ${clip.score}`;
-  $(".hook", card).textContent = clip.hook ? `“${clip.hook}”` : "";
-  $(".reason", card).textContent = clip.reason || "";
-  $(".tags", card).textContent = (clip.hashtags || []).map((t) => (t.startsWith("#") ? t : `#${t}`)).join(" ");
-  const s = $(".c-start", card), e = $(".c-end", card);
-  if (document.activeElement !== s) s.value = fmt(clip.start);
-  if (document.activeElement !== e) e.value = fmt(clip.end);
+  if (score) {
+    score.hidden = clip.score == null;
+    score.textContent = `${clip.score}% Skor`;
+  }
+  const hookEl = $(".clip-compact-hook", card);
+  if (hookEl) {
+    hookEl.textContent = clip.hook ? `“${clip.hook}”` : "";
+    hookEl.hidden = !clip.hook;
+  }
+  const snippet = $(".text-snippet", card);
+  if (snippet) {
+    snippet.textContent = clipTextPreview(clip);
+  }
   const span = clip.end - clip.start;
   const out = clip.duration_out;
-  $(".dur", card).textContent = out && out < span - 0.2 ? `${span.toFixed(1)} → ${out.toFixed(1)} dtk` : `${span.toFixed(1)} dtk`;
-  $(".dur", card).title = out && out < span - 0.2 ? "Durasi setelah jeda diam dibuang" : "";
-  const err = $(".err", card);
-  err.hidden = clip.status !== "error";
-  err.textContent = clip.error || "";
+  const durText = out && out < span - 0.2 ? `${span.toFixed(1)} → ${out.toFixed(1)}s` : `${span.toFixed(1)}s`;
+  const durEl = $(".dur", card);
+  if (durEl) {
+    durEl.textContent = durText;
+    durEl.title = out && out < span - 0.2 ? "Durasi setelah jeda diam dibuang" : "";
+  }
+
+  const stat = $(".thumb-status", card);
+  if (stat) {
+    if (clip.status === "ready") {
+      stat.textContent = "Siap";
+      stat.className = "thumb-status";
+    } else if (clip.status === "error") {
+      stat.textContent = "Gagal";
+      stat.className = "thumb-status run";
+    } else {
+      stat.textContent = clip.stage || "Menunggu antrean...";
+      stat.className = "thumb-status queued";
+    }
+  }
 
   const busy = clip.status === "queued" || clip.status === "rendering";
   card.querySelectorAll("button[data-act=rerender], button[data-act=delete]").forEach((b) => (b.disabled = busy));
   const posting = ["uploading", "posting"].includes(clip.publish?.status);
-  $("button[data-act=publish]", card).disabled = clip.status !== "ready" || posting;
-  renderPublishState(job, clip, card);
+  const btnPub = $("button[data-act=publish]", card);
+  if (btnPub) btnPub.disabled = clip.status !== "ready" || posting;
 
-  const player = $(".player", card);
-  player.className = `player r-${job.options.aspect.replace(":", "-")}`;
+  const dlMp4 = $(".dl-mp4", card);
+  if (dlMp4) {
+    dlMp4.hidden = clip.status !== "ready" || !clip.file;
+    if (clip.file) dlMp4.href = `/media/${job.id}/${clip.file}?download=1`;
+  }
+  const dlSrt = $(".dl-srt", card);
+  if (dlSrt) {
+    dlSrt.hidden = !clip.srt;
+    if (clip.srt) dlSrt.href = `/media/${job.id}/${clip.srt}?download=1`;
+  }
+  const dlVtt = $(".dl-vtt", card);
+  if (dlVtt) {
+    dlVtt.hidden = !clip.vtt;
+    if (clip.vtt) dlVtt.href = `/media/${job.id}/${clip.vtt}?download=1`;
+  }
+  renderPublishState(job, clip, card);
+}
+
+function openFullscreenClip(clipId) {
+  const job = state.jobs[state.current];
+  if (!job || !job.clips) return;
+  const sorted = [...job.clips].sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || a.start - b.start);
+  const index = sorted.findIndex((c) => c.id === clipId);
+  if (index === -1) return;
+  currentFsClipId = clipId;
+  renderFullscreenModal(job, sorted, index);
+  const dlg = $("#dlg-clip-fullscreen");
+  if (!dlg.open) dlg.showModal();
+}
+
+function renderFullscreenModal(job, sortedClips, index) {
+  const clip = sortedClips[index];
+  if (!clip) return;
+  const total = sortedClips.length;
+
+  // Header
+  $("#fs-clip-index").textContent = `Klip ${index + 1} dari ${total}`;
+  const statusEl = $("#fs-clip-status");
   if (clip.status === "ready") {
+    statusEl.innerHTML = `<svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Siap Ditonton`;
+    statusEl.className = "fs-badge";
+    statusEl.style.background = "rgba(47, 191, 113, 0.15)";
+    statusEl.style.color = "var(--ok)";
+  } else if (clip.status === "error") {
+    statusEl.innerHTML = `<svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> Gagal`;
+    statusEl.className = "fs-badge";
+    statusEl.style.background = "rgba(235, 87, 87, 0.15)";
+    statusEl.style.color = "var(--err)";
+  } else {
+    statusEl.textContent = clip.stage || "Memproses klip...";
+    statusEl.className = "fs-badge";
+    statusEl.style.background = "rgba(242, 153, 74, 0.15)";
+    statusEl.style.color = "var(--warn)";
+  }
+
+  $("#btn-fs-prev").disabled = index === 0;
+  $("#btn-fs-next").disabled = index === total - 1;
+
+  // Phone Frame Aspect Ratio Simulator
+  const phoneFrame = $("#fs-phone-frame");
+  const aspect = job.options.aspect || "9:16";
+  if (aspect === "1:1") {
+    phoneFrame.style.aspectRatio = "1 / 1";
+    phoneFrame.style.maxWidth = "360px";
+  } else if (aspect === "16:9") {
+    phoneFrame.style.aspectRatio = "16 / 9";
+    phoneFrame.style.maxWidth = "400px";
+  } else {
+    phoneFrame.style.aspectRatio = "9 / 16";
+    phoneFrame.style.maxWidth = "320px";
+  }
+
+  // Video Element
+  const video = $("#fs-video-player");
+  if (clip.status === "ready" && clip.file) {
     const src = `/media/${job.id}/${clip.file}?v=${clip.version}`;
-    let video = $("video", player);
-    if (!video || video.dataset.src !== src) {
-      player.innerHTML = `<video controls preload="metadata" playsinline></video>`;
-      video = $("video", player);
+    if (video.dataset.src !== src) {
       video.dataset.src = src;
       video.src = src;
     }
-    const dl = $(".dl", card);
-    dl.hidden = false;
-    dl.href = `/media/${job.id}/${clip.file}?download=1`;
-    const srt = $(".dl-srt", card);
-    srt.hidden = !clip.srt;
-    if (clip.srt) srt.href = `/media/${job.id}/${clip.srt}?download=1`;
-    const vtt = $(".dl-vtt", card);
-    if (vtt) {
-      vtt.hidden = !clip.vtt;
-      if (clip.vtt) vtt.href = `/media/${job.id}/${clip.vtt}?download=1`;
-    }
   } else {
-    const label = { pending: "Menunggu…", queued: clip.stage || "Menunggu antrean...", rendering: clip.stage || "Merender…", error: "Gagal render" }[clip.status];
-    if (!$(".overlay", player)) player.innerHTML = `<div class="overlay"><div class="lbl"></div><div class="bar"><div></div></div><div class="pct muted small"></div></div>`;
-    $(".lbl", player).textContent = label;
-    updateClipProgress(clip.id, clip.progress || 0);
+    video.removeAttribute("src");
+    delete video.dataset.src;
   }
+
+  // Hook & Tags Overlay
+  $("#fs-hook-text").textContent = clip.hook ? `“${clip.hook}”` : "";
+  const tagsText = (clip.hashtags || []).map((t) => (t.startsWith("#") ? t : `#${t}`)).join(" ");
+  $("#fs-tags-text").textContent = tagsText;
+
+  // Metadata
+  $("#fs-title").textContent = clip.title;
+  const scoreEl = $("#fs-score");
+  if (clip.score != null) {
+    scoreEl.textContent = `${clip.score}% Skor`;
+    scoreEl.hidden = false;
+  } else {
+    scoreEl.hidden = true;
+  }
+
+  const span = clip.end - clip.start;
+  const out = clip.duration_out;
+  $("#fs-duration").textContent = `${out && out < span - 0.2 ? `${out.toFixed(1)} dtk (jeda diam dibuang)` : `${span.toFixed(1)} dtk`}`;
+  $("#fs-aspect").textContent = `${aspect} (${LAYOUT_LABEL[job.options.layout] || job.options.layout})`;
+  $("#fs-reason").textContent = clip.reason || clip.hook || "";
+
+  // Transcript / Subtitle List
+  const cues = (clip.captions && clip.captions.length ? clip.captions : (clip.ai_captions || []));
+  $("#fs-sub-count").textContent = cues && cues.length ? `${cues.length} baris subtitle` : "Belum ada subtitle";
+  const transBox = $("#fs-transcript-list");
+  transBox.innerHTML = "";
+  if (cues && cues.length) {
+    cues.forEach((c) => {
+      const line = document.createElement("div");
+      line.className = "fs-transcript-line";
+      line.style.cursor = "pointer";
+      line.title = "Klik untuk melompat ke waktu ini";
+      line.innerHTML = `<span class="fs-sub-time">${fmt(c.start)}</span><span class="fs-sub-text">${esc(c.text)}</span>`;
+      line.onclick = () => {
+        if (video && !isNaN(video.duration)) {
+          video.currentTime = Math.max(0, c.start);
+          video.play().catch(() => {});
+        }
+      };
+      transBox.appendChild(line);
+    });
+  } else {
+    transBox.innerHTML = `<p class="muted small" style="margin: 8px 0;">Subtitle dan teks diselaraskan otomatis saat proses transkripsi Whisper/AI selesai.</p>`;
+  }
+
+  // Primary Actions
+  const btnPub = $("#btn-fs-publish");
+  btnPub.disabled = clip.status !== "ready";
+  btnPub.onclick = () => openPublish(job, clip);
+
+  const dlMp4 = $("#btn-fs-download-mp4");
+  if (clip.status === "ready" && clip.file) {
+    dlMp4.hidden = false;
+    dlMp4.href = `/media/${job.id}/${clip.file}?download=1`;
+  } else {
+    dlMp4.hidden = true;
+  }
+
+  // Secondary Actions
+  const dlSrt = $("#btn-fs-download-srt");
+  if (clip.srt) {
+    dlSrt.hidden = false;
+    dlSrt.href = `/media/${job.id}/${clip.srt}?download=1`;
+  } else {
+    dlSrt.hidden = true;
+  }
+
+  const dlVtt = $("#btn-fs-download-vtt");
+  if (clip.vtt) {
+    dlVtt.hidden = false;
+    dlVtt.href = `/media/${job.id}/${clip.vtt}?download=1`;
+  } else {
+    dlVtt.hidden = true;
+  }
+
+  $("#btn-fs-copy-caption").onclick = async () => {
+    const text = cues && cues.length ? cues.map((c) => c.text).join(" ") : "";
+    const parts = [clip.title, clip.hook ? `“${clip.hook}”` : "", text, tagsText].filter(Boolean);
+    await navigator.clipboard.writeText(parts.join("\n\n"));
+    toast("Caption & teks klip berhasil disalin!");
+  };
+
+  $("#btn-fs-edit-src").onclick = () => {
+    $("#dlg-clip-fullscreen").close();
+    $("#man-start").value = fmt(clip.start);
+    $("#man-end").value = fmt(clip.end);
+    $("#man-title").value = clip.title;
+    const v = $("#src-video");
+    v.currentTime = clip.start;
+    renderTimeline();
+    $("#editor").scrollIntoView({ behavior: "smooth" });
+  };
+
+  $("#btn-fs-rerender").disabled = clip.status === "queued" || clip.status === "rendering";
+  $("#btn-fs-rerender").onclick = async () => {
+    try {
+      await api(`/api/jobs/${job.id}/clips/${clip.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ start: clip.start, end: clip.end, title: clip.title }),
+      });
+      toast("Render ulang klip dimulai.");
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+
+  $("#btn-fs-delete").disabled = clip.status === "queued" || clip.status === "rendering";
+  $("#btn-fs-delete").onclick = async () => {
+    if (!confirm(`Hapus klip “${clip.title}”?`)) return;
+    try {
+      await api(`/api/jobs/${job.id}/clips/${clip.id}`, { method: "DELETE" });
+      $("#dlg-clip-fullscreen").close();
+      toast("Klip dihapus.");
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+
+  $("#btn-fs-prev").onclick = () => {
+    if (index > 0) openFullscreenClip(sortedClips[index - 1].id);
+  };
+  $("#btn-fs-next").onclick = () => {
+    if (index < total - 1) openFullscreenClip(sortedClips[index + 1].id);
+  };
 }
+
+$("#btn-fs-close").onclick = () => {
+  const dlg = $("#dlg-clip-fullscreen");
+  dlg.close();
+  $("#fs-video-player")?.pause();
+};
+$("#dlg-clip-fullscreen").addEventListener("close", () => {
+  $("#fs-video-player")?.pause();
+  currentFsClipId = null;
+});
 
 const SERVICE_LABEL = { instagram: "Instagram", tiktok: "TikTok", youtube: "YouTube", facebook: "Facebook",
   linkedin: "LinkedIn", twitter: "X", threads: "Threads", bluesky: "Bluesky", mastodon: "Mastodon",
@@ -778,18 +1305,18 @@ function renderPublishState(job, clip, card) {
   box.hidden = !pub;
   if (!pub) return;
   let head = "";
-  if (pub.status === "uploading") head = `☁️ Mengunggah video… ${Math.round((pub.progress || 0) * 100)}%`;
-  else if (pub.status === "posting") head = "📤 Mengirim ke Buffer…";
-  else if (pub.status === "error" && !pub.results.length) head = `<span class="bad">❌ ${esc(pub.error)}</span>`;
-  else head = `📤 Posting · <button type="button" class="ghost small-btn" data-act="pubrefresh">↻ Cek status</button>`;
+  if (pub.status === "uploading") head = `Mengunggah video… ${Math.round((pub.progress || 0) * 100)}%`;
+  else if (pub.status === "posting") head = "Mengirim ke Buffer…";
+  else if (pub.status === "error" && !pub.results.length) head = `<span class="bad">Gagal: ${esc(pub.error)}</span>`;
+  else head = `Posting · <button type="button" class="ghost small-btn" data-act="pubrefresh">Cek status</button>`;
   const when = (iso) => (iso ? new Date(iso).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" }) : "");
   const rows = pub.results.map((r) => {
     const name = `${SERVICE_LABEL[r.service] || r.service} · ${esc(r.channel)}`
       + (r.account && pubMulti(pub) ? ` <span class="muted">(${esc(r.account)})</span>` : "");
-    if (!r.ok) return `<div class="bad">✗ ${name}: ${esc(r.error)}</div>`;
+    if (!r.ok) return `<div class="bad">Gagal ${name}: ${esc(r.error)}</div>`;
     const status = POST_STATUS[r.status] || r.status || "terkirim";
     const extra = r.error ? ` — ${esc(r.error)}` : r.link ? ` — <a href="${esc(r.link)}" target="_blank" rel="noopener">lihat</a>` : r.due_at && r.status === "scheduled" ? ` ${when(r.due_at)}` : "";
-    return `<div class="${r.status === "error" ? "bad" : "ok"}">✓ ${name}: ${status}${extra}</div>`;
+    return `<div class="${r.status === "error" ? "bad" : "ok"}">${name}: ${status}${extra}</div>`;
   });
   box.innerHTML = `<div>${head}</div>${rows.join("")}`;
 }
@@ -819,7 +1346,7 @@ function renderChannels(box, channels, accounts, errors, selected) {
           + own.map((c) => channelRow(c, selected.includes(c.key))).join("") : "";
       }).join("")
     : channels.map((c) => channelRow(c, selected.includes(c.key))).join("");
-  box.innerHTML = (errors || []).map((e) => `<p class="err">⚠️ ${esc(e)}</p>`).join("") + groups;
+  box.innerHTML = (errors || []).map((e) => `<p class="err">${esc(e)}</p>`).join("") + groups;
 }
 
 async function loadChannelsInto(box, selected, refresh = false) {
@@ -928,8 +1455,17 @@ $("#form-publish").onsubmit = async (e) => {
   const btn = $("#btn-pub-send");
   btn.disabled = true;
   try {
+    const activeMedia = getActiveMediaContext();
     await api(`/api/jobs/${pub.job.id}/clips/${pub.clip.id}/publish`, {
-      method: "POST", body: JSON.stringify({ channel_ids: ids, text: $("#pub-text").value, mode, due_at }),
+      method: "POST",
+      body: JSON.stringify({
+        channel_ids: ids,
+        text: $("#pub-text").value,
+        mode,
+        due_at,
+        media_host: activeMedia.provider,
+        media_credentials: activeMedia.credentials,
+      }),
     });
     try { localStorage.setItem("pubChannels", JSON.stringify(ids)); } catch {}
     $("#dlg-publish").close();
@@ -944,6 +1480,11 @@ $("#form-publish").onsubmit = async (e) => {
 function updateClipProgress(clipId, p, stage) {
   const card = $(`#clips [data-id="${clipId}"]`);
   if (!card) return;
+  const stat = $(".thumb-status", card);
+  if (stat) {
+    stat.textContent = stage || `${Math.round(p * 100)}%`;
+    stat.className = "thumb-status run";
+  }
   const lbl = $(".overlay .lbl", card);
   if (lbl && stage) lbl.textContent = stage;
   const bar = $(".overlay .bar > div", card);
@@ -954,18 +1495,47 @@ function updateClipProgress(clipId, p, stage) {
   if (job?.status === "rendering") renderStatus(job);
 }
 
+// Menu Dropdown More ("...")
+document.addEventListener("click", (e) => {
+  const btnMore = e.target.closest(".btn-more");
+  if (btnMore) {
+    const wrap = btnMore.closest(".more-menu-wrap");
+    const menu = wrap ? wrap.querySelector(".more-dropdown") : null;
+    if (menu) {
+      const isHidden = menu.hidden;
+      document.querySelectorAll(".more-dropdown").forEach((m) => (m.hidden = true));
+      menu.hidden = !isHidden;
+    }
+    return;
+  }
+  if (!e.target.closest(".more-dropdown")) {
+    document.querySelectorAll(".more-dropdown").forEach((m) => (m.hidden = true));
+  }
+});
+
 $("#clips").addEventListener("click", async (e) => {
-  const btn = e.target.closest("button[data-act]");
+  const openFs = e.target.closest("[data-act=open-fs]");
+  if (openFs) {
+    const card = openFs.closest(".clip-compact") || openFs.closest(".clip");
+    if (card) openFullscreenClip(card.dataset.id);
+    return;
+  }
+  const btn = e.target.closest("button[data-act], a[data-act]");
   if (!btn) return;
-  const card = btn.closest(".clip");
+  const card = btn.closest(".clip-compact") || btn.closest(".clip");
+  if (!card) return;
   const job = state.jobs[state.current];
+  if (!job) return;
   const clip = job.clips.find((c) => c.id === card.dataset.id);
+  if (!clip) return;
+
   try {
     if (btn.dataset.act === "rerender") {
-      const start = parseTime($(".c-start", card).value), end = parseTime($(".c-end", card).value);
-      if (isNaN(start) || isNaN(end)) return toast("Format waktu salah. Gunakan mm:ss.s", true);
-      const title = $(".title", card).value.trim() || null;
-      await api(`/api/jobs/${job.id}/clips/${clip.id}`, { method: "PATCH", body: JSON.stringify({ start, end, title }) });
+      await api(`/api/jobs/${job.id}/clips/${clip.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ start: clip.start, end: clip.end, title: clip.title }),
+      });
+      toast("Render ulang dimulai.");
     } else if (btn.dataset.act === "load") {
       $("#man-start").value = fmt(clip.start);
       $("#man-end").value = fmt(clip.end);
@@ -976,8 +1546,9 @@ $("#clips").addEventListener("click", async (e) => {
       $("#editor").scrollIntoView({ behavior: "smooth" });
     } else if (btn.dataset.act === "copy") {
       const tags = (clip.hashtags || []).map((t) => (t.startsWith("#") ? t : `#${t}`)).join(" ");
-      await navigator.clipboard.writeText([clip.title, clip.hook, tags].filter(Boolean).join("\n\n"));
-      toast("Caption disalin.");
+      const text = clipTextPreview(clip);
+      await navigator.clipboard.writeText([clip.title, clip.hook ? `“${clip.hook}”` : "", text, tags].filter(Boolean).join("\n\n"));
+      toast("Caption & teks disalin.");
     } else if (btn.dataset.act === "publish") {
       openPublish(job, clip);
     } else if (btn.dataset.act === "pubrefresh") {
@@ -986,9 +1557,46 @@ $("#clips").addEventListener("click", async (e) => {
     } else if (btn.dataset.act === "delete") {
       if (!confirm(`Hapus klip “${clip.title}”?`)) return;
       await api(`/api/jobs/${job.id}/clips/${clip.id}`, { method: "DELETE" });
+      toast("Klip dihapus.");
     }
   } catch (err) {
     toast(err.message, true);
+  }
+});
+
+// Pintasan Keyboard Studio
+window.addEventListener("keydown", (e) => {
+  const dlg = $("#dlg-clip-fullscreen");
+  const isInput = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
+
+  if (dlg?.open) {
+    if (e.key === "Escape") {
+      dlg.close();
+      $("#fs-video-player")?.pause();
+      return;
+    }
+    if (isInput) return;
+    if (e.code === "Space") {
+      e.preventDefault();
+      const video = $("#fs-video-player");
+      if (video) {
+        if (video.paused) video.play().catch(() => {});
+        else video.pause();
+      }
+      return;
+    }
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      const video = $("#fs-video-player");
+      if (video) video.currentTime = Math.max(0, video.currentTime - 5);
+      return;
+    }
+    if (e.key === "ArrowRight") {
+      e.preventDefault();
+      const video = $("#fs-video-player");
+      if (video) video.currentTime = Math.min(video.duration || 0, video.currentTime + 5);
+      return;
+    }
   }
 });
 
@@ -1096,18 +1704,21 @@ $("#btn-delete-job").onclick = async () => {
 
 // ---------- Pengaturan ----------
 function updateRetentionUI() {
-  const retHours = state.config?.job_retention_hours || 24;
+  const custom = userHasCustomMedia();
+  const retHours = custom ? (state.config?.custom_retention_hours || 24) : (state.config?.server_retention_hours || 8);
+  const hostLabel = custom ? "Hosting Pribadi (24 Jam)" : "Server Default (8 Jam)";
   const notice = $("#retention-new-notice");
   if (notice) {
-    notice.innerHTML = `Klip Anda akan disimpan selama <strong>${retHours} jam</strong>. Segera unduh hasil klip Anda.`;
+    notice.innerHTML = `Klip Anda akan disimpan selama <strong>${retHours} jam</strong> (${hostLabel}). Segera unduh hasil klip Anda.`;
   }
 }
 
 async function loadConfig() {
+  await Promise.all([loadAiCredentials(), loadMediaCredentials()]);
   state.config = applyStoredAi(await api("/api/config"));
   fillSettings();
   updateRetentionUI();
-  if (!state.config.has_key) showSettings();
+  if (!state.config.has_key) showSettings("ai");
 }
 
 // Isian yang sedang diedit (belum disimpan) tidak boleh tertimpa saat konfigurasi dimuat ulang.
@@ -1133,9 +1744,9 @@ const KEY_HELP = {
   openai: 'Buat di <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">OpenAI Platform</a>.',
 };
 const PROVIDER_NOTE = {
-  gemini: "Gemini menonton video langsung (gambar + suara).",
-  anthropic: "Claude tidak menerima video. Klip dipilih dari transkrip Whisper lokal + sampel frame, jadi prosesnya lebih lama tapi token inputnya jauh lebih sedikit.",
-  openai: "ChatGPT tidak menerima video. Klip dipilih dari transkrip Whisper lokal + sampel frame, jadi prosesnya lebih lama tapi token inputnya jauh lebih sedikit.",
+  gemini: "Gemini menganalisis video secara langsung (gambar dan audio).",
+  anthropic: "Claude menganalisis klip berdasarkan transkrip bertimestamp dan sampel frame visual.",
+  openai: "ChatGPT menganalisis klip berdasarkan transkrip bertimestamp dan sampel frame visual.",
 };
 
 function currentProvider() {
@@ -1147,14 +1758,28 @@ function fillProviderFields() {
   const name = currentProvider();
   const p = cfg.providers[name];
   $("#provider-note").textContent = PROVIDER_NOTE[name] || "";
-  $("#set-key-label").textContent = `API key ${p.label}`;
-  $("#key-help").innerHTML = (KEY_HELP[name] || "") + (cfg.public_mode
-    ? " Disimpan hanya di localStorage browser ini dan dikirim per permintaan."
-    : " Disimpan di file <code>.env</code> di komputer ini.");
-  $("#set-key-hint").textContent = p.has_key ? `Tersimpan (${p.key_hint}). Kosongkan jika tidak ingin mengganti.` : "Belum diisi.";
+  $("#set-key-label").textContent = `Ganti API Key (${p.label})`;
+  $("#key-help").innerHTML = (KEY_HELP[name] || "") +
+    " Disimpan secara privat dan aman di cookie browser (HTTPOnly, Secure, SameSite, terenkripsi AES-256) sehingga kebal terhadap pencurian skrip XSS.";
+  const savedKeyInput = $("#set-key-saved");
+  if (savedKeyInput) {
+    if (p.has_key && p.key_hint) {
+      savedKeyInput.value = `••••••••••••••••••••${p.key_hint} (Cookie HttpOnly)`;
+    } else if (p.has_key) {
+      savedKeyInput.value = `•••••••••••••••••••• (Cookie HttpOnly)`;
+    } else {
+      savedKeyInput.value = "Belum ada API key tersimpan";
+    }
+  }
+  $("#set-key-hint").textContent = p.has_key
+    ? "Key aktif tersimpan di cookie aman di atas. Kosongkan kolom 'Ganti API Key' jika tidak ingin mengubahnya."
+    : "Belum ada key yang tersimpan. Masukkan API key baru di kolom 'Ganti API Key'.";
   const sel = $("#set-model");
-  if (![...sel.options].some((o) => o.value === p.model)) sel.add(new Option(p.model, p.model));
-  sel.value = p.model;
+  const modelToSet = isModelUnavailable(p.model) ? (p.default_model || "gemini-3.8-flash") : p.model;
+  if (![...sel.options].some((o) => o.value === modelToSet) && !isModelUnavailable(modelToSet)) {
+    sel.add(new Option(modelToSet, modelToSet));
+  }
+  sel.value = modelToSet;
 }
 
 function fillSettings() {
@@ -1167,16 +1792,19 @@ function fillSettings() {
   }
   psel.value = keep;
   const sel = $("#set-model");
-  if (![...sel.options].some((o) => o.value === cfg.providers[keep].model)) {
-    sel.add(new Option(cfg.providers[keep].model, cfg.providers[keep].model));
+  const currentModel = isModelUnavailable(cfg.providers[keep].model)
+    ? (cfg.providers[keep].default_model || "gemini-3.8-flash")
+    : cfg.providers[keep].model;
+  if (![...sel.options].some((o) => o.value === currentModel) && !isModelUnavailable(currentModel)) {
+    sel.add(new Option(currentModel, currentModel));
   }
-  setField(sel, cfg.providers[keep].model);
+  setField(sel, currentModel);
   fillProviderFields();
   const wsel = $("#set-whisper");
   const wval = wsel.dataset.dirty ? wsel.value : cfg.whisper_model;
   wsel.innerHTML = "";
   for (const [name, desc] of Object.entries(cfg.whisper_models)) {
-    wsel.add(new Option(`${cfg.whisper_downloaded[name] ? "✓ " : ""}${name} — ${desc}`, name));
+    wsel.add(new Option(`${cfg.whisper_downloaded[name] ? "[Siap] " : ""}${name} — ${desc}`, name));
   }
   wsel.value = wval;
   const lsel = $("#set-lang");
@@ -1185,22 +1813,72 @@ function fillSettings() {
   for (const [code, label] of Object.entries(cfg.whisper_languages)) lsel.add(new Option(label, code));
   lsel.value = lval;
   renderAccounts(cfg.buffer_accounts || []);
-  setField($("#set-host"), cfg.media_host);
+  const mc = state.mediaCredentials || { host: "default" };
+  const hostSel = $("#set-host");
+  if (hostSel && !hostSel.dataset.dirty) {
+    hostSel.value = mc.host || "default";
+  }
   showHostFields();
-  document.querySelectorAll("[data-env]").forEach((input) => {
-    const value = cfg.media[input.dataset.env] || "";
-    if (input.type === "password") {
-      setField(input, "");
-      input.placeholder = value ? `Tersimpan (${value})` : "Belum diisi";
-    } else {
-      setField(input, value);
+  fillMediaSettings();
+  $("#set-info").textContent = `subtitle: ${cfg.subtitles_supported ? "didukung" : "tidak didukung"} · deteksi fokus: ${cfg.face_tracking ? "aktif" : "tidak tersedia"}`;
+}
+
+function fillMediaSettings() {
+  const mc = state.mediaCredentials || { host: "default", configured: {}, fields: {} };
+  const selHost = $("#set-host") ? $("#set-host").value : (mc.host || "default");
+
+  // Isi data Cloudinary dari metadata server (tanpa mengekspos secret)
+  const cFields = mc.fields?.cloudinary || {};
+  document.querySelectorAll('[data-host="cloudinary"] [data-media-field]').forEach((inp) => {
+    const field = inp.dataset.mediaField;
+    if (!inp.dataset.dirty) {
+      if (inp.type === "password") {
+        inp.value = "";
+        inp.placeholder = cFields.has_secret ? "Tersimpan di Cookie HttpOnly (••••••••)" : "API secret Cloudinary Anda";
+      } else {
+        inp.value = cFields[field] || "";
+      }
     }
   });
+
+  // Isi data R2 dari metadata server (tanpa mengekspos secret)
+  const rFields = mc.fields?.r2 || {};
+  document.querySelectorAll('[data-host="r2"] [data-media-field]').forEach((inp) => {
+    const field = inp.dataset.mediaField;
+    if (!inp.dataset.dirty) {
+      if (inp.type === "password") {
+        inp.value = "";
+        inp.placeholder = rFields.has_secret ? "Tersimpan di Cookie HttpOnly (••••••••)" : "Secret Access Key R2";
+      } else {
+        inp.value = rFields[field] || "";
+      }
+    }
+  });
+
+  // Warning for missing fields or guidance
   const missing = $("#host-missing");
-  const sameHost = $("#set-host").value === cfg.media_host;
-  missing.hidden = !(sameHost && cfg.media_missing.length);
-  missing.textContent = `⚠️ Belum tersimpan: ${cfg.media_missing.join(", ")}. Isi lalu klik Simpan.`;
-  $("#set-info").textContent = `ffmpeg: ${cfg.ffmpeg.split("/").pop()} · subtitle: ${cfg.subtitles_supported ? "didukung" : "tidak didukung"} · deteksi wajah: ${cfg.face_tracking ? "aktif" : "tidak tersedia"}`;
+  if (missing) {
+    if (selHost === "default") {
+      if (state.config && !state.config.server_media_configured) {
+        missing.hidden = false;
+        missing.textContent = "Penyimpanan standar belum dikonfigurasi. Silakan gunakan Cloudinary atau R2 pribadi Anda di bawah untuk mengaktifkan fitur publikasi.";
+      } else {
+        missing.hidden = true;
+      }
+    } else {
+      const requiredFields = selHost === "cloudinary"
+        ? ["cloud_name", "api_key", "api_secret"]
+        : ["account_id", "bucket", "access_key_id", "secret_access_key", "public_url"];
+      const currentCreds = sm[selHost] || {};
+      const missingKeys = requiredFields.filter((k) => !currentCreds[k] || !currentCreds[k].trim());
+      if (missingKeys.length > 0) {
+        missing.hidden = false;
+        missing.textContent = `Kredensial belum lengkap: ${missingKeys.join(", ")}. Lengkapi dan simpan untuk retensi 24 jam.`;
+      } else {
+        missing.hidden = true;
+      }
+    }
+  }
 }
 
 // ---------- Logo (pustaka) & penutup ----------
@@ -1313,7 +1991,7 @@ async function brandingCall(path, opts) {
     renderBranding(await api(path, opts));
     $("#brand-msg").textContent = "Tersimpan. Klip lama perlu Render ulang untuk ikut berubah.";
   } catch (err) {
-    $("#brand-msg").textContent = `✗ ${err.message}`;
+    $("#brand-msg").textContent = err.message;
   }
 }
 
@@ -1348,14 +2026,12 @@ $("#logo-file").onchange = async (e) => {
   fd.append("label", $("#logo-label").value.trim());
   $("#brand-msg").textContent = `Mengunggah ${file.name}…`;
   try {
-    const res = await fetch("/api/branding/logos", { method: "POST", body: fd });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "Gagal mengunggah");
+    const data = await api("/api/branding/logos", { method: "POST", body: fd });
     renderBranding(data);
     $("#logo-label").value = "";
     $("#brand-msg").textContent = `Logo “${data.added.label}” ditambahkan.`;
   } catch (err) {
-    $("#brand-msg").textContent = `✗ ${err.message}`;
+    $("#brand-msg").textContent = err.message;
   } finally {
     e.target.value = "";
   }
@@ -1396,14 +2072,12 @@ $("#bumper-file").onchange = async (e) => {
   fd.append("label", $("#bumper-label").value.trim());
   $("#brand-msg").textContent = `Mengunggah ${file.name}…`;
   try {
-    const res = await fetch("/api/branding/bumpers", { method: "POST", body: fd });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "Gagal mengunggah");
+    const data = await api("/api/branding/bumpers", { method: "POST", body: fd });
     renderBranding(data);
     $("#bumper-label").value = "";
     $("#brand-msg").textContent = `Bumper “${data.added.label}” ditambahkan. Centang Pembuka/Penutup untuk memakainya.`;
   } catch (err) {
-    $("#brand-msg").textContent = `✗ ${err.message}`;
+    $("#brand-msg").textContent = err.message;
   } finally {
     e.target.value = "";
   }
@@ -1459,22 +2133,32 @@ $("#btn-add-account").onclick = async () => {
     $("#acc-label").value = "";
     renderAccounts(accounts);
     state.config = applyStoredAi(await api("/api/config"));
-    $("#acc-msg").textContent = `✓ Akun “${added.label}” ditambahkan (${added.organizations.join(", ")}).`;
+    $("#acc-msg").textContent = `Akun “${added.label}” ditambahkan (${added.organizations.join(", ")}).`;
   } catch (err) {
-    $("#acc-msg").textContent = `✗ ${err.message}`;
+    $("#acc-msg").textContent = err.message;
   } finally {
     btn.disabled = false;
   }
 };
 
-function showSettings() {
+function switchSettingsTab(tabName) {
+  const tabs = document.querySelectorAll(".settings-nav-item[data-set-tab], .settings-tabs button[data-set-tab]");
+  tabs.forEach((b) => b.classList.toggle("active", b.dataset.setTab === tabName));
+  const panes = document.querySelectorAll("[data-set-pane]");
+  panes.forEach((p) => {
+    p.hidden = p.dataset.setPane !== tabName;
+  });
+}
+
+function showSettings(targetTab) {
   state.backTo = state.current ? { view: "job", id: state.current } : { view: $("#view-usage").hidden ? "new" : "usage" };
   state.current = null;
-  for (const v of ["#view-new", "#view-job", "#view-usage"]) $(v).hidden = true;
-  $("#view-settings").hidden = false;
+  setView("#view-settings");
   $("#src-video").removeAttribute("src");
   clearDirty();
   if (state.config) fillSettings();
+  renderUserSettings();
+  switchSettingsTab(typeof targetTab === "string" ? targetTab : "account");
   $("#host-test").textContent = "";
   $("#buffer-test").textContent = "";
   $("#settings-status").textContent = "";
@@ -1490,13 +2174,23 @@ function leaveSettings() {
   else showNew();
 }
 
+document.querySelectorAll(".settings-nav-item[data-set-tab], .settings-tabs button[data-set-tab]").forEach((btn) => {
+  btn.onclick = () => switchSettingsTab(btn.dataset.setTab);
+});
 document.querySelectorAll("[data-close]").forEach((btn) => (btn.onclick = () => $(`#${btn.dataset.close}`).close()));
-$("#btn-settings").onclick = showSettings;
+$("#btn-settings").onclick = () => showSettings();
 $("#btn-settings-back").onclick = leaveSettings;
 function showHostFields() {
-  document.querySelectorAll("[data-host]").forEach((el) => (el.hidden = el.dataset.host !== $("#set-host").value));
+  const selHost = $("#set-host") ? $("#set-host").value : "default";
+  document.querySelectorAll("[data-host]").forEach((el) => {
+    el.hidden = el.dataset.host !== selHost;
+  });
 }
-$("#set-host").onchange = showHostFields;
+$("#set-host").onchange = () => {
+  showHostFields();
+  fillMediaSettings();
+  updateRetentionUI();
+};
 $("#set-provider").onchange = () => {
   $("#set-key").value = "";
   delete $("#set-model").dataset.dirty;
@@ -1507,12 +2201,12 @@ $("#btn-test-buffer").onclick = async () => {
   out.textContent = "Menghubungkan…";
   try {
     const { channels, accounts, errors } = await api("/api/buffer/channels?refresh=true");
-    out.textContent = `✓ ${accounts.length} akun · ${channels.length} channel`
-      + (errors.length ? ` · ⚠️ ${errors.join(" | ")}` : "");
+    out.textContent = `${accounts.length} akun · ${channels.length} channel`
+      + (errors.length ? ` · ${errors.join(" | ")}` : "");
     state.config = applyStoredAi(await api("/api/config"));
     fillSettings();
   } catch (err) {
-    out.textContent = `✗ ${err.message}`;
+    out.textContent = err.message;
   }
 };
 $("#btn-load-models").onclick = async () => {
@@ -1522,17 +2216,33 @@ $("#btn-load-models").onclick = async () => {
     const key = $("#set-key").value.trim();
     const provider = currentProvider();
     const model = $("#set-model").value;
-    const effectiveKey = key || storedAi().providers[provider]?.key || "";
-    if (state.config.public_mode) saveStoredAi(provider, effectiveKey, model);
+    if (key || model) {
+      await api("/api/credentials/ai", {
+        method: "POST",
+        body: JSON.stringify({ provider, key: key || null, model }),
+      });
+      await loadAiCredentials();
+    }
     const { models } = await api(`/api/models?provider=${provider}`, {
       headers: aiHeaders(provider),
     });
     const sel = $("#set-model");
     const current = sel.value;
     sel.innerHTML = "";
-    models.forEach((m) => sel.add(new Option(m, m)));
-    if (models.includes(current)) sel.value = current;
-    toast(`Terhubung ke ${state.config.providers[provider].label} · ${models.length} model tersedia`);
+    // Filter model yang tidak tersedia (seperti 2.5 flash dll)
+    const availableModels = (models || []).filter((m) => !isModelUnavailable(m));
+    availableModels.forEach((m) => sel.add(new Option(m, m)));
+    if (availableModels.includes(current) && !isModelUnavailable(current)) {
+      sel.value = current;
+    } else if (availableModels.length) {
+      sel.value = availableModels[0];
+      await api("/api/credentials/ai", {
+        method: "POST",
+        body: JSON.stringify({ provider, key: null, model: availableModels[0] }),
+      }).catch(() => {});
+      await loadAiCredentials();
+    }
+    toast(`Terhubung ke ${state.config.providers[provider].label} · ${availableModels.length} model aktif tersedia`);
     $("#set-key").value = "";
     delete $("#set-key").dataset.dirty;
     state.config = applyStoredAi(await api("/api/config"));
@@ -1543,28 +2253,78 @@ $("#btn-load-models").onclick = async () => {
     btn.disabled = false;
   }
 };
-function hostFields() {
-  return Object.fromEntries([...document.querySelectorAll(`[data-host="${$("#set-host").value}"] [data-env]`)]
-    .map((i) => [i.dataset.env, i.value.trim()]));
-}
 async function saveSettings() {
   const provider = currentProvider();
   const key = $("#set-key").value.trim();
   const model = $("#set-model").value;
-  if (state.config.public_mode) saveStoredAi(provider, key || storedAi().providers[provider]?.key, model);
-  const body = {
-    provider, model,
-    whisper_model: $("#set-whisper").value, whisper_language: $("#set-lang").value,
-    media_host: $("#set-host").value, media: hostFields(),
-  };
-  if (!state.config.public_mode) body.api_key = key || null;
-  await api("/api/config", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+  const whisper = $("#set-whisper").value;
+  const lang = $("#set-lang").value;
+
+  // Simpan preferensi UI non-sensitif ke localStorage
+  const userCfg = getUserConfig();
+  userCfg.provider = provider;
+  userCfg.whisper_model = whisper;
+  userCfg.whisper_language = lang;
+  saveUserConfig(userCfg);
+
+  // Simpan kredensial AI ke cookie HttpOnly terenkripsi via API
+  if (key || model) {
+    try {
+      await api("/api/credentials/ai", {
+        method: "POST",
+        body: JSON.stringify({ provider, key: key || null, model }),
+      });
+    } catch (e) {
+      toast("Gagal menyimpan kredensial AI: " + e.message, true);
+    }
+  }
+
+  // Simpan pengaturan hosting kustom langsung ke cookie HttpOnly terenkripsi
+  const selectedHost = $("#set-host") ? $("#set-host").value : "default";
+  const creds = {};
+  if (selectedHost === "cloudinary" || selectedHost === "r2") {
+    document.querySelectorAll(`[data-host="${selectedHost}"] [data-media-field]`).forEach((inp) => {
+      if (inp.value.trim()) {
+        creds[inp.dataset.mediaField] = inp.value.trim();
+      }
+    });
+  }
+  try {
+    await api("/api/credentials/media", {
+      method: "POST",
+      body: JSON.stringify({ host: selectedHost, credentials: creds }),
+    });
+  } catch (e) {
+    toast("Gagal menyimpan kredensial media: " + e.message, true);
+  }
+
+  // Bersihkan data lama dari localStorage (zero unencrypted secrets in localStorage)
+  localStorage.removeItem(AI_STORAGE_KEY);
+  localStorage.removeItem(USER_MEDIA_KEY);
+  localStorage.removeItem(USER_TOKEN_KEY);
+
+  await Promise.all([loadAiCredentials(), loadMediaCredentials()]);
+  updateRetentionUI();
+
+  // Sinkronkan pengaturan non-kredensial ke server jika bukan public mode
+  if (!state.config?.public_mode) {
+    try {
+      const body = {
+        provider, model,
+        whisper_model: whisper, whisper_language: lang,
+      };
+      await api("/api/config", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      console.warn("Sinkronisasi server opsional:", e);
+    }
+  }
+
   $("#set-key").value = "";
   clearDirty();
-  state.config = applyStoredAi(await api("/api/config"));
+  state.config = applyStoredAi(await api("/api/config").catch(() => state.config));
   fillSettings();
 }
 // Tombol Simpan maupun Enter di kolom isian sama-sama menyimpan.
@@ -1574,10 +2334,11 @@ settingsForm.addEventListener("submit", async (e) => {
   btn.disabled = true;
   try {
     await saveSettings();
-    if (state.config.media_missing.length) {
-      $("#settings-status").textContent = `⚠️ Tersimpan, tapi hosting video belum lengkap: ${state.config.media_missing.join(", ")}.`;
+    const selHost = $("#set-host") ? $("#set-host").value : "default";
+    if (selHost !== "default" && !userHasCustomMedia()) {
+      $("#settings-status").textContent = "Tersimpan, namun kredensial hosting kustom belum lengkap.";
     } else {
-      $("#settings-status").textContent = "✓ Tersimpan.";
+      $("#settings-status").textContent = "Tersimpan.";
       toast("Pengaturan disimpan.");
     }
   } catch (err) {
@@ -1590,19 +2351,358 @@ $("#btn-test-host").onclick = async () => {
   const out = $("#host-test");
   out.textContent = "Mengecek…";
   try {
-    // Simpan dulu isian hosting yang baru diketik supaya yang dites adalah nilai terbaru.
-    await api("/api/config", { method: "POST", body: JSON.stringify({ media_host: $("#set-host").value, media: hostFields() }) });
-    document.querySelectorAll("[data-env]").forEach((el) => delete el.dataset.dirty);
-    delete $("#set-host").dataset.dirty;
-    state.config = applyStoredAi(await api("/api/config"));
-    fillSettings();
-    const r = await api("/api/mediahost/test", { method: "POST" });
-    out.textContent = `✓ ${r.message}`;
+    const selectedHost = $("#set-host") ? $("#set-host").value : "default";
+    let creds = {};
+    if (selectedHost === "cloudinary" || selectedHost === "r2") {
+      document.querySelectorAll(`[data-host="${selectedHost}"] [data-media-field]`).forEach((inp) => {
+        if (inp.value.trim()) {
+          creds[inp.dataset.mediaField] = inp.value.trim();
+        }
+      });
+      if (Object.keys(creds).length > 0) {
+        await api("/api/credentials/media", {
+          method: "POST",
+          body: JSON.stringify({ host: selectedHost, credentials: creds }),
+        });
+        await loadMediaCredentials();
+      }
+    }
+    const r = await api("/api/mediahost/test", {
+      method: "POST",
+      body: JSON.stringify({ provider: selectedHost, credentials: creds }),
+    });
+    out.textContent = r.message;
+    fillMediaSettings();
+    updateRetentionUI();
   } catch (err) {
-    out.textContent = `✗ ${err.message}`;
+    out.textContent = err.message;
   }
 };
 
-loadConfig().then(loadUsage).catch((err) => toast(err.message, true));
-loadBranding();   // pustaka logo dibutuhkan pemilih logo di form proyek & kartu format
-connect();
+// ---------- Autentikasi & Akun Pengguna ----------
+
+function updateAuthUI() {
+  const btnAuthOpen = $("#btn-auth-open");
+  const btnUserBadge = $("#btn-user-badge");
+  const topbarUsername = $("#topbar-username");
+
+  if (state.user) {
+    if (btnAuthOpen) btnAuthOpen.hidden = true;
+    if (btnUserBadge) {
+      btnUserBadge.hidden = false;
+      if (topbarUsername) topbarUsername.textContent = state.user.username;
+    }
+  } else {
+    if (btnAuthOpen) btnAuthOpen.hidden = false;
+    if (btnUserBadge) btnUserBadge.hidden = true;
+  }
+  renderUserSettings();
+}
+
+async function checkAuth() {
+  try {
+    const res = await api("/api/auth/me");
+    state.user = res.user || null;
+    localStorage.removeItem(USER_TOKEN_KEY);
+    updateAuthUI();
+  } catch {
+    state.user = null;
+    localStorage.removeItem(USER_TOKEN_KEY);
+    updateAuthUI();
+  }
+}
+
+function showAuth(mode = "login") {
+  state.backTo = state.current
+    ? { view: "job", id: state.current }
+    : { view: $("#view-settings").hidden ? ($("#view-usage").hidden ? "new" : "usage") : "settings" };
+  state.current = null;
+  setView("#view-auth");
+  setAuthTab(mode);
+  $("#src-video").removeAttribute("src");
+  const alertEl = $("#auth-alert");
+  if (alertEl) {
+    alertEl.hidden = true;
+    alertEl.textContent = "";
+  }
+  window.scrollTo(0, 0);
+  renderJobList();
+}
+
+function setAuthTab(mode) {
+  const isLogin = mode === "login";
+  $("#tab-login").classList.toggle("active", isLogin);
+  $("#tab-register").classList.toggle("active", !isLogin);
+  $("#form-login").hidden = !isLogin;
+  $("#form-register").hidden = isLogin;
+  $("#auth-heading").textContent = isLogin ? "Masuk ke Akun" : "Daftar Akun Baru";
+  $("#auth-sub").textContent = isLogin
+    ? "Kelola token kredensial dan simpan preferensi studio Anda."
+    : "Daftar sekarang untuk mendapatkan token akses otomatis yang terenkripsi aman.";
+  const alertEl = $("#auth-alert");
+  if (alertEl) {
+    alertEl.hidden = true;
+    alertEl.textContent = "";
+  }
+}
+
+function renderUserSettings() {
+  const guestBox = $("#settings-user-guest");
+  const authBox = $("#settings-user-authenticated");
+  const loggedActions = $("#settings-user-logged-actions");
+  if (!guestBox || !authBox) return;
+
+  if (state.user) {
+    guestBox.hidden = true;
+    authBox.hidden = false;
+    if (loggedActions) loggedActions.hidden = false;
+
+    $("#user-display-username").textContent = state.user.username;
+    $("#user-display-email").textContent = state.user.email;
+    if (state.user.created_at) {
+      try {
+        const d = new Date(state.user.created_at);
+        $("#user-display-joined").textContent = d.toLocaleDateString("id-ID", {
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+        });
+      } catch {
+        $("#user-display-joined").textContent = state.user.created_at;
+      }
+    } else {
+      $("#user-display-joined").textContent = "-";
+    }
+
+    const tokenInput = $("#user-token-display");
+    if (tokenInput) {
+      tokenInput.value = state.user.token_credential || "";
+    }
+    const tokenFeedback = $("#token-feedback");
+    if (tokenFeedback) {
+      tokenFeedback.textContent = "";
+      tokenFeedback.hidden = true;
+    }
+    const customInput = $("#in-custom-token");
+    if (customInput) customInput.value = "";
+  } else {
+    guestBox.hidden = false;
+    authBox.hidden = true;
+    if (loggedActions) loggedActions.hidden = true;
+  }
+}
+
+// Navigasi & interaksi halaman Auth
+$("#btn-auth-open").onclick = () => showAuth("login");
+$("#btn-user-badge").onclick = () => {
+  showSettings();
+  const card = $("#settings-user-card");
+  if (card) card.scrollIntoView({ behavior: "smooth" });
+};
+$("#btn-settings-open-auth").onclick = () => showAuth("login");
+
+$("#btn-auth-back").onclick = () => {
+  const back = state.backTo || { view: "new" };
+  if (back.view === "job" && state.jobs[back.id]) openJob(back.id);
+  else if (back.view === "settings") showSettings();
+  else if (back.view === "usage") showUsage();
+  else showNew();
+};
+
+$("#tab-login").onclick = () => setAuthTab("login");
+$("#tab-register").onclick = () => setAuthTab("register");
+$("#link-switch-to-reg").onclick = () => setAuthTab("register");
+$("#link-switch-to-login").onclick = () => setAuthTab("login");
+
+// Toggle lihat password
+document.querySelectorAll(".btn-toggle-pwd").forEach((btn) => {
+  btn.onclick = () => {
+    const target = $(`#${btn.dataset.for}`);
+    if (!target) return;
+    const isPwd = target.type === "password";
+    target.type = isPwd ? "text" : "password";
+    btn.innerHTML = isPwd
+      ? '<svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>'
+      : '<svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
+    btn.title = isPwd ? "Sembunyikan kata sandi" : "Lihat kata sandi";
+  };
+});
+
+// Form Login submit
+$("#form-login").onsubmit = async (e) => {
+  e.preventDefault();
+  const btn = $("#btn-login-submit");
+  const alertEl = $("#auth-alert");
+  alertEl.hidden = true;
+  alertEl.className = "alert-box";
+
+  const identifier = $("#login-identifier").value.trim();
+  const password = $("#login-password").value;
+  if (!identifier || !password) return;
+
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = "Memproses...";
+  try {
+    const res = await api("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username_or_email: identifier, password }),
+    });
+    state.user = res.user;
+    localStorage.removeItem(USER_TOKEN_KEY);
+    updateAuthUI();
+    toast(`Berhasil masuk! Selamat datang, ${state.user.username}`);
+    $("#login-password").value = "";
+
+    if (state.backTo?.view === "settings") showSettings();
+    else if (state.backTo?.view === "job" && state.jobs[state.backTo.id]) openJob(state.backTo.id);
+    else showNew();
+  } catch (err) {
+    alertEl.textContent = err.message;
+    alertEl.className = "alert-box error";
+    alertEl.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+};
+
+// Form Register submit
+$("#form-register").onsubmit = async (e) => {
+  e.preventDefault();
+  const btn = $("#btn-reg-submit");
+  const alertEl = $("#auth-alert");
+  alertEl.hidden = true;
+  alertEl.className = "alert-box";
+
+  const username = $("#reg-username").value.trim();
+  const email = $("#reg-email").value.trim();
+  const password = $("#reg-password").value;
+  if (!username || !email || !password) return;
+
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = "Mendaftarkan...";
+  try {
+    const res = await api("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ username, email, password }),
+    });
+    state.user = res.user;
+    localStorage.removeItem(USER_TOKEN_KEY);
+    updateAuthUI();
+    toast(`Akun '${state.user.username}' berhasil dibuat! Token kredensial aktif.`);
+    $("#reg-password").value = "";
+    showSettings();
+  } catch (err) {
+    alertEl.textContent = err.message;
+    alertEl.className = "alert-box error";
+    alertEl.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+};
+
+// Interaksi Token Kredensial di Pengaturan
+$("#btn-toggle-token").onclick = () => {
+  const input = $("#user-token-display");
+  const btn = $("#btn-toggle-token");
+  const isPwd = input.type === "password";
+  input.type = isPwd ? "text" : "password";
+  btn.innerHTML = isPwd
+    ? '<svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg> Sembunyikan'
+    : '<svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg> Lihat';
+};
+
+$("#btn-copy-token").onclick = async () => {
+  const token = state.user?.token_credential;
+  if (!token) return;
+  try {
+    await navigator.clipboard.writeText(token);
+    toast("Token kredensial disalin ke papan klip!");
+  } catch {
+    const input = $("#user-token-display");
+    input.type = "text";
+    input.select();
+    document.execCommand("copy");
+    input.type = "password";
+    toast("Token kredensial disalin ke papan klip!");
+  }
+};
+
+$("#btn-regen-token").onclick = async () => {
+  if (!confirm("Buat token acak baru? Token kredensial yang lama tidak akan bisa dipakai lagi.")) return;
+  const btn = $("#btn-regen-token");
+  btn.disabled = true;
+  try {
+    const res = await api("/api/auth/token/regenerate", { method: "POST" });
+    state.user.token_credential = res.token_credential;
+    localStorage.removeItem(USER_TOKEN_KEY);
+    $("#user-token-display").value = res.token_credential;
+    const fb = $("#token-feedback");
+    fb.textContent = "Token baru berhasil dibuat.";
+    fb.className = "small ok";
+    fb.hidden = false;
+    toast("Token baru berhasil dibuat!");
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+$("#btn-save-custom-token").onclick = async () => {
+  const custom = $("#in-custom-token").value.trim();
+  const fb = $("#token-feedback");
+  fb.hidden = true;
+  if (!custom) {
+    fb.textContent = "Masukkan token kustom yang diinginkan (minimal 8 karakter).";
+    fb.className = "small err";
+    fb.hidden = false;
+    return;
+  }
+  const btn = $("#btn-save-custom-token");
+  btn.disabled = true;
+  try {
+    const res = await api("/api/auth/token", {
+      method: "PATCH",
+      body: JSON.stringify({ token: custom }),
+    });
+    state.user.token_credential = res.token_credential;
+    localStorage.removeItem(USER_TOKEN_KEY);
+    $("#user-token-display").value = res.token_credential;
+    $("#in-custom-token").value = "";
+    fb.textContent = "Token kustom berhasil disimpan.";
+    fb.className = "small ok";
+    fb.hidden = false;
+    toast("Token kustom berhasil disimpan!");
+  } catch (err) {
+    fb.textContent = err.message;
+    fb.className = "small err";
+    fb.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+$("#btn-user-logout").onclick = async () => {
+  if (!confirm("Apakah Anda yakin ingin keluar dari akun?")) return;
+  try {
+    await api("/api/auth/logout", { method: "POST" });
+    state.user = null;
+    localStorage.removeItem(USER_TOKEN_KEY);
+    updateAuthUI();
+    toast("Anda telah keluar dari akun.");
+  } catch (err) {
+    toast(err.message, true);
+  }
+};
+
+(async () => {
+  await migrateLegacyLocalStorage();
+  await checkAuth();
+  await Promise.all([loadConfig(), loadUsage().catch((err) => toast(err.message, true))]);
+  loadBranding();
+  connect();
+})();

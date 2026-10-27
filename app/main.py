@@ -9,19 +9,22 @@ import re
 import shutil
 import tempfile
 import zipfile
+import openai
+from google.genai import errors as genai_errors
+import anthropic
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv, set_key
-from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import analysis, branding, buffer, facetrack, media, mediahost, pipeline, pricing, ratelimit, security, system, transcribe
+from . import analysis, branding, buffer, db, facetrack, media, mediahost, pipeline, pricing, ratelimit, security, system, transcribe
 from .jobs import hub, store
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -32,8 +35,12 @@ RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "true" if PUBLIC_MODE 
 JOB_RATE_LIMIT = max(1, int(os.environ.get("JOB_RATE_LIMIT", "5")))
 JOB_RATE_WINDOW_SECONDS = max(1, int(os.environ.get("JOB_RATE_WINDOW_SECONDS", "3600")))
 job_rate_limiter = ratelimit.JobRateLimiter(JOB_RATE_LIMIT, JOB_RATE_WINDOW_SECONDS)
-SESSION_COOKIE = "clipping_session"
+SESSION_COOKIE = security.SESSION_COOKIE
+USER_TOKEN_COOKIE = security.USER_TOKEN_COOKIE
+AI_CREDS_COOKIE = security.AI_CREDS_COOKIE
+MEDIA_CREDS_COOKIE = security.MEDIA_CREDS_COOKIE
 CURRENT_SESSION: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_session", default=None)
+CURRENT_USER: contextvars.ContextVar[dict | None] = contextvars.ContextVar("current_user", default=None)
 
 PURGE_INTERVAL_SECONDS: int = int(os.environ.get("PURGE_INTERVAL_SECONDS", "1800"))
 
@@ -54,6 +61,8 @@ async def _retention_purge_loop(stop_event: asyncio.Event) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Inisialisasi database MySQL untuk manajemen akun pengguna
+    db.init_db()
     stop_event = asyncio.Event()
     purge_task = asyncio.create_task(_retention_purge_loop(stop_event))
     try:
@@ -89,6 +98,32 @@ def dashboard_page():
 
 def current_session_id() -> str | None:
     return CURRENT_SESSION.get()
+
+
+def current_user() -> dict | None:
+    return CURRENT_USER.get()
+
+
+def resolve_user_from_request(request: Request) -> dict | None:
+    """Ambil data pengguna dari header Authorization (Bearer), X-Auth-Token, atau cookie terenkripsi."""
+    token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+    if not token:
+        token = request.headers.get("X-Auth-Token", "").strip() or None
+    if not token:
+        raw_cookie = request.cookies.get(USER_TOKEN_COOKIE)
+        if raw_cookie:
+            dec = security.decrypt_cookie_data(raw_cookie)
+            token = dec if isinstance(dec, str) else None
+
+    if token:
+        try:
+            return db.get_user_by_token(token)
+        except Exception:
+            return None
+    return None
 
 
 def valid_session_id(value: str | None) -> str | None:
@@ -172,17 +207,45 @@ class ConfigIn(BaseModel):
 
 
 def _request_ai_context(provider_name: str | None, key: str | None, model: str | None,
-                        *, required: bool = True) -> dict | None:
-    if not PUBLIC_MODE:
-        return None
-    name = (provider_name or "").strip().lower()
-    if name not in analysis.PROVIDERS:
-        raise HTTPException(400, "Header X-AI-Provider tidak valid.")
+                        *, request: Request | None = None, required: bool = True) -> dict | None:
     secret = (key or "").strip()
-    if required and not secret:
-        raise HTTPException(400, "Header X-AI-Key wajib diisi dalam PUBLIC_MODE.")
-    selected_model = (model or "").strip() or analysis.PROVIDERS[name]["default_model"]
-    return {"provider": name, "key": secret, "model": selected_model}
+    name = (provider_name or "").strip().lower()
+    selected_model = (model or "").strip()
+
+    # Ambil kredensial AI dari cookie terenkripsi jika tidak dikirim via header/argumen
+    if request and not secret:
+        cookie_creds = security.decrypt_cookie_data(request.cookies.get(AI_CREDS_COOKIE))
+        if isinstance(cookie_creds, dict):
+            cookie_provider = (cookie_creds.get("provider") or "").strip().lower()
+            if not name and cookie_provider:
+                name = cookie_provider
+            target_prov = name or analysis.provider()
+            p_data = (cookie_creds.get("providers") or {}).get(target_prov) or {}
+            if p_data.get("key"):
+                secret = p_data["key"].strip()
+            if not selected_model and p_data.get("model"):
+                selected_model = p_data["model"].strip()
+
+    if not secret and not name:
+        if PUBLIC_MODE and required:
+            raise HTTPException(400, "Header X-AI-Key atau cookie kredensial AI wajib diisi dalam PUBLIC_MODE.")
+        return None
+
+    if name and name not in analysis.PROVIDERS:
+        raise HTTPException(400, "Header X-AI-Provider tidak valid.")
+
+    target = name or analysis.provider()
+    if required and not secret and PUBLIC_MODE:
+        raise HTTPException(400, "Header X-AI-Key atau cookie kredensial AI wajib diisi dalam PUBLIC_MODE.")
+
+    if not secret:
+        secret = os.environ.get(analysis.PROVIDERS[target]["env"], "")
+        if required and not secret:
+            raise HTTPException(400, f"API key untuk {analysis.PROVIDERS[target]['label']} belum diatur.")
+
+    if not selected_model:
+        selected_model = analysis.PROVIDERS[target]["default_model"]
+    return {"provider": target, "key": secret, "model": selected_model}
 
 
 def _hint(env: str) -> str:
@@ -239,11 +302,13 @@ def get_config():
         "whisper_languages": transcribe.LANGUAGES,
         "pricing": _pricing_info(),
         "buffer_accounts": buffer.public_accounts(),
-        "media_host": mediahost.provider(),
-        "media_missing": [mediahost.LABELS[f] for f in mediahost.missing()],
-        # Nilai non-rahasia dikirim apa adanya; rahasia hanya petunjuk 4 karakter terakhir.
-        "media": {f: (_hint(f) if f in mediahost.SECRET_FIELDS else os.environ.get(f, ""))
-                  for fields in mediahost.FIELDS.values() for f in fields},
+        "media_host": "default",
+        "server_media_configured": mediahost.server_is_configured(),
+        "server_media_provider": mediahost.server_provider(),
+        "server_retention_hours": 8,
+        "custom_retention_hours": 24,
+        "media_missing": [],
+        "media": {},
         "aspects": list(media.ASPECTS),
         "max_filesize_mb": security.max_filesize_mb(),
         "max_duration_minutes": security.max_duration_minutes(),
@@ -297,15 +362,9 @@ def save_config(cfg: ConfigIn):
 
 
 @app.get("/api/models")
-async def models(provider: str | None = None, x_ai_provider: str | None = Header(None),
+async def models(request: Request, provider: str | None = None, x_ai_provider: str | None = Header(None),
                  x_ai_key: str | None = Header(None), x_ai_model: str | None = Header(None)):
-    # Muat SDK provider hanya saat endpoint model digunakan agar startup server
-    # dan test tidak tersendat oleh SDK yang tidak diperlukan.
-    from google.genai import errors as genai_errors
-    import anthropic
-    import openai
-
-    context = _request_ai_context(x_ai_provider or provider, x_ai_key, x_ai_model)
+    context = _request_ai_context(x_ai_provider or provider, x_ai_key, x_ai_model, request=request)
     name = context["provider"] if context else provider if provider in analysis.PROVIDERS else analysis.provider()
     try:
         key = context["key"] if context else None
@@ -344,8 +403,13 @@ async def create_job(
                 f"Batas pembuatan proyek tercapai ({JOB_RATE_LIMIT} per jam). Coba lagi nanti.",
                 headers={"Retry-After": str(retry_after)},
             )
-    ai_context = _request_ai_context(x_ai_provider, x_ai_key, x_ai_model)
     raw = json.loads(options or "{}")
+    has_custom_media = bool(raw.get("has_custom_media", False))
+    if not has_custom_media:
+        cookie_media = security.decrypt_cookie_data(request.cookies.get(MEDIA_CREDS_COOKIE))
+        if isinstance(cookie_media, dict) and cookie_media.get("host") in ("cloudinary", "r2"):
+            has_custom_media = True
+    retention_hours = 24 if has_custom_media else 8
     opts = {
         "num_clips": max(1, min(15, int(raw.get("num_clips", 3)))),
         "min_len": max(5, int(raw.get("min_len", 30))),
@@ -363,6 +427,7 @@ async def create_job(
         # Channel tujuan posting, dipilih sebelum render: ["idAkun:idChannel", ...]
         "channels": [c for c in (raw.get("channels") or []) if isinstance(c, str)][:20],
         "instructions": str(raw.get("instructions", ""))[:1000],
+        "retention_hours": retention_hours,
     }
     opts["max_len"] = max(opts["max_len"], opts["min_len"] + 5)
     url = url.strip()
@@ -411,6 +476,7 @@ async def create_job(
                 raise HTTPException(400, "Berkas video kosong.")
 
             safe_filename = Path(file.filename).name
+            ai_context = _request_ai_context(x_ai_provider, x_ai_key, x_ai_model, request=request)
             job = store.create(safe_filename, "upload", opts)
             if PUBLIC_MODE:
                 job["owner_session_id"] = current_session_id()
@@ -427,6 +493,7 @@ async def create_job(
             security.validate_video_url(url)
         except security.SecurityValidationError as e:
             raise HTTPException(400, str(e))
+        ai_context = _request_ai_context(x_ai_provider, x_ai_key, x_ai_model, request=request)
         job = store.create(url, "url", opts)
         if PUBLIC_MODE:
             job["owner_session_id"] = current_session_id()
@@ -733,10 +800,10 @@ def save_pricing(body: PricingIn):
 
 
 @app.get("/api/estimate")
-def estimate(duration: float, num_clips: int = 3, max_len: int = 90, subtitles: bool = True,
+def estimate(request: Request, duration: float, num_clips: int = 3, max_len: int = 90, subtitles: bool = True,
              x_ai_provider: str | None = Header(None), x_ai_key: str | None = Header(None),
              x_ai_model: str | None = Header(None)):
-    context = _request_ai_context(x_ai_provider, x_ai_key, x_ai_model, required=False)
+    context = _request_ai_context(x_ai_provider, x_ai_key, x_ai_model, request=request, required=False)
     provider = context["provider"] if context else analysis.provider()
     model = context["model"] if context else analysis.model_name()
     est = pricing.estimate(max(0.0, duration), model, num_clips, max_len, subtitles, provider)
@@ -843,10 +910,21 @@ def delete_buffer_account(account_id: str):
     return {"accounts": buffer.public_accounts()}
 
 
+class MediaHostTestIn(BaseModel):
+    provider: str = "default"
+    credentials: dict[str, str] = {}
+
+
 @app.post("/api/mediahost/test")
-async def test_mediahost():
+async def test_mediahost(request: Request, body: MediaHostTestIn | None = None):
     try:
-        return {"ok": True, "message": await asyncio.to_thread(mediahost.check)}
+        p = body.provider if body else "default"
+        creds = body.credentials if body else {}
+        if not creds and p in ("cloudinary", "r2"):
+            cookie_creds = security.decrypt_cookie_data(request.cookies.get(MEDIA_CREDS_COOKIE))
+            if isinstance(cookie_creds, dict):
+                creds = cookie_creds.get(p) or {}
+        return {"ok": True, "message": await asyncio.to_thread(mediahost.check_context, p, creds)}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, str(e))
 
@@ -856,10 +934,12 @@ class PublishIn(BaseModel):
     text: str
     mode: str = "addToQueue"
     due_at: str | None = None
+    media_host: str | None = None
+    media_credentials: dict[str, str] | None = None
 
 
 @app.post("/api/jobs/{job_id}/clips/{clip_id}/publish")
-async def publish_clip(job_id: str, clip_id: str, body: PublishIn):
+async def publish_clip(request: Request, job_id: str, clip_id: str, body: PublishIn):
     job = get_job(job_id)
     clip = store.clip(job, clip_id)
     if not clip or clip["status"] != "ready":
@@ -881,8 +961,31 @@ async def publish_clip(job_id: str, clip_id: str, body: PublishIn):
         if when.tzinfo is None or when <= datetime.now(timezone.utc):
             raise HTTPException(400, "Waktu jadwal harus di masa depan.")
         due_at = when.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    if mediahost.missing():
-        raise HTTPException(400, mediahost.missing_message())
+
+    media_provider = (body.media_host or "default").strip().lower()
+    media_creds = body.media_credentials or {}
+    if not media_creds and media_provider in ("cloudinary", "r2"):
+        cookie_creds = security.decrypt_cookie_data(request.cookies.get(MEDIA_CREDS_COOKIE))
+        if isinstance(cookie_creds, dict):
+            media_creds = cookie_creds.get(media_provider) or {}
+    if media_provider == "default":
+        if not mediahost.server_is_configured():
+            raise HTTPException(400, "Server default belum mengonfigurasi hosting video di .env. Hubungkan Cloudinary atau R2 pribadi Anda di Pengaturan.")
+    elif media_provider == "cloudinary":
+        cloud = (media_creds.get("cloud_name") or media_creds.get("CLOUDINARY_CLOUD_NAME") or "").strip()
+        key = (media_creds.get("api_key") or media_creds.get("CLOUDINARY_API_KEY") or "").strip()
+        sec = (media_creds.get("api_secret") or media_creds.get("CLOUDINARY_API_SECRET") or "").strip()
+        if not (cloud and key and sec):
+            raise HTTPException(400, "Kredensial Cloudinary pribadi belum lengkap. Buka Pengaturan.")
+    elif media_provider == "r2":
+        acc = (media_creds.get("account_id") or media_creds.get("R2_ACCOUNT_ID") or "").strip()
+        key = (media_creds.get("access_key_id") or media_creds.get("R2_ACCESS_KEY_ID") or "").strip()
+        sec = (media_creds.get("secret_access_key") or media_creds.get("R2_SECRET_ACCESS_KEY") or "").strip()
+        bkt = (media_creds.get("bucket") or media_creds.get("R2_BUCKET") or "").strip()
+        pub = (media_creds.get("public_url") or media_creds.get("R2_PUBLIC_URL") or "").strip()
+        if not (acc and key and sec and bkt and pub):
+            raise HTTPException(400, "Kredensial Cloudflare R2 pribadi belum lengkap. Buka Pengaturan.")
+
     try:
         found = await asyncio.to_thread(buffer.list_channels)
     except Exception as e:  # noqa: BLE001
@@ -894,7 +997,8 @@ async def publish_clip(job_id: str, clip_id: str, body: PublishIn):
     unusable = [c for c in channels if c["isDisconnected"] or c["isLocked"]]
     if len(channels) != len(channel_ids) or unusable:
         raise HTTPException(400, "Ada channel yang tidak ditemukan atau sedang terputus di Buffer.")
-    spawn(pipeline.publish(job, clip, channels, body.text.strip(), body.mode, due_at))
+    spawn(pipeline.publish(job, clip, channels, body.text.strip(), body.mode, due_at,
+                           media_context={"provider": media_provider, "credentials": media_creds}))
     return {"ok": True}
 
 
@@ -977,6 +1081,267 @@ def media_file(job_id: str, path: str, download: bool = False):
     return FileResponse(target, filename=target.name if download else None)
 
 
+# ---------- Autentikasi Pengguna & Token Kredensial ----------
+
+class RegisterBody(BaseModel):
+    username: str
+    email: str
+    password: str
+
+
+class LoginBody(BaseModel):
+    username_or_email: str
+    password: str
+
+
+class CustomTokenBody(BaseModel):
+    token: str
+
+
+@app.post("/api/auth/register")
+def auth_register(req: RegisterBody, request: Request, response: Response):
+    try:
+        user = db.register_user(req.username, req.email, req.password)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Gagal mendaftarkan pengguna: {e}")
+
+    security.set_secure_cookie(
+        response,
+        USER_TOKEN_COOKIE,
+        user["token_credential"],
+        request=request,
+    )
+    return {"ok": True, "user": user}
+
+
+@app.post("/api/auth/login")
+def auth_login(req: LoginBody, request: Request, response: Response):
+    try:
+        user = db.authenticate_user(req.username_or_email, req.password)
+    except Exception as e:
+        raise HTTPException(500, f"Gagal memproses autentikasi: {e}")
+
+    if not user:
+        raise HTTPException(401, "Username/email atau kata sandi tidak valid.")
+
+    security.set_secure_cookie(
+        response,
+        USER_TOKEN_COOKIE,
+        user["token_credential"],
+        request=request,
+    )
+    return {"ok": True, "user": user}
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request):
+    user = CURRENT_USER.get() or resolve_user_from_request(request)
+    return {"ok": True, "user": user}
+
+
+@app.post("/api/auth/token/regenerate")
+def auth_regenerate_token(request: Request, response: Response):
+    user = CURRENT_USER.get() or resolve_user_from_request(request)
+    if not user:
+        raise HTTPException(401, "Silakan masuk terlebih dahulu.")
+    try:
+        new_token = db.regenerate_token(user["id"])
+    except Exception as e:
+        raise HTTPException(500, f"Gagal membuat token baru: {e}")
+
+    security.set_secure_cookie(
+        response,
+        USER_TOKEN_COOKIE,
+        new_token,
+        request=request,
+    )
+    return {"ok": True, "token_credential": new_token}
+
+
+@app.patch("/api/auth/token")
+def auth_update_custom_token(req: CustomTokenBody, request: Request, response: Response):
+    user = CURRENT_USER.get() or resolve_user_from_request(request)
+    if not user:
+        raise HTTPException(401, "Silakan masuk terlebih dahulu.")
+    try:
+        updated_token = db.update_custom_token(user["id"], req.token)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Gagal memperbarui token: {e}")
+
+    security.set_secure_cookie(
+        response,
+        USER_TOKEN_COOKIE,
+        updated_token,
+        request=request,
+    )
+    return {"ok": True, "token_credential": updated_token}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(response: Response):
+    security.clear_secure_cookie(response, USER_TOKEN_COOKIE)
+    return {"ok": True}
+
+
+# ---------- Kredensial AI & Media BYOK Terenkripsi (HttpOnly, Secure, SameSite) ----------
+
+class AiCredentialsIn(BaseModel):
+    provider: str
+    key: str | None = None
+    model: str | None = None
+
+
+def _summarize_ai_credentials(creds: dict) -> dict:
+    current_prov = creds.get("provider") or analysis.provider()
+    result = {
+        "ok": True,
+        "provider": current_prov,
+        "providers": {},
+    }
+    for prov_name, prov_spec in analysis.PROVIDERS.items():
+        prov_data = (creds.get("providers") or {}).get(prov_name) or {}
+        key = prov_data.get("key", "")
+        server_env_key = os.environ.get(prov_spec["env"], "") if not PUBLIC_MODE else ""
+        has_key = bool(key or server_env_key)
+        hint = f"…{key[-4:]}" if key else (f"…{server_env_key[-4:]}" if server_env_key else "")
+        result["providers"][prov_name] = {
+            "has_key": has_key,
+            "key_hint": hint,
+            "model": prov_data.get("model", prov_spec["default_model"]),
+            "is_custom": bool(key),
+        }
+    return result
+
+
+@app.get("/api/credentials/ai")
+def get_ai_credentials(request: Request):
+    """Ambil status dan hint kredensial AI dari cookie terenkripsi tanpa membocorkan secret key."""
+    creds = security.decrypt_cookie_data(request.cookies.get(AI_CREDS_COOKIE))
+    if not isinstance(creds, dict):
+        creds = {"provider": analysis.provider(), "providers": {}}
+    return _summarize_ai_credentials(creds)
+
+
+@app.post("/api/credentials/ai")
+def set_ai_credentials(body: AiCredentialsIn, request: Request, response: Response):
+    """Simpan kredensial AI ke dalam cookie HttpOnly terenkripsi AES-256."""
+    target_prov = (body.provider or "").strip().lower()
+    if target_prov not in analysis.PROVIDERS:
+        raise HTTPException(400, "Penyedia AI tidak valid.")
+
+    creds = security.decrypt_cookie_data(request.cookies.get(AI_CREDS_COOKIE))
+    if not isinstance(creds, dict):
+        creds = {"provider": target_prov, "providers": {}}
+
+    creds["provider"] = target_prov
+    prov_map = creds.setdefault("providers", {})
+    existing_p = prov_map.setdefault(target_prov, {})
+
+    new_key = (body.key or "").strip()
+    if new_key:
+        existing_p["key"] = new_key
+    if body.model:
+        existing_p["model"] = body.model.strip()
+
+    security.set_secure_cookie(response, AI_CREDS_COOKIE, creds, request=request)
+    return _summarize_ai_credentials(creds)
+
+
+@app.delete("/api/credentials/ai")
+def clear_ai_credentials(request: Request, response: Response, provider: str | None = None):
+    """Hapus kredensial AI dari cookie terenkripsi."""
+    if not provider:
+        security.clear_secure_cookie(response, AI_CREDS_COOKIE)
+        return {"ok": True}
+
+    target = provider.strip().lower()
+    creds = security.decrypt_cookie_data(request.cookies.get(AI_CREDS_COOKIE))
+    if isinstance(creds, dict) and "providers" in creds:
+        creds["providers"].pop(target, None)
+        security.set_secure_cookie(response, AI_CREDS_COOKIE, creds, request=request)
+    return {"ok": True}
+
+
+class MediaCredentialsIn(BaseModel):
+    host: str
+    credentials: dict[str, str] = {}
+
+
+def _summarize_media_credentials(creds: dict) -> dict:
+    c = creds.get("cloudinary") or {}
+    r = creds.get("r2") or {}
+    active_host = creds.get("host", "default")
+
+    return {
+        "ok": True,
+        "host": active_host,
+        "configured": {
+            "default": mediahost.server_is_configured(),
+            "cloudinary": bool(c.get("cloud_name") and c.get("api_key") and c.get("api_secret")),
+            "r2": bool(r.get("account_id") and r.get("bucket") and r.get("access_key_id") and r.get("secret_access_key")),
+        },
+        "fields": {
+            "cloudinary": {
+                "cloud_name": c.get("cloud_name", ""),
+                "api_key": c.get("api_key", ""),
+                "has_secret": bool(c.get("api_secret")),
+            },
+            "r2": {
+                "account_id": r.get("account_id", ""),
+                "bucket": r.get("bucket", ""),
+                "access_key_id": r.get("access_key_id", ""),
+                "public_url": r.get("public_url", ""),
+                "has_secret": bool(r.get("secret_access_key")),
+            },
+        },
+    }
+
+
+@app.get("/api/credentials/media")
+def get_media_credentials(request: Request):
+    """Ambil status hosting media kustom dari cookie terenkripsi tanpa mengekspos secret."""
+    creds = security.decrypt_cookie_data(request.cookies.get(MEDIA_CREDS_COOKIE))
+    if not isinstance(creds, dict):
+        creds = {"host": "default", "cloudinary": {}, "r2": {}}
+    return _summarize_media_credentials(creds)
+
+
+@app.post("/api/credentials/media")
+def set_media_credentials(body: MediaCredentialsIn, request: Request, response: Response):
+    """Simpan pengaturan hosting media kustom ke dalam cookie HttpOnly terenkripsi AES-256."""
+    host = body.host.strip().lower()
+    if host not in ("default", "cloudinary", "r2"):
+        raise HTTPException(400, "Media host tidak valid.")
+
+    creds = security.decrypt_cookie_data(request.cookies.get(MEDIA_CREDS_COOKIE))
+    if not isinstance(creds, dict):
+        creds = {"host": host, "cloudinary": {}, "r2": {}}
+
+    creds["host"] = host
+    if host in ("cloudinary", "r2"):
+        target_dict = creds.setdefault(host, {})
+        for k, v in body.credentials.items():
+            val = (v or "").strip()
+            # Pertahankan secret lama jika tidak diubah / dikosongkan
+            if k in ("api_secret", "secret_access_key") and not val:
+                continue
+            target_dict[k] = val
+
+    security.set_secure_cookie(response, MEDIA_CREDS_COOKIE, creds, request=request)
+    return _summarize_media_credentials(creds)
+
+
+@app.delete("/api/credentials/media")
+def clear_media_credentials(response: Response):
+    """Hapus cookie kredensial hosting media kustom."""
+    security.clear_secure_cookie(response, MEDIA_CREDS_COOKIE)
+    return {"ok": True}
+
+
 # ---------- Realtime ----------
 
 @app.websocket("/ws")
@@ -997,17 +1362,30 @@ async def ws(websocket: WebSocket):
 
 
 @app.middleware("http")
-async def no_stale_ui(request, call_next):
+async def no_stale_ui(request: Request, call_next):
     """Antarmuka selalu divalidasi ulang, supaya versi lama tidak nyangkut di cache browser."""
     session_id = valid_session_id(request.cookies.get(SESSION_COOKIE)) or str(uuid4())
-    token = CURRENT_SESSION.set(session_id)
-    response = await call_next(request)
+    token_sess = CURRENT_SESSION.set(session_id)
+    user = resolve_user_from_request(request)
+    token_user = CURRENT_USER.set(user)
+    try:
+        response = await call_next(request)
+    finally:
+        CURRENT_SESSION.reset(token_sess)
+        CURRENT_USER.reset(token_user)
+
     if not valid_session_id(request.cookies.get(SESSION_COOKIE)):
-        response.set_cookie(SESSION_COOKIE, session_id, httponly=True, secure=PUBLIC_MODE,
-                            samesite="lax", max_age=60 * 60 * 24 * 365)
+        response.set_cookie(
+            SESSION_COOKIE,
+            session_id,
+            httponly=True,
+            secure=security.is_cookie_secure(request),
+            samesite="lax",
+            max_age=60 * 60 * 24 * 365,
+            path="/",
+        )
     if request.url.path.startswith(("/branding/", "/static/")) or request.url.path in ("/", "/app.js", "/style.css", "/index.html"):
         response.headers["Cache-Control"] = "no-cache"
-    CURRENT_SESSION.reset(token)
     return response
 
 
