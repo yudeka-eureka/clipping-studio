@@ -9,9 +9,9 @@ import re
 import shutil
 import tempfile
 import zipfile
-import anthropic
 import openai
-from google import genai_errors
+from google.genai import errors as genai_errors
+import anthropic
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
