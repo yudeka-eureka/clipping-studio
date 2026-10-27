@@ -9,6 +9,9 @@ import re
 import shutil
 import tempfile
 import zipfile
+import anthropic
+import openai
+from google import genai_errors
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -16,11 +19,8 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv, set_key
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-import anthropic
-import openai
-from google.genai import errors as genai_errors
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
@@ -84,6 +84,16 @@ def spawn(coro) -> None:
     t = asyncio.create_task(coro)
     tasks.add(t)
     t.add_done_callback(tasks.discard)
+
+
+@app.get("/", response_class=HTMLResponse)
+def landing_page():
+    return FileResponse(ROOT / "static" / "landing.html")
+
+
+@app.get("/app", response_class=HTMLResponse)
+def dashboard_page():
+    return FileResponse(ROOT / "static" / "index.html")
 
 
 def current_session_id() -> str | None:

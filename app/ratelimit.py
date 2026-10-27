@@ -17,7 +17,9 @@ class JobRateLimiter:
         """Return (allowed, retry_after_seconds) for a new job request."""
         current = time.monotonic() if now is None else now
         cutoff = current - self.window_seconds
-        valid_keys = [k for k in keys if k]
+        # Satu request hanya boleh menambah satu hit per key. Selain mencegah
+        # penghitungan ganda, ini menjaga pemeriksaan beberapa key tetap atomik.
+        valid_keys = list(dict.fromkeys(k for k in keys if k))
         if not valid_keys:
             valid_keys = ["unknown"]
 
