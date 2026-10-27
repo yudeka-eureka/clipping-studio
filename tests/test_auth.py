@@ -207,3 +207,37 @@ def test_logout():
     # Cookie is invalidated / deleted
     res_me_after = client.get("/api/auth/me")
     assert res_me_after.json()["user"] is None
+
+
+def test_token_is_encrypted_with_aes256_in_database():
+    client = TestClient(app)
+    uname = random_uname()
+    res = client.post("/api/auth/register", json={
+        "username": uname,
+        "email": f"{uname}@example.com",
+        "password": "strong_password_123",
+    })
+    assert res.status_code == 200
+    user_data = res.json()["user"]
+    plain_token = user_data["token_credential"]
+    assert plain_token.startswith("cs_live_")
+
+    # Langsung query database MySQL untuk memeriksa isi kolom mentah
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT token_credential FROM users WHERE username = %s LIMIT 1", (uname,))
+            row = cur.fetchone()
+            assert row is not None
+            raw_db_token = row["token_credential"]
+
+            # Token mentah di database HARUS terenkripsi AES-256 dan TIDAK sama dengan plaintext
+            assert raw_db_token != plain_token
+            assert raw_db_token.startswith(db.TOKEN_ENCRYPTION_PREFIX)
+            assert plain_token not in raw_db_token
+
+            # Fungsi dekripsi harus mengembalikan token asli
+            decrypted = db.decrypt_token(raw_db_token)
+            assert decrypted == plain_token
+    finally:
+        conn.close()

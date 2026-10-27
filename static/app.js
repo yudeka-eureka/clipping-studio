@@ -126,11 +126,19 @@ function aiHeaders(providerOverride) {
   return headers;
 }
 
+const UNAVAILABLE_MODEL_PATTERNS = ["2.5-flash", "2.5-pro", "2.5-flash-lite", "1.0-pro"];
+
+function isModelUnavailable(modelName) {
+  if (!modelName) return false;
+  return UNAVAILABLE_MODEL_PATTERNS.some((pat) => modelName.includes(pat));
+}
+
 function applyStoredAi(cfg) {
   if (!cfg) return cfg;
   const saved = storedAi();
   const userCfg = getUserConfig();
   const provider = userCfg.provider || saved.provider || cfg.provider;
+  let savedModified = false;
   if (cfg.providers) {
     for (const [name, p] of Object.entries(cfg.providers)) {
       const profile = saved.providers[name] || {};
@@ -138,12 +146,24 @@ function applyStoredAi(cfg) {
         p.has_key = true;
         p.key_hint = "…" + profile.key.slice(-4);
       }
-      if (profile.model) p.model = profile.model;
+      if (profile.model) {
+        if (isModelUnavailable(profile.model)) {
+          profile.model = p.default_model || "gemini-3.8-flash";
+          savedModified = true;
+        }
+        p.model = profile.model;
+      }
     }
+  }
+  if (savedModified) {
+    try { localStorage.setItem(AI_STORAGE_KEY, JSON.stringify(saved)); } catch {}
   }
   cfg.provider = provider;
   if (cfg.providers && cfg.providers[provider]) {
     cfg.model = cfg.providers[provider].model || cfg.model;
+    if (isModelUnavailable(cfg.model)) {
+      cfg.model = cfg.providers[provider].default_model || "gemini-3.8-flash";
+    }
     cfg.has_key = Boolean(saved.providers[provider]?.key || (!cfg.public_mode && cfg.has_key));
     cfg.key_hint = saved.providers[provider]?.key
       ? "…" + saved.providers[provider].key.slice(-4)
@@ -1703,9 +1723,9 @@ const KEY_HELP = {
   openai: 'Buat di <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">OpenAI Platform</a>.',
 };
 const PROVIDER_NOTE = {
-  gemini: "Gemini menonton video langsung (gambar + suara).",
-  anthropic: "Claude tidak menerima video. Klip dipilih dari transkrip Whisper lokal + sampel frame, jadi prosesnya lebih lama tapi token inputnya jauh lebih sedikit.",
-  openai: "ChatGPT tidak menerima video. Klip dipilih dari transkrip Whisper lokal + sampel frame, jadi prosesnya lebih lama tapi token inputnya jauh lebih sedikit.",
+  gemini: "Gemini menganalisis video secara langsung (gambar dan audio).",
+  anthropic: "Claude menganalisis klip berdasarkan transkrip bertimestamp dan sampel frame visual.",
+  openai: "ChatGPT menganalisis klip berdasarkan transkrip bertimestamp dan sampel frame visual.",
 };
 
 function currentProvider() {
@@ -1719,7 +1739,7 @@ function fillProviderFields() {
   $("#provider-note").textContent = PROVIDER_NOTE[name] || "";
   $("#set-key-label").textContent = `Ganti API Key (${p.label})`;
   $("#key-help").innerHTML = (KEY_HELP[name] || "") +
-    " Disimpan aman di browser Anda (localStorage) dan dikirim otomatis via header per permintaan.";
+    " Disimpan secara privat dan aman di browser Anda dan dikirim otomatis saat memproses permintaan.";
   const savedKeyInput = $("#set-key-saved");
   if (savedKeyInput) {
     const localKey = storedAi().providers[name]?.key;
@@ -1735,8 +1755,11 @@ function fillProviderFields() {
     ? "Key aktif tersimpan di atas. Kosongkan kolom 'Ganti API Key' jika tidak ingin mengubahnya."
     : "Belum ada key yang tersimpan. Masukkan API key baru di kolom 'Ganti API Key'.";
   const sel = $("#set-model");
-  if (![...sel.options].some((o) => o.value === p.model)) sel.add(new Option(p.model, p.model));
-  sel.value = p.model;
+  const modelToSet = isModelUnavailable(p.model) ? (p.default_model || "gemini-3.8-flash") : p.model;
+  if (![...sel.options].some((o) => o.value === modelToSet) && !isModelUnavailable(modelToSet)) {
+    sel.add(new Option(modelToSet, modelToSet));
+  }
+  sel.value = modelToSet;
 }
 
 function fillSettings() {
@@ -1749,10 +1772,13 @@ function fillSettings() {
   }
   psel.value = keep;
   const sel = $("#set-model");
-  if (![...sel.options].some((o) => o.value === cfg.providers[keep].model)) {
-    sel.add(new Option(cfg.providers[keep].model, cfg.providers[keep].model));
+  const currentModel = isModelUnavailable(cfg.providers[keep].model)
+    ? (cfg.providers[keep].default_model || "gemini-3.8-flash")
+    : cfg.providers[keep].model;
+  if (![...sel.options].some((o) => o.value === currentModel) && !isModelUnavailable(currentModel)) {
+    sel.add(new Option(currentModel, currentModel));
   }
-  setField(sel, cfg.providers[keep].model);
+  setField(sel, currentModel);
   fillProviderFields();
   const wsel = $("#set-whisper");
   const wval = wsel.dataset.dirty ? wsel.value : cfg.whisper_model;
@@ -1774,7 +1800,7 @@ function fillSettings() {
   }
   showHostFields();
   fillMediaSettings();
-  $("#set-info").textContent = `ffmpeg: ${cfg.ffmpeg.split("/").pop()} · subtitle: ${cfg.subtitles_supported ? "didukung" : "tidak didukung"} · deteksi wajah: ${cfg.face_tracking ? "aktif" : "tidak tersedia"}`;
+  $("#set-info").textContent = `subtitle: ${cfg.subtitles_supported ? "didukung" : "tidak didukung"} · deteksi fokus: ${cfg.face_tracking ? "aktif" : "tidak tersedia"}`;
 }
 
 function fillMediaSettings() {
@@ -1817,7 +1843,7 @@ function fillMediaSettings() {
     if (selHost === "default") {
       if (state.config && !state.config.server_media_configured) {
         missing.hidden = false;
-        missing.textContent = "Server default belum memiliki konfigurasi Cloudinary/R2 di file .env server. Silakan konfigurasi Cloudinary atau R2 pribadi Anda di bawah untuk mengaktifkan fitur publikasi.";
+        missing.textContent = "Penyimpanan standar belum dikonfigurasi. Silakan gunakan Cloudinary atau R2 pribadi Anda di bawah untuk mengaktifkan fitur publikasi.";
       } else {
         missing.hidden = true;
       }
@@ -2180,9 +2206,16 @@ $("#btn-load-models").onclick = async () => {
     const sel = $("#set-model");
     const current = sel.value;
     sel.innerHTML = "";
-    models.forEach((m) => sel.add(new Option(m, m)));
-    if (models.includes(current)) sel.value = current;
-    toast(`Terhubung ke ${state.config.providers[provider].label} · ${models.length} model tersedia`);
+    // Filter model yang tidak tersedia (seperti 2.5 flash dll)
+    const availableModels = (models || []).filter((m) => !isModelUnavailable(m));
+    availableModels.forEach((m) => sel.add(new Option(m, m)));
+    if (availableModels.includes(current) && !isModelUnavailable(current)) {
+      sel.value = current;
+    } else if (availableModels.length) {
+      sel.value = availableModels[0];
+      saveStoredAi(provider, effectiveKey, availableModels[0]);
+    }
+    toast(`Terhubung ke ${state.config.providers[provider].label} · ${availableModels.length} model aktif tersedia`);
     $("#set-key").value = "";
     delete $("#set-key").dataset.dirty;
     state.config = applyStoredAi(await api("/api/config"));
@@ -2355,7 +2388,7 @@ function setAuthTab(mode) {
   $("#auth-heading").textContent = isLogin ? "Masuk ke Akun" : "Daftar Akun Baru";
   $("#auth-sub").textContent = isLogin
     ? "Kelola token kredensial dan simpan preferensi studio Anda."
-    : "Daftar sekarang untuk mendapatkan token kredensial otomatis yang tersimpan di MySQL.";
+    : "Daftar sekarang untuk mendapatkan token akses otomatis yang terenkripsi aman.";
   const alertEl = $("#auth-alert");
   if (alertEl) {
     alertEl.hidden = true;

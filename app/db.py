@@ -1,6 +1,7 @@
 """Koneksi database MySQL untuk manajemen pengguna dan token kredensial."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import os
@@ -10,9 +11,64 @@ from typing import Any
 
 import pymysql
 import pymysql.cursors
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
 USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9_-]{3,50}$")
+TOKEN_ENCRYPTION_PREFIX = "enc_aes256$"
+
+
+def get_token_encryption_key() -> bytes:
+    """Ambil atau derivasi kunci master AES-256 (32 bytes = 256 bits)."""
+    raw_key = (
+        os.environ.get("TOKEN_ENCRYPTION_KEY")
+        or os.environ.get("SECRET_KEY")
+        or "clipping-studio-aes256-master-secret-key-change-in-prod"
+    )
+    return hashlib.sha256(raw_key.encode("utf-8")).digest()
+
+
+def encrypt_token(plain_token: str) -> str:
+    """Enkripsi token kredensial menggunakan AES-256-GCM.
+
+    Menggunakan derivasi deterministik untuk nonce (via HMAC-SHA256) agar
+    pencarian query token di database tetap O(1) dan terindeks unik.
+    """
+    if not plain_token:
+        return plain_token
+    if plain_token.startswith(TOKEN_ENCRYPTION_PREFIX):
+        return plain_token
+
+    key = get_token_encryption_key()
+    token_bytes = plain_token.encode("utf-8")
+    nonce = hmac.new(key, b"token_nonce:" + token_bytes, hashlib.sha256).digest()[:12]
+    aesgcm = AESGCM(key)
+    ciphertext_and_tag = aesgcm.encrypt(nonce, token_bytes, None)
+    encoded = base64.urlsafe_b64encode(nonce + ciphertext_and_tag).decode("ascii")
+    return f"{TOKEN_ENCRYPTION_PREFIX}{encoded}"
+
+
+def decrypt_token(stored_token: str | None) -> str:
+    """Dekripsi token kredensial terenkripsi AES-256-GCM kembali ke plain text.
+
+    Mendukung backward-compatibility jika ada record token legacy yang belum terenkripsi.
+    """
+    if not stored_token:
+        return ""
+    if not stored_token.startswith(TOKEN_ENCRYPTION_PREFIX):
+        return stored_token
+
+    try:
+        encoded = stored_token[len(TOKEN_ENCRYPTION_PREFIX):]
+        raw_bytes = base64.urlsafe_b64decode(encoded.encode("ascii"))
+        nonce = raw_bytes[:12]
+        ciphertext_and_tag = raw_bytes[12:]
+        key = get_token_encryption_key()
+        aesgcm = AESGCM(key)
+        plain_bytes = aesgcm.decrypt(nonce, ciphertext_and_tag, None)
+        return plain_bytes.decode("utf-8")
+    except Exception:
+        return stored_token
 
 
 def get_db_config() -> dict[str, Any]:
@@ -35,7 +91,7 @@ def get_connection():
 
 
 def init_db() -> None:
-    """Inisialisasi tabel users di database MySQL jika belum ada."""
+    """Inisialisasi tabel users di database MySQL jika belum ada, serta migrasi kolom jika perlu."""
     try:
         conn = get_connection()
         with conn.cursor() as cur:
@@ -45,11 +101,15 @@ def init_db() -> None:
                 username VARCHAR(50) NOT NULL UNIQUE,
                 email VARCHAR(100) NOT NULL UNIQUE,
                 password_hash VARCHAR(255) NOT NULL,
-                token_credential VARCHAR(100) NOT NULL UNIQUE,
+                token_credential VARCHAR(255) NOT NULL UNIQUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
+            try:
+                cur.execute("ALTER TABLE users MODIFY COLUMN token_credential VARCHAR(255) NOT NULL;")
+            except Exception:
+                pass
         conn.close()
     except Exception as e:
         # Jangan gagalkan startup jika database sedang offline; log peringatan
@@ -88,6 +148,8 @@ def _format_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if not row:
         return None
     row.pop("password_hash", None)
+    if "token_credential" in row and row["token_credential"]:
+        row["token_credential"] = decrypt_token(row["token_credential"])
     if "created_at" in row and row["created_at"] is not None:
         if hasattr(row["created_at"], "isoformat"):
             row["created_at"] = row["created_at"].isoformat()
@@ -97,7 +159,7 @@ def _format_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def register_user(username: str, email: str, password: str) -> dict[str, Any]:
-    """Daftarkan user baru ke MySQL dan buatkan token kredensial otomatis."""
+    """Daftarkan user baru ke MySQL dan buatkan token kredensial terenkripsi AES-256."""
     uname = (username or "").strip()
     mail = (email or "").strip().lower()
     pwd = password or ""
@@ -110,7 +172,8 @@ def register_user(username: str, email: str, password: str) -> dict[str, Any]:
         raise ValueError("Kata sandi minimal 6 karakter.")
 
     pwd_hash = hash_password(pwd)
-    token = generate_credential_token()
+    plain_token = generate_credential_token()
+    enc_token = encrypt_token(plain_token)
 
     conn = get_connection()
     try:
@@ -125,13 +188,13 @@ def register_user(username: str, email: str, password: str) -> dict[str, Any]:
             if cur.fetchone():
                 raise ValueError(f"Alamat email '{mail}' sudah terdaftar.")
 
-            # Insert user
+            # Insert user dengan token_credential terenkripsi AES-256
             cur.execute(
                 """
                 INSERT INTO users (username, email, password_hash, token_credential)
                 VALUES (%s, %s, %s, %s)
                 """,
-                (uname, mail, pwd_hash, token),
+                (uname, mail, pwd_hash, enc_token),
             )
             user_id = cur.lastrowid
             cur.execute("SELECT id, username, email, token_credential, created_at FROM users WHERE id = %s", (user_id,))
@@ -185,31 +248,41 @@ def get_user_by_id(user_id: int) -> dict[str, Any] | None:
 
 
 def get_user_by_token(token: str) -> dict[str, Any] | None:
-    """Ambil data user berdasarkan token kredensial."""
+    """Ambil data user berdasarkan token kredensial (mencocokkan ciphertext AES-256)."""
     tok = (token or "").strip()
     if not tok:
         return None
+    enc_tok = encrypt_token(tok)
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT id, username, email, token_credential, created_at FROM users WHERE token_credential = %s LIMIT 1",
-                (tok,),
+                (enc_tok,),
             )
-            return _format_user(cur.fetchone())
+            row = cur.fetchone()
+            if not row:
+                # Fallback jika record legacy tersimpan dalam plaintext
+                cur.execute(
+                    "SELECT id, username, email, token_credential, created_at FROM users WHERE token_credential = %s LIMIT 1",
+                    (tok,),
+                )
+                row = cur.fetchone()
+            return _format_user(row)
     finally:
         conn.close()
 
 
 def regenerate_token(user_id: int) -> str:
-    """Generate token kredensial baru untuk user."""
+    """Generate token kredensial baru untuk user dan enkripsi dengan AES-256 sebelum disimpan."""
     new_token = generate_credential_token()
+    enc_token = encrypt_token(new_token)
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE users SET token_credential = %s WHERE id = %s",
-                (new_token, user_id),
+                (enc_token, user_id),
             )
             if cur.rowcount == 0:
                 raise ValueError("User tidak ditemukan.")
@@ -219,23 +292,27 @@ def regenerate_token(user_id: int) -> str:
 
 
 def update_custom_token(user_id: int, custom_token: str) -> str:
-    """Atur token kredensial kustom sesuai keinginan user."""
+    """Atur token kredensial kustom sesuai keinginan user dan enkripsi dengan AES-256 sebelum disimpan."""
     tok = (custom_token or "").strip()
     if len(tok) < 8 or len(tok) > 80:
         raise ValueError("Token kredensial harus antara 8 hingga 80 karakter.")
     if not re.match(r"^[a-zA-Z0-9_\-\.]+$", tok):
         raise ValueError("Token hanya boleh berisi huruf, angka, garis bawah (_), tanda hubung (-), atau titik (.).")
 
+    enc_token = encrypt_token(tok)
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT id FROM users WHERE token_credential = %s AND id != %s LIMIT 1", (tok, user_id))
+            cur.execute(
+                "SELECT id FROM users WHERE (token_credential = %s OR token_credential = %s) AND id != %s LIMIT 1",
+                (enc_token, tok, user_id),
+            )
             if cur.fetchone():
                 raise ValueError("Token kredensial ini sudah digunakan oleh pengguna lain. Silakan pilih token lain.")
 
             cur.execute(
                 "UPDATE users SET token_credential = %s WHERE id = %s",
-                (tok, user_id),
+                (enc_token, user_id),
             )
             if cur.rowcount == 0:
                 raise ValueError("User tidak ditemukan.")

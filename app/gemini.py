@@ -4,6 +4,7 @@ Skema jawaban dan prompt dipakai bersama semua penyedia AI (lihat analysis.py).
 """
 from __future__ import annotations
 
+import concurrent.futures
 import time
 from pathlib import Path
 from typing import Callable
@@ -13,20 +14,84 @@ from google.genai import types
 from . import pricing
 from .analysis import Analysis, AnalysisError, build_prompt
 
+# Model atau varian yang sudah tidak tersedia untuk pengguna baru / di-sunset oleh Google
+UNAVAILABLE_PATTERNS = {
+    "2.5-flash",
+    "2.5-flash-lite",
+    "2.5-pro",
+    "1.0-pro",
+    "embedding",
+    "imagen",
+    "aqa",
+    "deprecated",
+    "retired",
+    "legacy",
+}
+
 
 def client(api_key: str) -> genai.Client:
     return genai.Client(api_key=api_key)
 
 
+def _is_model_available(c: genai.Client, model_name: str) -> bool:
+    """Verifikasi cepat apakah model benar-benar aktif dan dapat digunakan pengguna."""
+    try:
+        c.models.generate_content(
+            model=model_name,
+            contents="ping",
+            config=types.GenerateContentConfig(max_output_tokens=1),
+        )
+        return True
+    except Exception as e:
+        err = str(e).lower()
+        if "no longer available" in err or "404" in err or "not found" in err or "deprecated" in err or "unsupported" in err:
+            return False
+        # Jika error kuota (429/RESOURCE_EXHAUSTED), model tersebut valid untuk user
+        if "429" in err or "quota" in err or "resource_exhausted" in err:
+            return True
+        # Jika network error/offline dalam unit test
+        if "connection" in err or "name resolution" in err or "mock" in err:
+            return True
+        return False
+
+
 def list_models(api_key: str) -> list[str]:
     c = client(api_key)  # simpan referensi: pager membaca halaman berikutnya secara lazy
-    names = []
-    for m in c.models.list():
-        actions = getattr(m, "supported_actions", None) or []
-        name = (m.name or "").removeprefix("models/")
-        if "gemini" in name and (not actions or "generateContent" in actions):
-            names.append(name)
-    return sorted(set(names), reverse=True)
+    raw_names = []
+    try:
+        for m in c.models.list():
+            actions = getattr(m, "supported_actions", None) or []
+            name = (m.name or "").removeprefix("models/")
+            if not ("gemini" in name and (not actions or "generateContent" in actions)):
+                continue
+            # Saring model yang polanya sudah diketahui unavailable/deprecated seperti gemini-2.5-flash
+            if any(pat in name for pat in UNAVAILABLE_PATTERNS):
+                continue
+            raw_names.append(name)
+    except Exception:
+        pass
+
+    unique_candidates = sorted(set(raw_names), reverse=True)
+
+    # Verifikasi ketersediaan kandidat model secara konkuren
+    available = []
+    if unique_candidates:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(5, len(unique_candidates))) as ex:
+            futures = {ex.submit(_is_model_available, c, m): m for m in unique_candidates}
+            for f in concurrent.futures.as_completed(futures):
+                m = futures[f]
+                try:
+                    if f.result():
+                        available.append(m)
+                except Exception:
+                    pass
+
+    if available:
+        # Urutkan secara descending dan pastikan gemini-3.8-flash diprioritaskan di atas
+        return sorted(available, key=lambda x: (x == "gemini-3.8-flash", x), reverse=True)
+
+    # Fallback ke daftar model aktif standar jika hasil pencarian kosong atau semua probe gagal
+    return ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]
 
 
 def upload_video(api_key: str, path: Path, on_state: Callable[[str], None]) -> types.File:

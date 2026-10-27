@@ -10,8 +10,8 @@
 <body>
   <header class="topbar">
     <div class="brand">
-      <svg class="icon icon-brand" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
-      Clipping Studio <span class="muted">lokal · Gemini API</span>
+      <!-- <svg class="icon icon-brand" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg> -->
+      ✂️ Clipping Studio
     </div>
     <div class="topbar-right">
       <span id="conn" class="pill off" title="Koneksi realtime ke server lokal">● offline</span>
@@ -269,7 +269,7 @@
               <svg class="icon icon-brand" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
               Pemakaian AI
             </h1>
-            <div class="muted small">Token Gemini yang terpakai untuk analisis video dan estimasi biayanya. Transkripsi Whisper, deteksi wajah, dan render berjalan lokal tanpa biaya API.</div>
+            <div class="muted small">Token AI yang terpakai untuk analisis momen video dan estimasi biayanya. Pemrosesan subtitle, pelacakan fokus, dan rendering video tidak dikenakan biaya tambahan.</div>
           </div>
         </div>
         <div id="usage-tiles" class="tiles"></div>
@@ -459,7 +459,7 @@
                 <!-- Pane Subtitle -->
                 <div class="card" data-set-pane="subs" hidden>
                   <h2>Subtitle &amp; Transkripsi</h2>
-                  <p class="muted small">Waktu subtitle diselaraskan per kata dengan suara memakai model Whisper lokal di komputer ini.</p>
+                  <p class="muted small">Waktu subtitle diselaraskan per kata secara presisi dengan suara pada video.</p>
                   <div class="grid two">
                     <label>Model transkripsi<select id="set-whisper"></select></label>
                     <label>Bahasa<select id="set-lang"></select></label>
@@ -502,9 +502,9 @@
 
                   <label style="margin-top: 14px;">Penyedia Hosting Video
                     <select id="set-host">
-                      <option value="default">Default Server (Cloudinary / R2 bawaan server — Retensi 8 jam)</option>
-                      <option value="cloudinary">Cloudinary Pribadi (Kustom — Retensi 24 jam)</option>
-                      <option value="r2">Cloudflare R2 Pribadi (Kustom — Retensi 24 jam)</option>
+                      <option value="default">Penyimpanan Standar Server (Retensi 8 Jam)</option>
+                      <option value="cloudinary">Cloudinary Pribadi (Kustom — Retensi 24 Jam)</option>
+                      <option value="r2">Cloudflare R2 Pribadi (Kustom — Retensi 24 Jam)</option>
                     </select>
                   </label>
 
@@ -512,14 +512,14 @@
                   <div data-host="default" class="user-guest-box" style="text-align: left; margin-top: 10px;">
                     <div class="row" style="gap: 8px;">
                       <svg class="icon icon-brand" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                      <strong>Hosting Bawaan Server (Default)</strong>
+                      <strong>Penyimpanan Standar Server</strong>
                       <span class="user-badge-status" style="margin-left: auto;">Retensi 8 Jam</span>
                     </div>
                     <p class="muted small" style="margin: 8px 0 6px;">
-                      Klip video Anda diunggah menggunakan Cloudinary atau Cloudflare R2 yang dikonfigurasi di file <code>.env</code> server. Kredensial server tersimpan aman dan tidak diekspos ke publik.
+                      Klip video Anda diproses menggunakan penyimpanan standar server secara aman.
                     </p>
                     <p class="muted small" style="margin: 0;">
-                      <strong>Masa Simpan:</strong> Klip pada server default hanya disimpan selama <strong>8 jam</strong>. Agar video Anda dapat disimpan lebih panjang (24 jam / permanen), buat dan gunakan Cloudinary atau Cloudflare R2 pribadi Anda.
+                      <strong>Masa Simpan:</strong> Klip pada penyimpanan standar disimpan selama <strong>8 jam</strong>. Agar video Anda dapat disimpan lebih panjang (24 jam), gunakan Cloudinary atau Cloudflare R2 pribadi Anda.
                     </p>
                   </div>
 
@@ -532,7 +532,7 @@
                         <span class="user-badge-status" style="margin-left: auto;">Retensi 24 Jam</span>
                       </div>
                       <p class="muted small" style="margin: 6px 0 0;">
-                        Kredensial disimpan secara aman di browser Anda (<code>localStorage</code>) dan tidak disimpan di file <code>.env</code> server. Video klip Anda disimpan selama <strong>24 jam</strong> atau lebih di akun Cloudinary Anda sendiri.
+                        Kredensial disimpan secara terenkripsi di browser Anda dan tidak disimpan di database server. Klip video Anda dapat disimpan selama <strong>24 jam</strong> atau lebih di akun Cloudinary Anda sendiri.
                       </p>
                     </div>
                     <div class="grid two">
@@ -557,7 +557,7 @@
                         <span class="user-badge-status" style="margin-left: auto;">Retensi 24 Jam</span>
                       </div>
                       <p class="muted small" style="margin: 6px 0 0;">
-                        Kredensial disimpan secara aman di browser Anda (<code>localStorage</code>) dan tidak disimpan di file <code>.env</code> server. Video klip Anda disimpan selama <strong>24 jam</strong> atau lebih di bucket R2 Anda sendiri.
+                        Kredensial disimpan secara terenkripsi di browser Anda dan tidak disimpan di database server. Klip video Anda dapat disimpan selama <strong>24 jam</strong> atau lebih di bucket R2 Anda sendiri.
                       </p>
                     </div>
                     <div class="grid two">

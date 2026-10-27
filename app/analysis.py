@@ -57,7 +57,7 @@ class AnalysisError(RuntimeError):
 # Penyedia yang didukung. "video" = bisa menonton video langsung.
 PROVIDERS: dict[str, dict] = {
     "gemini": {"label": "Google Gemini", "env": "GEMINI_API_KEY", "model_env": "GEMINI_MODEL",
-               "default_model": "gemini-2.5-flash", "video": True},
+               "default_model": "gemini-3.8-flash", "video": True},
     "anthropic": {"label": "Anthropic Claude", "env": "ANTHROPIC_API_KEY", "model_env": "ANTHROPIC_MODEL",
                   "default_model": "claude-opus-5", "video": False},
     "openai": {"label": "OpenAI ChatGPT", "env": "OPENAI_API_KEY", "model_env": "OPENAI_MODEL",
