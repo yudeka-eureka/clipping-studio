@@ -326,7 +326,7 @@ def target_channels(job: dict) -> list[str]:
 
 
 async def publish(job: dict, clip: dict, channels: list[dict], text: str, mode: str,
-                  due_at: str | None) -> None:
+                  due_at: str | None, media_context: dict | None = None) -> None:
     """Unggah klip ke hosting publik (sekali per versi klip), lalu buat post di tiap channel Buffer."""
     loop = asyncio.get_running_loop()
     state = {"status": "uploading", "progress": 0.0, "error": None, "results": [],
@@ -334,9 +334,11 @@ async def publish(job: dict, clip: dict, channels: list[dict], text: str, mode: 
     clip["publish"] = state
     await store.publish(job)
     try:
+        media_ctx = media_context or {"provider": "default", "credentials": {}}
+        target_provider = media_ctx.get("provider") or "default"
         hosted = clip.get("hosted") or {}
-        if hosted.get("version") != clip["version"] or hosted.get("provider") != mediahost.provider():
-            await store.log(job, f"☁️ Mengunggah “{clip['title']}” ke {mediahost.provider()}…")
+        if hosted.get("version") != clip["version"] or hosted.get("provider") != target_provider:
+            await store.log(job, f"Mengunggah “{clip['title']}” ke {target_provider}…")
 
             def on_progress(p: float) -> None:
                 state["progress"] = p
@@ -344,9 +346,10 @@ async def publish(job: dict, clip: dict, channels: list[dict], text: str, mode: 
                     store.progress(job, p, stage="Mengunggah video…", clip_id=clip["id"]), loop)
 
             url = await asyncio.to_thread(
-                mediahost.upload, store.dir(job["id"]) / clip["file"],
-                f"{job['id']}-{clip['id']}-v{clip['version']}", on_progress)
-            clip["hosted"] = {"version": clip["version"], "provider": mediahost.provider(), "url": url}
+                mediahost.upload_context, store.dir(job["id"]) / clip["file"],
+                f"{job['id']}-{clip['id']}-v{clip['version']}", on_progress,
+                target_provider, media_ctx.get("credentials") or {})
+            clip["hosted"] = {"version": clip["version"], "provider": target_provider, "url": url}
         state["status"] = "posting"
         await store.publish(job)
 

@@ -270,11 +270,13 @@ def get_config():
         "whisper_languages": transcribe.LANGUAGES,
         "pricing": _pricing_info(),
         "buffer_accounts": buffer.public_accounts(),
-        "media_host": mediahost.provider(),
-        "media_missing": [mediahost.LABELS[f] for f in mediahost.missing()],
-        # Nilai non-rahasia dikirim apa adanya; rahasia hanya petunjuk 4 karakter terakhir.
-        "media": {f: (_hint(f) if f in mediahost.SECRET_FIELDS else os.environ.get(f, ""))
-                  for fields in mediahost.FIELDS.values() for f in fields},
+        "media_host": "default",
+        "server_media_configured": mediahost.server_is_configured(),
+        "server_media_provider": mediahost.server_provider(),
+        "server_retention_hours": 8,
+        "custom_retention_hours": 24,
+        "media_missing": [],
+        "media": {},
         "aspects": list(media.ASPECTS),
         "max_filesize_mb": security.max_filesize_mb(),
         "max_duration_minutes": security.max_duration_minutes(),
@@ -371,6 +373,8 @@ async def create_job(
             )
     ai_context = _request_ai_context(x_ai_provider, x_ai_key, x_ai_model)
     raw = json.loads(options or "{}")
+    has_custom_media = bool(raw.get("has_custom_media", False))
+    retention_hours = 24 if has_custom_media else 8
     opts = {
         "num_clips": max(1, min(15, int(raw.get("num_clips", 3)))),
         "min_len": max(5, int(raw.get("min_len", 30))),
@@ -388,6 +392,7 @@ async def create_job(
         # Channel tujuan posting, dipilih sebelum render: ["idAkun:idChannel", ...]
         "channels": [c for c in (raw.get("channels") or []) if isinstance(c, str)][:20],
         "instructions": str(raw.get("instructions", ""))[:1000],
+        "retention_hours": retention_hours,
     }
     opts["max_len"] = max(opts["max_len"], opts["min_len"] + 5)
     url = url.strip()
@@ -868,10 +873,17 @@ def delete_buffer_account(account_id: str):
     return {"accounts": buffer.public_accounts()}
 
 
+class MediaHostTestIn(BaseModel):
+    provider: str = "default"
+    credentials: dict[str, str] = {}
+
+
 @app.post("/api/mediahost/test")
-async def test_mediahost():
+async def test_mediahost(body: MediaHostTestIn | None = None):
     try:
-        return {"ok": True, "message": await asyncio.to_thread(mediahost.check)}
+        p = body.provider if body else "default"
+        creds = body.credentials if body else {}
+        return {"ok": True, "message": await asyncio.to_thread(mediahost.check_context, p, creds)}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, str(e))
 
@@ -881,6 +893,8 @@ class PublishIn(BaseModel):
     text: str
     mode: str = "addToQueue"
     due_at: str | None = None
+    media_host: str | None = None
+    media_credentials: dict[str, str] | None = None
 
 
 @app.post("/api/jobs/{job_id}/clips/{clip_id}/publish")
@@ -906,8 +920,27 @@ async def publish_clip(job_id: str, clip_id: str, body: PublishIn):
         if when.tzinfo is None or when <= datetime.now(timezone.utc):
             raise HTTPException(400, "Waktu jadwal harus di masa depan.")
         due_at = when.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    if mediahost.missing():
-        raise HTTPException(400, mediahost.missing_message())
+
+    media_provider = (body.media_host or "default").strip().lower()
+    media_creds = body.media_credentials or {}
+    if media_provider == "default":
+        if not mediahost.server_is_configured():
+            raise HTTPException(400, "Server default belum mengonfigurasi hosting video di .env. Hubungkan Cloudinary atau R2 pribadi Anda di Pengaturan.")
+    elif media_provider == "cloudinary":
+        cloud = (media_creds.get("cloud_name") or media_creds.get("CLOUDINARY_CLOUD_NAME") or "").strip()
+        key = (media_creds.get("api_key") or media_creds.get("CLOUDINARY_API_KEY") or "").strip()
+        sec = (media_creds.get("api_secret") or media_creds.get("CLOUDINARY_API_SECRET") or "").strip()
+        if not (cloud and key and sec):
+            raise HTTPException(400, "Kredensial Cloudinary pribadi belum lengkap. Buka Pengaturan.")
+    elif media_provider == "r2":
+        acc = (media_creds.get("account_id") or media_creds.get("R2_ACCOUNT_ID") or "").strip()
+        key = (media_creds.get("access_key_id") or media_creds.get("R2_ACCESS_KEY_ID") or "").strip()
+        sec = (media_creds.get("secret_access_key") or media_creds.get("R2_SECRET_ACCESS_KEY") or "").strip()
+        bkt = (media_creds.get("bucket") or media_creds.get("R2_BUCKET") or "").strip()
+        pub = (media_creds.get("public_url") or media_creds.get("R2_PUBLIC_URL") or "").strip()
+        if not (acc and key and sec and bkt and pub):
+            raise HTTPException(400, "Kredensial Cloudflare R2 pribadi belum lengkap. Buka Pengaturan.")
+
     try:
         found = await asyncio.to_thread(buffer.list_channels)
     except Exception as e:  # noqa: BLE001
@@ -919,7 +952,8 @@ async def publish_clip(job_id: str, clip_id: str, body: PublishIn):
     unusable = [c for c in channels if c["isDisconnected"] or c["isLocked"]]
     if len(channels) != len(channel_ids) or unusable:
         raise HTTPException(400, "Ada channel yang tidak ditemukan atau sedang terputus di Buffer.")
-    spawn(pipeline.publish(job, clip, channels, body.text.strip(), body.mode, due_at))
+    spawn(pipeline.publish(job, clip, channels, body.text.strip(), body.mode, due_at,
+                           media_context={"provider": media_provider, "credentials": media_creds}))
     return {"ok": True}
 
 

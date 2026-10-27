@@ -10,9 +10,74 @@ function setView(activeViewId) {
     const el = $(v);
     if (el) el.hidden = v !== activeViewId;
   }
+  const appLayout = $("#app-layout");
+  const sidebar = $("#sidebar");
+  const isSettings = activeViewId === "#view-settings";
+  if (appLayout) {
+    appLayout.classList.toggle("in-settings", isSettings);
+  }
+  if (sidebar) {
+    sidebar.hidden = isSettings;
+  }
 }
 const AI_STORAGE_KEY = "clipping-studio-ai";
 const USER_CONFIG_KEY = "clipping_user_config";
+const USER_TOKEN_KEY = "clipping_user_token";
+const USER_MEDIA_KEY = "clipping_user_media";
+
+function getStoredToken() {
+  return state.user?.token_credential || localStorage.getItem(USER_TOKEN_KEY) || "";
+}
+
+function storedMedia() {
+  try {
+    const raw = localStorage.getItem(USER_MEDIA_KEY) || "{}";
+    const v = JSON.parse(raw);
+    return {
+      host: v.host || "default",
+      cloudinary: v.cloudinary || {},
+      r2: v.r2 || {},
+    };
+  } catch {
+    return { host: "default", cloudinary: {}, r2: {} };
+  }
+}
+
+function saveStoredMedia(host, creds = {}) {
+  const sm = storedMedia();
+  sm.host = host;
+  if (host === "cloudinary" || host === "r2") {
+    sm[host] = { ...(sm[host] || {}), ...creds };
+  }
+  try {
+    localStorage.setItem(USER_MEDIA_KEY, JSON.stringify(sm));
+  } catch {}
+}
+
+function userHasCustomMedia() {
+  const sm = storedMedia();
+  if (sm.host === "cloudinary") {
+    const c = sm.cloudinary || {};
+    return Boolean(c.cloud_name && c.api_key && c.api_secret);
+  }
+  if (sm.host === "r2") {
+    const r = sm.r2 || {};
+    return Boolean(r.account_id && r.bucket && r.access_key_id && r.secret_access_key && r.public_url);
+  }
+  return false;
+}
+
+function getActiveMediaContext() {
+  const sm = storedMedia();
+  const host = sm.host || "default";
+  if (host === "cloudinary") {
+    return { provider: "cloudinary", credentials: sm.cloudinary || {} };
+  }
+  if (host === "r2") {
+    return { provider: "r2", credentials: sm.r2 || {} };
+  }
+  return { provider: "default", credentials: {} };
+}
 
 function storedAi() {
   try {
@@ -124,9 +189,18 @@ function toast(msg, isError = false) {
   toastTimer = setTimeout(() => (el.hidden = true), 4000);
 }
 async function api(path, opts = {}) {
+  const token = getStoredToken();
+  const headers = {
+    ...(opts.body && !(opts.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+    ...(opts.headers || {}),
+  };
+  if (token && !headers["Authorization"] && !headers["authorization"]) {
+    headers["Authorization"] = `Bearer ${token}`;
+    headers["X-Auth-Token"] = token;
+  }
   const res = await fetch(path, {
-    headers: opts.body && !(opts.body instanceof FormData) ? { "Content-Type": "application/json" } : {},
     ...opts,
+    headers,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
@@ -234,7 +308,7 @@ function renderJobUsage(job) {
   if (!entries.length) {
     // Proyek lama yang sudah dianalisis sebelum pencatatan token ada.
     card.hidden = !(job.summary && job.status === "done");
-    card.innerHTML = `<h2>🤖 Pemakaian AI</h2><p class="muted small">Tidak tercatat: proyek ini dianalisis sebelum fitur pencatatan token ditambahkan.</p>`;
+    card.innerHTML = `<h2><svg class="icon icon-brand" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Pemakaian AI</h2><p class="muted small">Tidak tercatat: proyek ini dianalisis sebelum fitur pencatatan token ditambahkan.</p>`;
     return;
   }
   const sum = (k) => entries.reduce((a, e) => a + (e[k] || 0), 0);
@@ -246,7 +320,7 @@ function renderJobUsage(job) {
   const item = (k, v) => `<div><div class="k">${k}</div><div class="v">${v}</div></div>`;
   card.hidden = false;
   card.innerHTML = `
-    <div class="row between"><h2>🤖 Pemakaian AI</h2><span class="muted small">${esc(models)} · ${entries.length} panggilan</span></div>
+    <div class="row between"><h2><svg class="icon icon-brand" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Pemakaian AI</h2><span class="muted small">${esc(models)} · ${entries.length} panggilan</span></div>
     <div class="usage-grid">
       ${item("Biaya", unpriced ? "harga model belum diatur" : tier === "free" ? "Gratis (tier Free)" : fmtMoney(usd))}
       ${item("Per klip AI", tier === "free" ? "—" : perClip)}
@@ -391,7 +465,7 @@ function updateEstimate() {
     try {
       const e = await api(`/api/estimate?${q}`, { headers: aiHeaders() });
       const money = e.tier === "free" ? "gratis (tier Free)" : e.usd == null ? "harga model belum diatur" : `≈ ${fmtMoney(e.usd)}`;
-      box.innerHTML = `🤖 Perkiraan pemakaian AI (${esc(e.provider_label || "")} · ${esc(e.model)}): ~${fmtTokens(e.prompt_tokens)} token input + ~${fmtTokens(e.output_tokens)} output → <b>${money}</b>` +
+      box.innerHTML = `<svg class="icon icon-brand" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Perkiraan pemakaian AI (${esc(e.provider_label || "")} · ${esc(e.model)}): ~${fmtTokens(e.prompt_tokens)} token input + ~${fmtTokens(e.output_tokens)} output → <b>${money}</b>` +
         (e.low_res ? ` <span class="muted">· video &gt; 20 menit dianalisis resolusi rendah</span>` : "");
       box.hidden = false;
     } catch {
@@ -643,6 +717,8 @@ $("#form-new").onsubmit = (e) => {
     }
     fd.append("url", url);
   }
+  const customMedia = userHasCustomMedia();
+  const retHours = customMedia ? (state.config?.custom_retention_hours || 24) : (state.config?.server_retention_hours || 8);
   fd.append("options", JSON.stringify({
     num_clips: +$("#in-num").value, min_len: +$("#in-min").value, max_len: +$("#in-max").value,
     aspect: $("#in-aspect").value, layout: $("#in-layout").value,
@@ -652,6 +728,8 @@ $("#form-new").onsubmit = (e) => {
     intro_id: logoOptionToOption($("#in-intro").value),
     outro_id: logoOptionToOption($("#in-outro").value),
     channels: state.newTargets || [],
+    has_custom_media: customMedia,
+    retention_hours: retHours,
   }));
 
   // XHR supaya progres upload file besar terlihat realtime.
@@ -690,6 +768,11 @@ $("#form-new").onsubmit = (e) => {
   };
   xhr.open("POST", "/api/jobs");
   Object.entries(aiHeaders()).forEach(([name, value]) => xhr.setRequestHeader(name, value));
+  const jobToken = getStoredToken();
+  if (jobToken) {
+    xhr.setRequestHeader("Authorization", `Bearer ${jobToken}`);
+    xhr.setRequestHeader("X-Auth-Token", jobToken);
+  }
   xhr.send(fd);
 };
 
@@ -750,8 +833,10 @@ function renderJob() {
   sum.hidden = !job.summary;
   if (job.summary) sum.innerHTML = `<h2>Ringkasan AI</h2><p class="muted">${esc(job.summary)}</p>`;
 
-  const retHours = state.config?.job_retention_hours || 24;
-  let retMsg = `Klip Anda akan disimpan selama ${retHours} jam. Segera unduh hasil klip Anda.`;
+  const custom = Boolean(job.has_custom_media || (job.retention_hours && job.retention_hours > 8));
+  const retHours = job.retention_hours || (custom ? 24 : 8);
+  const hostLabel = custom ? "Hosting Pribadi" : "Server Default";
+  let retMsg = `Klip Anda akan disimpan selama ${retHours} jam (${hostLabel}). Segera unduh hasil klip Anda.`;
   if (job.created_at) {
     const expiresAt = job.created_at + retHours * 3600;
     const remainingSec = expiresAt - Date.now() / 1000;
@@ -759,9 +844,9 @@ function renderJob() {
       const remainingHours = Math.floor(remainingSec / 3600);
       const remainingMins = Math.floor((remainingSec % 3600) / 60);
       const timeLeftStr = remainingHours > 0 ? `${remainingHours} jam ${remainingMins} menit` : `${remainingMins} menit`;
-      retMsg = `Klip Anda akan disimpan selama ${retHours} jam (sisa waktu: ~${timeLeftStr}). Segera unduh hasil klip Anda.`;
+      retMsg = `Klip Anda akan disimpan selama ${retHours} jam (${hostLabel}, sisa waktu: ~${timeLeftStr}). Segera unduh hasil klip Anda.`;
     } else {
-      retMsg = `Masa simpan klip (${retHours} jam) telah terlewati. Klip dapat dibersihkan sewaktu-waktu.`;
+      retMsg = `Masa simpan klip (${retHours} jam - ${hostLabel}) telah terlewati. Klip dapat dibersihkan sewaktu-waktu.`;
     }
   }
   const retWarn = $("#job-retention-msg");
@@ -840,7 +925,7 @@ function renderClips(job) {
           </div>
           <div class="thumb-status"></div>
           <button type="button" class="btn-open-fs" data-act="open-fs">
-            <span>▶</span> Buka Studio
+            <svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 3 19 12 5 21 5 3"/></svg> Buka Studio
           </button>
         </div>
         <div class="clip-compact-body">
@@ -849,23 +934,31 @@ function renderClips(job) {
           </div>
           <div class="clip-compact-hook"></div>
           <div class="clip-compact-text-preview" title="Teks narasi / subtitle awal">
-            <span style="font-size:12px; flex-shrink:0;">💬</span>
+            <svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             <span class="text-snippet"></span>
           </div>
           <div class="pubstate" hidden></div>
           <div class="clip-compact-actions">
             <button type="button" class="btn-sm btn-primary" data-act="open-fs">Buka Studio</button>
-            <button type="button" class="btn-sm" data-act="load" title="Buka di timeline editor sumber">✎ Edit</button>
+            <button type="button" class="btn-sm" data-act="load" title="Buka di timeline editor sumber">
+              <svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg> Edit
+            </button>
             <div class="more-menu-wrap">
               <button type="button" class="btn-sm btn-more" aria-label="Menu Opsi">•••</button>
               <div class="more-dropdown" hidden>
-                <button type="button" class="more-item" data-act="copy">📋 Salin Caption</button>
-                <button type="button" class="more-item" data-act="publish">📤 Post ke Buffer</button>
-                <a class="more-item dl-mp4" download hidden>⬇ Unduh MP4</a>
-                <a class="more-item dl-srt" download hidden>⬇ Unduh SRT</a>
-                <a class="more-item dl-vtt" download hidden>⬇ Unduh VTT</a>
-                <button type="button" class="more-item" data-act="rerender">↻ Render Ulang</button>
-                <button type="button" class="more-item danger" data-act="delete">🗑 Hapus Klip</button>
+                <button type="button" class="more-item" data-act="copy">
+                  <svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg> Salin Caption
+                </button>
+                <button type="button" class="more-item" data-act="publish">
+                  <svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg> Post ke Buffer
+                </button>
+                <a class="more-item dl-mp4" download hidden>Unduh MP4</a>
+                <a class="more-item dl-srt" download hidden>Unduh SRT</a>
+                <a class="more-item dl-vtt" download hidden>Unduh VTT</a>
+                <button type="button" class="more-item" data-act="rerender">Render Ulang</button>
+                <button type="button" class="more-item danger" data-act="delete">
+                  <svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> Hapus Klip
+                </button>
               </div>
             </div>
           </div>
@@ -895,7 +988,7 @@ function updateCard(job, clip, card) {
   const score = $(".score", card);
   if (score) {
     score.hidden = clip.score == null;
-    score.textContent = `🔥 ${clip.score}%`;
+    score.textContent = `${clip.score}% Skor`;
   }
   const hookEl = $(".clip-compact-hook", card);
   if (hookEl) {
@@ -918,10 +1011,10 @@ function updateCard(job, clip, card) {
   const stat = $(".thumb-status", card);
   if (stat) {
     if (clip.status === "ready") {
-      stat.textContent = "✓ Siap";
+      stat.textContent = "Siap";
       stat.className = "thumb-status";
     } else if (clip.status === "error") {
-      stat.textContent = "✗ Gagal";
+      stat.textContent = "Gagal";
       stat.className = "thumb-status run";
     } else {
       stat.textContent = clip.stage || "Menunggu antrean...";
@@ -974,12 +1067,12 @@ function renderFullscreenModal(job, sortedClips, index) {
   $("#fs-clip-index").textContent = `Klip ${index + 1} dari ${total}`;
   const statusEl = $("#fs-clip-status");
   if (clip.status === "ready") {
-    statusEl.textContent = "✓ Siap Ditonton";
+    statusEl.innerHTML = `<svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Siap Ditonton`;
     statusEl.className = "fs-badge";
     statusEl.style.background = "rgba(47, 191, 113, 0.15)";
     statusEl.style.color = "var(--ok)";
   } else if (clip.status === "error") {
-    statusEl.textContent = "✗ Gagal";
+    statusEl.innerHTML = `<svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> Gagal`;
     statusEl.className = "fs-badge";
     statusEl.style.background = "rgba(235, 87, 87, 0.15)";
     statusEl.style.color = "var(--err)";
@@ -1029,7 +1122,7 @@ function renderFullscreenModal(job, sortedClips, index) {
   $("#fs-title").textContent = clip.title;
   const scoreEl = $("#fs-score");
   if (clip.score != null) {
-    scoreEl.textContent = `🔥 ${clip.score}%`;
+    scoreEl.textContent = `${clip.score}% Skor`;
     scoreEl.hidden = false;
   } else {
     scoreEl.hidden = true;
@@ -1037,8 +1130,8 @@ function renderFullscreenModal(job, sortedClips, index) {
 
   const span = clip.end - clip.start;
   const out = clip.duration_out;
-  $("#fs-duration").textContent = `⏱️ ${out && out < span - 0.2 ? `${out.toFixed(1)} dtk (jeda diam dibuang)` : `${span.toFixed(1)} dtk`}`;
-  $("#fs-aspect").textContent = `📐 ${aspect} (${LAYOUT_LABEL[job.options.layout] || job.options.layout})`;
+  $("#fs-duration").textContent = `${out && out < span - 0.2 ? `${out.toFixed(1)} dtk (jeda diam dibuang)` : `${span.toFixed(1)} dtk`}`;
+  $("#fs-aspect").textContent = `${aspect} (${LAYOUT_LABEL[job.options.layout] || job.options.layout})`;
   $("#fs-reason").textContent = clip.reason || clip.hook || "";
 
   // Transcript / Subtitle List
@@ -1172,18 +1265,18 @@ function renderPublishState(job, clip, card) {
   box.hidden = !pub;
   if (!pub) return;
   let head = "";
-  if (pub.status === "uploading") head = `☁️ Mengunggah video… ${Math.round((pub.progress || 0) * 100)}%`;
-  else if (pub.status === "posting") head = "📤 Mengirim ke Buffer…";
-  else if (pub.status === "error" && !pub.results.length) head = `<span class="bad">❌ ${esc(pub.error)}</span>`;
-  else head = `📤 Posting · <button type="button" class="ghost small-btn" data-act="pubrefresh">↻ Cek status</button>`;
+  if (pub.status === "uploading") head = `Mengunggah video… ${Math.round((pub.progress || 0) * 100)}%`;
+  else if (pub.status === "posting") head = "Mengirim ke Buffer…";
+  else if (pub.status === "error" && !pub.results.length) head = `<span class="bad">Gagal: ${esc(pub.error)}</span>`;
+  else head = `Posting · <button type="button" class="ghost small-btn" data-act="pubrefresh">Cek status</button>`;
   const when = (iso) => (iso ? new Date(iso).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" }) : "");
   const rows = pub.results.map((r) => {
     const name = `${SERVICE_LABEL[r.service] || r.service} · ${esc(r.channel)}`
       + (r.account && pubMulti(pub) ? ` <span class="muted">(${esc(r.account)})</span>` : "");
-    if (!r.ok) return `<div class="bad">✗ ${name}: ${esc(r.error)}</div>`;
+    if (!r.ok) return `<div class="bad">Gagal ${name}: ${esc(r.error)}</div>`;
     const status = POST_STATUS[r.status] || r.status || "terkirim";
     const extra = r.error ? ` — ${esc(r.error)}` : r.link ? ` — <a href="${esc(r.link)}" target="_blank" rel="noopener">lihat</a>` : r.due_at && r.status === "scheduled" ? ` ${when(r.due_at)}` : "";
-    return `<div class="${r.status === "error" ? "bad" : "ok"}">✓ ${name}: ${status}${extra}</div>`;
+    return `<div class="${r.status === "error" ? "bad" : "ok"}">${name}: ${status}${extra}</div>`;
   });
   box.innerHTML = `<div>${head}</div>${rows.join("")}`;
 }
@@ -1213,7 +1306,7 @@ function renderChannels(box, channels, accounts, errors, selected) {
           + own.map((c) => channelRow(c, selected.includes(c.key))).join("") : "";
       }).join("")
     : channels.map((c) => channelRow(c, selected.includes(c.key))).join("");
-  box.innerHTML = (errors || []).map((e) => `<p class="err">⚠️ ${esc(e)}</p>`).join("") + groups;
+  box.innerHTML = (errors || []).map((e) => `<p class="err">${esc(e)}</p>`).join("") + groups;
 }
 
 async function loadChannelsInto(box, selected, refresh = false) {
@@ -1322,8 +1415,17 @@ $("#form-publish").onsubmit = async (e) => {
   const btn = $("#btn-pub-send");
   btn.disabled = true;
   try {
+    const activeMedia = getActiveMediaContext();
     await api(`/api/jobs/${pub.job.id}/clips/${pub.clip.id}/publish`, {
-      method: "POST", body: JSON.stringify({ channel_ids: ids, text: $("#pub-text").value, mode, due_at }),
+      method: "POST",
+      body: JSON.stringify({
+        channel_ids: ids,
+        text: $("#pub-text").value,
+        mode,
+        due_at,
+        media_host: activeMedia.provider,
+        media_credentials: activeMedia.credentials,
+      }),
     });
     try { localStorage.setItem("pubChannels", JSON.stringify(ids)); } catch {}
     $("#dlg-publish").close();
@@ -1562,10 +1664,12 @@ $("#btn-delete-job").onclick = async () => {
 
 // ---------- Pengaturan ----------
 function updateRetentionUI() {
-  const retHours = state.config?.job_retention_hours || 24;
+  const custom = userHasCustomMedia();
+  const retHours = custom ? (state.config?.custom_retention_hours || 24) : (state.config?.server_retention_hours || 8);
+  const hostLabel = custom ? "Hosting Pribadi (24 Jam)" : "Server Default (8 Jam)";
   const notice = $("#retention-new-notice");
   if (notice) {
-    notice.innerHTML = `Klip Anda akan disimpan selama <strong>${retHours} jam</strong>. Segera unduh hasil klip Anda.`;
+    notice.innerHTML = `Klip Anda akan disimpan selama <strong>${retHours} jam</strong> (${hostLabel}). Segera unduh hasil klip Anda.`;
   }
 }
 
@@ -1613,10 +1717,23 @@ function fillProviderFields() {
   const name = currentProvider();
   const p = cfg.providers[name];
   $("#provider-note").textContent = PROVIDER_NOTE[name] || "";
-  $("#set-key-label").textContent = `API key ${p.label}`;
+  $("#set-key-label").textContent = `Ganti API Key (${p.label})`;
   $("#key-help").innerHTML = (KEY_HELP[name] || "") +
     " Disimpan aman di browser Anda (localStorage) dan dikirim otomatis via header per permintaan.";
-  $("#set-key-hint").textContent = p.has_key ? `Tersimpan (${p.key_hint}). Kosongkan jika tidak ingin mengganti.` : "Belum diisi.";
+  const savedKeyInput = $("#set-key-saved");
+  if (savedKeyInput) {
+    const localKey = storedAi().providers[name]?.key;
+    if (localKey) {
+      savedKeyInput.value = `••••••••••••••••••••…${localKey.slice(-4)}`;
+    } else if (p.has_key && p.key_hint) {
+      savedKeyInput.value = `••••••••••••••••••••${p.key_hint}`;
+    } else {
+      savedKeyInput.value = "Belum ada API key tersimpan";
+    }
+  }
+  $("#set-key-hint").textContent = p.has_key
+    ? "Key aktif tersimpan di atas. Kosongkan kolom 'Ganti API Key' jika tidak ingin mengubahnya."
+    : "Belum ada key yang tersimpan. Masukkan API key baru di kolom 'Ganti API Key'.";
   const sel = $("#set-model");
   if (![...sel.options].some((o) => o.value === p.model)) sel.add(new Option(p.model, p.model));
   sel.value = p.model;
@@ -1641,7 +1758,7 @@ function fillSettings() {
   const wval = wsel.dataset.dirty ? wsel.value : cfg.whisper_model;
   wsel.innerHTML = "";
   for (const [name, desc] of Object.entries(cfg.whisper_models)) {
-    wsel.add(new Option(`${cfg.whisper_downloaded[name] ? "✓ " : ""}${name} — ${desc}`, name));
+    wsel.add(new Option(`${cfg.whisper_downloaded[name] ? "[Siap] " : ""}${name} — ${desc}`, name));
   }
   wsel.value = wval;
   const lsel = $("#set-lang");
@@ -1650,22 +1767,74 @@ function fillSettings() {
   for (const [code, label] of Object.entries(cfg.whisper_languages)) lsel.add(new Option(label, code));
   lsel.value = lval;
   renderAccounts(cfg.buffer_accounts || []);
-  setField($("#set-host"), cfg.media_host);
+  const sm = storedMedia();
+  const hostSel = $("#set-host");
+  if (hostSel && !hostSel.dataset.dirty) {
+    hostSel.value = sm.host || "default";
+  }
   showHostFields();
-  document.querySelectorAll("[data-env]").forEach((input) => {
-    const value = cfg.media[input.dataset.env] || "";
-    if (input.type === "password") {
-      setField(input, "");
-      input.placeholder = value ? `Tersimpan (${value})` : "Belum diisi";
-    } else {
-      setField(input, value);
+  fillMediaSettings();
+  $("#set-info").textContent = `ffmpeg: ${cfg.ffmpeg.split("/").pop()} · subtitle: ${cfg.subtitles_supported ? "didukung" : "tidak didukung"} · deteksi wajah: ${cfg.face_tracking ? "aktif" : "tidak tersedia"}`;
+}
+
+function fillMediaSettings() {
+  const sm = storedMedia();
+  const selHost = $("#set-host") ? $("#set-host").value : (sm.host || "default");
+
+  // Populate Cloudinary fields from localStorage
+  const cData = sm.cloudinary || {};
+  document.querySelectorAll('[data-host="cloudinary"] [data-media-field]').forEach((inp) => {
+    const field = inp.dataset.mediaField;
+    const val = cData[field] || "";
+    if (!inp.dataset.dirty) {
+      if (inp.type === "password") {
+        inp.value = val;
+        inp.placeholder = val ? "Tersimpan (••••••••)" : "API secret Cloudinary Anda";
+      } else {
+        inp.value = val;
+      }
     }
   });
+
+  // Populate R2 fields from localStorage
+  const rData = sm.r2 || {};
+  document.querySelectorAll('[data-host="r2"] [data-media-field]').forEach((inp) => {
+    const field = inp.dataset.mediaField;
+    const val = rData[field] || "";
+    if (!inp.dataset.dirty) {
+      if (inp.type === "password") {
+        inp.value = val;
+        inp.placeholder = val ? "Tersimpan (••••••••)" : "Secret Access Key R2";
+      } else {
+        inp.value = val;
+      }
+    }
+  });
+
+  // Warning for missing fields or guidance
   const missing = $("#host-missing");
-  const sameHost = $("#set-host").value === cfg.media_host;
-  missing.hidden = !(sameHost && cfg.media_missing.length);
-  missing.textContent = `⚠️ Belum tersimpan: ${cfg.media_missing.join(", ")}. Isi lalu klik Simpan.`;
-  $("#set-info").textContent = `ffmpeg: ${cfg.ffmpeg.split("/").pop()} · subtitle: ${cfg.subtitles_supported ? "didukung" : "tidak didukung"} · deteksi wajah: ${cfg.face_tracking ? "aktif" : "tidak tersedia"}`;
+  if (missing) {
+    if (selHost === "default") {
+      if (state.config && !state.config.server_media_configured) {
+        missing.hidden = false;
+        missing.textContent = "Server default belum memiliki konfigurasi Cloudinary/R2 di file .env server. Silakan konfigurasi Cloudinary atau R2 pribadi Anda di bawah untuk mengaktifkan fitur publikasi.";
+      } else {
+        missing.hidden = true;
+      }
+    } else {
+      const requiredFields = selHost === "cloudinary"
+        ? ["cloud_name", "api_key", "api_secret"]
+        : ["account_id", "bucket", "access_key_id", "secret_access_key", "public_url"];
+      const currentCreds = sm[selHost] || {};
+      const missingKeys = requiredFields.filter((k) => !currentCreds[k] || !currentCreds[k].trim());
+      if (missingKeys.length > 0) {
+        missing.hidden = false;
+        missing.textContent = `Kredensial belum lengkap: ${missingKeys.join(", ")}. Lengkapi dan simpan untuk retensi 24 jam.`;
+      } else {
+        missing.hidden = true;
+      }
+    }
+  }
 }
 
 // ---------- Logo (pustaka) & penutup ----------
@@ -1778,7 +1947,7 @@ async function brandingCall(path, opts) {
     renderBranding(await api(path, opts));
     $("#brand-msg").textContent = "Tersimpan. Klip lama perlu Render ulang untuk ikut berubah.";
   } catch (err) {
-    $("#brand-msg").textContent = `✗ ${err.message}`;
+    $("#brand-msg").textContent = err.message;
   }
 }
 
@@ -1813,14 +1982,12 @@ $("#logo-file").onchange = async (e) => {
   fd.append("label", $("#logo-label").value.trim());
   $("#brand-msg").textContent = `Mengunggah ${file.name}…`;
   try {
-    const res = await fetch("/api/branding/logos", { method: "POST", body: fd });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "Gagal mengunggah");
+    const data = await api("/api/branding/logos", { method: "POST", body: fd });
     renderBranding(data);
     $("#logo-label").value = "";
     $("#brand-msg").textContent = `Logo “${data.added.label}” ditambahkan.`;
   } catch (err) {
-    $("#brand-msg").textContent = `✗ ${err.message}`;
+    $("#brand-msg").textContent = err.message;
   } finally {
     e.target.value = "";
   }
@@ -1861,14 +2028,12 @@ $("#bumper-file").onchange = async (e) => {
   fd.append("label", $("#bumper-label").value.trim());
   $("#brand-msg").textContent = `Mengunggah ${file.name}…`;
   try {
-    const res = await fetch("/api/branding/bumpers", { method: "POST", body: fd });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "Gagal mengunggah");
+    const data = await api("/api/branding/bumpers", { method: "POST", body: fd });
     renderBranding(data);
     $("#bumper-label").value = "";
     $("#brand-msg").textContent = `Bumper “${data.added.label}” ditambahkan. Centang Pembuka/Penutup untuk memakainya.`;
   } catch (err) {
-    $("#brand-msg").textContent = `✗ ${err.message}`;
+    $("#brand-msg").textContent = err.message;
   } finally {
     e.target.value = "";
   }
@@ -1924,16 +2089,16 @@ $("#btn-add-account").onclick = async () => {
     $("#acc-label").value = "";
     renderAccounts(accounts);
     state.config = applyStoredAi(await api("/api/config"));
-    $("#acc-msg").textContent = `✓ Akun “${added.label}” ditambahkan (${added.organizations.join(", ")}).`;
+    $("#acc-msg").textContent = `Akun “${added.label}” ditambahkan (${added.organizations.join(", ")}).`;
   } catch (err) {
-    $("#acc-msg").textContent = `✗ ${err.message}`;
+    $("#acc-msg").textContent = err.message;
   } finally {
     btn.disabled = false;
   }
 };
 
 function switchSettingsTab(tabName) {
-  const tabs = document.querySelectorAll(".settings-tabs button[data-set-tab]");
+  const tabs = document.querySelectorAll(".settings-nav-item[data-set-tab], .settings-tabs button[data-set-tab]");
   tabs.forEach((b) => b.classList.toggle("active", b.dataset.setTab === tabName));
   const panes = document.querySelectorAll("[data-set-pane]");
   panes.forEach((p) => {
@@ -1965,16 +2130,23 @@ function leaveSettings() {
   else showNew();
 }
 
-document.querySelectorAll(".settings-tabs button[data-set-tab]").forEach((btn) => {
+document.querySelectorAll(".settings-nav-item[data-set-tab], .settings-tabs button[data-set-tab]").forEach((btn) => {
   btn.onclick = () => switchSettingsTab(btn.dataset.setTab);
 });
 document.querySelectorAll("[data-close]").forEach((btn) => (btn.onclick = () => $(`#${btn.dataset.close}`).close()));
 $("#btn-settings").onclick = () => showSettings();
 $("#btn-settings-back").onclick = leaveSettings;
 function showHostFields() {
-  document.querySelectorAll("[data-host]").forEach((el) => (el.hidden = el.dataset.host !== $("#set-host").value));
+  const selHost = $("#set-host") ? $("#set-host").value : "default";
+  document.querySelectorAll("[data-host]").forEach((el) => {
+    el.hidden = el.dataset.host !== selHost;
+  });
 }
-$("#set-host").onchange = showHostFields;
+$("#set-host").onchange = () => {
+  showHostFields();
+  fillMediaSettings();
+  updateRetentionUI();
+};
 $("#set-provider").onchange = () => {
   $("#set-key").value = "";
   delete $("#set-model").dataset.dirty;
@@ -1985,12 +2157,12 @@ $("#btn-test-buffer").onclick = async () => {
   out.textContent = "Menghubungkan…";
   try {
     const { channels, accounts, errors } = await api("/api/buffer/channels?refresh=true");
-    out.textContent = `✓ ${accounts.length} akun · ${channels.length} channel`
-      + (errors.length ? ` · ⚠️ ${errors.join(" | ")}` : "");
+    out.textContent = `${accounts.length} akun · ${channels.length} channel`
+      + (errors.length ? ` · ${errors.join(" | ")}` : "");
     state.config = applyStoredAi(await api("/api/config"));
     fillSettings();
   } catch (err) {
-    out.textContent = `✗ ${err.message}`;
+    out.textContent = err.message;
   }
 };
 $("#btn-load-models").onclick = async () => {
@@ -2021,10 +2193,6 @@ $("#btn-load-models").onclick = async () => {
     btn.disabled = false;
   }
 };
-function hostFields() {
-  return Object.fromEntries([...document.querySelectorAll(`[data-host="${$("#set-host").value}"] [data-env]`)]
-    .map((i) => [i.dataset.env, i.value.trim()]));
-}
 async function saveSettings() {
   const provider = currentProvider();
   const key = $("#set-key").value.trim();
@@ -2040,6 +2208,19 @@ async function saveSettings() {
   userCfg.whisper_language = lang;
   saveUserConfig(userCfg);
 
+  // Simpan pengaturan hosting kustom langsung ke localStorage (BYOK)
+  const selectedHost = $("#set-host") ? $("#set-host").value : "default";
+  if (selectedHost === "cloudinary" || selectedHost === "r2") {
+    const creds = {};
+    document.querySelectorAll(`[data-host="${selectedHost}"] [data-media-field]`).forEach((inp) => {
+      creds[inp.dataset.mediaField] = inp.value.trim();
+    });
+    saveStoredMedia(selectedHost, creds);
+  } else {
+    saveStoredMedia("default", {});
+  }
+  updateRetentionUI();
+
   // Perbarui state lokal di memori secara instan
   if (state.config) {
     state.config.provider = provider;
@@ -2054,7 +2235,6 @@ async function saveSettings() {
       const body = {
         provider, model,
         whisper_model: whisper, whisper_language: lang,
-        media_host: $("#set-host").value, media: hostFields(),
       };
       await api("/api/config", {
         method: "POST",
@@ -2077,10 +2257,11 @@ settingsForm.addEventListener("submit", async (e) => {
   btn.disabled = true;
   try {
     await saveSettings();
-    if (state.config.media_missing.length) {
-      $("#settings-status").textContent = `⚠️ Tersimpan, tapi hosting video belum lengkap: ${state.config.media_missing.join(", ")}.`;
+    const selHost = $("#set-host") ? $("#set-host").value : "default";
+    if (selHost !== "default" && !userHasCustomMedia()) {
+      $("#settings-status").textContent = "Tersimpan, namun kredensial hosting kustom belum lengkap.";
     } else {
-      $("#settings-status").textContent = "✓ Tersimpan.";
+      $("#settings-status").textContent = "Tersimpan.";
       toast("Pengaturan disimpan.");
     }
   } catch (err) {
@@ -2093,16 +2274,23 @@ $("#btn-test-host").onclick = async () => {
   const out = $("#host-test");
   out.textContent = "Mengecek…";
   try {
-    // Simpan dulu isian hosting yang baru diketik supaya yang dites adalah nilai terbaru.
-    await api("/api/config", { method: "POST", body: JSON.stringify({ media_host: $("#set-host").value, media: hostFields() }) });
-    document.querySelectorAll("[data-env]").forEach((el) => delete el.dataset.dirty);
-    delete $("#set-host").dataset.dirty;
-    state.config = applyStoredAi(await api("/api/config"));
-    fillSettings();
-    const r = await api("/api/mediahost/test", { method: "POST" });
-    out.textContent = `✓ ${r.message}`;
+    const selectedHost = $("#set-host") ? $("#set-host").value : "default";
+    let creds = {};
+    if (selectedHost === "cloudinary" || selectedHost === "r2") {
+      document.querySelectorAll(`[data-host="${selectedHost}"] [data-media-field]`).forEach((inp) => {
+        creds[inp.dataset.mediaField] = inp.value.trim();
+      });
+      saveStoredMedia(selectedHost, creds);
+    }
+    const r = await api("/api/mediahost/test", {
+      method: "POST",
+      body: JSON.stringify({ provider: selectedHost, credentials: creds }),
+    });
+    out.textContent = r.message;
+    fillMediaSettings();
+    updateRetentionUI();
   } catch (err) {
-    out.textContent = `✗ ${err.message}`;
+    out.textContent = err.message;
   }
 };
 
@@ -2130,9 +2318,13 @@ async function checkAuth() {
   try {
     const res = await api("/api/auth/me");
     state.user = res.user || null;
+    if (res.user?.token_credential) {
+      localStorage.setItem(USER_TOKEN_KEY, res.user.token_credential);
+    }
     updateAuthUI();
   } catch {
     state.user = null;
+    localStorage.removeItem(USER_TOKEN_KEY);
     updateAuthUI();
   }
 }
@@ -2246,7 +2438,9 @@ document.querySelectorAll(".btn-toggle-pwd").forEach((btn) => {
     if (!target) return;
     const isPwd = target.type === "password";
     target.type = isPwd ? "text" : "password";
-    btn.textContent = isPwd ? "🙈" : "👁";
+    btn.innerHTML = isPwd
+      ? '<svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>'
+      : '<svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
     btn.title = isPwd ? "Sembunyikan kata sandi" : "Lihat kata sandi";
   };
 });
@@ -2272,6 +2466,9 @@ $("#form-login").onsubmit = async (e) => {
       body: JSON.stringify({ username_or_email: identifier, password }),
     });
     state.user = res.user;
+    if (res.user?.token_credential) {
+      localStorage.setItem(USER_TOKEN_KEY, res.user.token_credential);
+    }
     updateAuthUI();
     toast(`Berhasil masuk! Selamat datang, ${state.user.username}`);
     $("#login-password").value = "";
@@ -2311,6 +2508,9 @@ $("#form-register").onsubmit = async (e) => {
       body: JSON.stringify({ username, email, password }),
     });
     state.user = res.user;
+    if (res.user?.token_credential) {
+      localStorage.setItem(USER_TOKEN_KEY, res.user.token_credential);
+    }
     updateAuthUI();
     toast(`Akun '${state.user.username}' berhasil dibuat! Token kredensial aktif.`);
     $("#reg-password").value = "";
@@ -2331,7 +2531,9 @@ $("#btn-toggle-token").onclick = () => {
   const btn = $("#btn-toggle-token");
   const isPwd = input.type === "password";
   input.type = isPwd ? "text" : "password";
-  btn.textContent = isPwd ? "🙈 Sembunyikan" : "👁 Tampilkan";
+  btn.innerHTML = isPwd
+    ? '<svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg> Sembunyikan'
+    : '<svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg> Lihat';
 };
 
 $("#btn-copy-token").onclick = async () => {
@@ -2357,9 +2559,10 @@ $("#btn-regen-token").onclick = async () => {
   try {
     const res = await api("/api/auth/token/regenerate", { method: "POST" });
     state.user.token_credential = res.token_credential;
+    localStorage.setItem(USER_TOKEN_KEY, res.token_credential);
     $("#user-token-display").value = res.token_credential;
     const fb = $("#token-feedback");
-    fb.textContent = "✓ Token baru berhasil dibuat.";
+    fb.textContent = "Token baru berhasil dibuat.";
     fb.className = "small ok";
     fb.hidden = false;
     toast("Token baru berhasil dibuat!");
@@ -2388,14 +2591,15 @@ $("#btn-save-custom-token").onclick = async () => {
       body: JSON.stringify({ token: custom }),
     });
     state.user.token_credential = res.token_credential;
+    localStorage.setItem(USER_TOKEN_KEY, res.token_credential);
     $("#user-token-display").value = res.token_credential;
     $("#in-custom-token").value = "";
-    fb.textContent = "✓ Token kustom berhasil disimpan.";
+    fb.textContent = "Token kustom berhasil disimpan.";
     fb.className = "small ok";
     fb.hidden = false;
     toast("Token kustom berhasil disimpan!");
   } catch (err) {
-    fb.textContent = `✗ ${err.message}`;
+    fb.textContent = err.message;
     fb.className = "small err";
     fb.hidden = false;
   } finally {
@@ -2408,6 +2612,7 @@ $("#btn-user-logout").onclick = async () => {
   try {
     await api("/api/auth/logout", { method: "POST" });
     state.user = null;
+    localStorage.removeItem(USER_TOKEN_KEY);
     updateAuthUI();
     toast("Anda telah keluar dari akun.");
   } catch (err) {

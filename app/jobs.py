@@ -100,11 +100,13 @@ class Store:
     def create(self, name: str, source_type: str, options: dict) -> dict:
         job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         (self.dir(job_id) / "clips").mkdir(parents=True)
+        retention_h = int(options.get("retention_hours") or 8)
         job = {
             "id": job_id, "name": name, "source_type": source_type, "options": options,
             "created_at": time.time(), "status": "queued", "stage": "Menunggu antrean...",
             "progress": 0.0, "error": None, "source": None, "meta": None,
             "summary": None, "clips": [], "logs": [],
+            "retention_hours": retention_h,
         }
         self.jobs[job_id] = job
         return job
@@ -165,19 +167,25 @@ class Store:
 
     async def purge_expired(self, retention_seconds: float | None = None) -> list[str]:
         """Hapus seluruh folder proyek di data/jobs/<id> yang sudah melewati masa retensi."""
-        if retention_seconds is None:
-            retention_seconds = security.job_retention_seconds()
         now = time.time()
-        cutoff = now - retention_seconds
+        default_retention = retention_seconds if retention_seconds is not None else security.job_retention_seconds()
+        cutoff = now - default_retention
         purged = []
 
         # 1. Periksa job yang tersimpan di memori
         for job_id, job in list(self.jobs.items()):
             created_at = job.get("created_at") or 0
+            if "retention_hours" in job:
+                job_retention = (job.get("retention_hours") or 8) * 3600
+            elif retention_seconds is not None:
+                job_retention = retention_seconds
+            else:
+                job_retention = security.job_retention_seconds()
+
             # Jika job masih aktif berjalan dan belum lewat batas retensi + 1 jam, pertahankan
-            if job.get("status") not in ("done", "error") and now - created_at < retention_seconds + 3600:
+            if job.get("status") not in ("done", "error") and now - created_at < job_retention + 3600:
                 continue
-            if created_at < cutoff:
+            if created_at < now - job_retention:
                 await self.delete(job_id)
                 purged.append(job_id)
 
