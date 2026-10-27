@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import time
 import uuid
@@ -12,7 +13,7 @@ from fastapi import WebSocket
 
 from . import security
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "jobs"
+DATA_DIR = Path(os.environ.get("CLIPPING_DATA_DIR", Path(__file__).resolve().parent.parent / "data" / "jobs"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -50,7 +51,7 @@ class Store:
         self._last_progress: dict[str, float] = {}
         for f in DATA_DIR.glob("*/job.json"):
             try:
-                job = json.loads(f.read_text())
+                job = json.loads(f.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
             # Proses yang terputus karena server dimatikan.
@@ -114,7 +115,7 @@ class Store:
         if not path.parent.exists():
             return  # job sudah dihapus
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.public_job(job), ensure_ascii=False, indent=2))
+        tmp.write_text(json.dumps(self.public_job(job), ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(path)
 
     async def publish(self, job: dict) -> None:
