@@ -8,7 +8,7 @@ import shutil
 import time
 import uuid
 from pathlib import Path
-
+from typing import Any
 from fastapi import WebSocket
 
 from . import security
@@ -21,17 +21,34 @@ class Hub:
     """Semua browser yang terbuka menerima event yang sama secara realtime."""
 
     def __init__(self) -> None:
-        self.sockets: dict[WebSocket, str] = {}
+        self.sockets: dict[WebSocket, dict[str, Any] | str] = {}
         # Pendengar lokal (dipakai mode command line untuk menampilkan progres).
         self.listeners: list = []
 
-    async def send(self, event: dict, session_id: str | None = None) -> None:
+    async def send(
+        self,
+        event: dict,
+        session_id: str | None = None,
+        user_id: int | str | None = None,
+    ) -> None:
         for listen in list(self.listeners):
             listen(event)
         dead = []
-        for ws, socket_session in list(self.sockets.items()):
-            if session_id and socket_session != session_id:
+        is_public = os.environ.get("PUBLIC_MODE", "false").strip().lower() in ("1", "true", "yes", "on")
+
+        for ws, info in list(self.sockets.items()):
+            # Jika session_id atau user_id dispesifikasikan:
+            if session_id or user_id is not None:
+                s_id = info.get("session_id") if isinstance(info, dict) else info
+                u_id = info.get("user_id") if isinstance(info, dict) else None
+                matches_session = bool(session_id and s_id == session_id)
+                matches_user = bool(user_id is not None and u_id == user_id)
+                if not (matches_session or matches_user):
+                    continue
+            elif is_public:
+                # Dalam PUBLIC_MODE, jangan broadcast event unowned ke sembarang user
                 continue
+
             try:
                 await ws.send_json(event)
             except Exception:
@@ -72,19 +89,36 @@ class Store:
         return target
 
     @staticmethod
-    def public_job(job: dict) -> dict:
-        """Remove transient secrets before persistence or sending to clients."""
+    def _collect_secrets(job: dict) -> list[str]:
+        secrets_list = []
         context = job.get("_ai_context") or {}
-        secret = context.get("key")
+        if context.get("key"):
+            secrets_list.append(context["key"])
+        for env_name in (
+            "SUPABASE_SECRET", "SECRET_KEY", "TOKEN_ENCRYPTION_KEY", "CLOUDINARY_API_SECRET", "R2_SECRET_ACCESS_KEY"
+        ):
+            val = os.getenv(env_name, "").strip()
+            if val and len(val) >= 8:
+                secrets_list.append(val)
+        return secrets_list
+
+    @classmethod
+    def public_job(cls, job: dict) -> dict:
+        """Remove transient secrets before persistence or sending to clients."""
+        secrets_list = cls._collect_secrets(job)
 
         def scrub(value):
-            if isinstance(value, str) and secret:
-                return value.replace(secret, "[REDACTED]")
+            if isinstance(value, str):
+                res = value
+                for s in secrets_list:
+                    if s in res:
+                        res = res.replace(s, "[REDACTED]")
+                return res
             if isinstance(value, dict):
                 return {
                     key: scrub(item)
                     for key, item in value.items()
-                    if key not in ("_ai_context", "owner_session_id")
+                    if key not in ("_ai_context", "owner_session_id", "user_id")
                 }
             if isinstance(value, list):
                 return [scrub(item) for item in value]
@@ -92,11 +126,12 @@ class Store:
 
         return scrub(job)
 
-    @staticmethod
-    def redact(job: dict, line: str) -> str:
-        context = job.get("_ai_context") or {}
-        key = context.get("key")
-        return line.replace(key, "[REDACTED]") if key else line
+    @classmethod
+    def redact(cls, job: dict, line: str) -> str:
+        for s in cls._collect_secrets(job):
+            if s in line:
+                line = line.replace(s, "[REDACTED]")
+        return line
 
     def create(self, name: str, source_type: str, options: dict) -> dict:
         job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
@@ -122,7 +157,11 @@ class Store:
 
     async def publish(self, job: dict) -> None:
         self.save(job)
-        await hub.send({"type": "job", "job": self.public_job(job)}, job.get("owner_session_id"))
+        await hub.send(
+            {"type": "job", "job": self.public_job(job)},
+            session_id=job.get("owner_session_id"),
+            user_id=job.get("user_id"),
+        )
 
     async def update(self, job: dict, **fields) -> None:
         job.update(fields)
@@ -133,7 +172,11 @@ class Store:
         entry = {"t": time.time(), "line": line}
         job["logs"] = (job["logs"] + [entry])[-200:]
         self.save(job)
-        await hub.send({"type": "log", "job_id": job["id"], **entry}, job.get("owner_session_id"))
+        await hub.send(
+            {"type": "log", "job_id": job["id"], **entry},
+            session_id=job.get("owner_session_id"),
+            user_id=job.get("user_id"),
+        )
 
     async def progress(self, job: dict, value: float, stage: str | None = None, clip_id: str | None = None) -> None:
         """Progres dikirim ringan (tanpa seluruh job) dan dibatasi ~8x per detik."""
@@ -153,8 +196,12 @@ class Store:
             job["progress"] = value
             if stage:
                 job["stage"] = stage
-        await hub.send({"type": "progress", "job_id": job["id"], "clip_id": clip_id,
-                        "progress": value, "stage": stage}, job.get("owner_session_id"))
+        await hub.send(
+            {"type": "progress", "job_id": job["id"], "clip_id": clip_id,
+             "progress": value, "stage": stage},
+            session_id=job.get("owner_session_id"),
+            user_id=job.get("user_id"),
+        )
 
     @staticmethod
     def clip(job: dict, clip_id: str) -> dict | None:
@@ -163,8 +210,11 @@ class Store:
     async def delete(self, job_id: str) -> None:
         job = self.jobs.pop(job_id, None)
         await asyncio.to_thread(shutil.rmtree, self.dir(job_id), True)
-        await hub.send({"type": "deleted", "job_id": job_id},
-                       job.get("owner_session_id") if job else None)
+        await hub.send(
+            {"type": "deleted", "job_id": job_id},
+            session_id=job.get("owner_session_id") if job else None,
+            user_id=job.get("user_id") if job else None,
+        )
 
     async def purge_expired(self, retention_seconds: float | None = None) -> list[str]:
         """Hapus seluruh folder proyek di data/jobs/<id> yang sudah melewati masa retensi."""

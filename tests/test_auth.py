@@ -1,5 +1,6 @@
 import uuid
 import pytest
+import httpx
 from fastapi.testclient import TestClient
 
 from app.main import app, USER_TOKEN_COOKIE
@@ -7,8 +8,70 @@ from app import db
 
 
 @pytest.fixture(autouse=True)
-def init_database():
+def mock_supabase_db(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://mockproject.supabase.co")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "mock-secret-key")
+    monkeypatch.setenv("SECRET_KEY", "test-secret-key-for-aes256-mock")
+
+    users_db: list[dict] = []
+
+    def mock_supabase_request(method, path, params=None, json=None, headers=None, **kwargs):
+        req = httpx.Request(method, f"https://mockproject.supabase.co{path}")
+        if method == "GET":
+            if params and "id" in params and "neq." in str(params.get("id")):
+                exclude_id = params["id"].replace("neq.", "")
+                matched = [u for u in users_db if str(u["id"]) != exclude_id]
+                if "credential_token" in params:
+                    tok = params["credential_token"].replace("eq.", "")
+                    matched = [u for u in matched if u["credential_token"] == tok]
+                return httpx.Response(200, json=matched, request=req)
+            if params and "id" in params:
+                val = params["id"].replace("eq.", "")
+                matched = [u for u in users_db if str(u["id"]) == val]
+                return httpx.Response(200, json=matched, request=req)
+            if params and "username" in params:
+                val = params["username"].replace("eq.", "")
+                matched = [u for u in users_db if u["username"] == val]
+                return httpx.Response(200, json=matched, request=req)
+            if params and "email" in params:
+                val = params["email"].replace("eq.", "")
+                matched = [u for u in users_db if u["email"].lower() == val.lower()]
+                return httpx.Response(200, json=matched, request=req)
+            if params and "credential_token" in params:
+                val = params["credential_token"].replace("eq.", "")
+                matched = [u for u in users_db if u["credential_token"] == val]
+                return httpx.Response(200, json=matched, request=req)
+            return httpx.Response(200, json=users_db[:1], request=req)
+        elif method == "POST":
+            # Check unique
+            if any(u["username"] == json["username"] for u in users_db):
+                return httpx.Response(409, text="duplicate key value violates unique constraint 'users_username_key'", request=req)
+            if any(u["email"].lower() == json["email"].lower() for u in users_db):
+                return httpx.Response(409, text="duplicate key value violates unique constraint 'users_email_key'", request=req)
+            new_id = len(users_db) + 1
+            row = {
+                "id": new_id,
+                "username": json["username"],
+                "email": json["email"],
+                "password": json["password"],
+                "credential_token": json["credential_token"],
+                "created_at": "2026-10-27T12:00:00",
+            }
+            users_db.append(row)
+            return httpx.Response(201, json=[row], request=req)
+        elif method == "PATCH":
+            if params and "id" in params:
+                uid = params["id"].replace("eq.", "")
+                for u in users_db:
+                    if str(u["id"]) == uid:
+                        u.update(json)
+                        return httpx.Response(200, json=[u], request=req)
+            return httpx.Response(200, json=[], request=req)
+        return httpx.Response(404, request=req)
+
+    monkeypatch.setattr(db, "_supabase_request", mock_supabase_request)
     db.init_db()
+    return users_db
 
 
 def random_uname():
@@ -30,6 +93,7 @@ def test_register_success():
     user = data["user"]
     assert user["username"] == uname
     assert user["email"] == email
+    assert user["credential_token"].startswith("cs_live_")
     assert user["token_credential"].startswith("cs_live_")
     assert USER_TOKEN_COOKIE in res.cookies
 
@@ -135,7 +199,8 @@ def test_auth_me_resolution():
         "email": email,
         "password": "mypassword123",
     })
-    token = reg.json()["user"]["token_credential"]
+    token = reg.json()["user"]["credential_token"]
+    assert token == reg.json()["user"]["token_credential"]
 
     # 1. Clean client (no cookie or header)
     clean_client = TestClient(app)
@@ -167,12 +232,13 @@ def test_token_regenerate_and_customization():
         "email": f"{uname}@example.com",
         "password": "password123",
     })
-    old_token = reg.json()["user"]["token_credential"]
+    old_token = reg.json()["user"]["credential_token"]
 
     # Regenerate token
     res_regen = client.post("/api/auth/token/regenerate")
     assert res_regen.status_code == 200
-    new_token = res_regen.json()["token_credential"]
+    new_token = res_regen.json()["credential_token"]
+    assert new_token == res_regen.json()["token_credential"]
     assert new_token != old_token
     assert new_token.startswith("cs_live_")
 
@@ -180,6 +246,7 @@ def test_token_regenerate_and_customization():
     custom = f"my_custom_token_{uuid.uuid4().hex[:10]}"
     res_custom = client.patch("/api/auth/token", json={"token": custom})
     assert res_custom.status_code == 200
+    assert res_custom.json()["credential_token"] == custom
     assert res_custom.json()["token_credential"] == custom
 
     # Verify custom token works on /api/auth/me
@@ -209,7 +276,7 @@ def test_logout():
     assert res_me_after.json()["user"] is None
 
 
-def test_token_is_encrypted_with_aes256_in_database():
+def test_token_is_encrypted_with_aes256_in_database(mock_supabase_db):
     client = TestClient(app)
     uname = random_uname()
     res = client.post("/api/auth/register", json={
@@ -219,25 +286,25 @@ def test_token_is_encrypted_with_aes256_in_database():
     })
     assert res.status_code == 200
     user_data = res.json()["user"]
-    plain_token = user_data["token_credential"]
+    plain_token = user_data["credential_token"]
     assert plain_token.startswith("cs_live_")
 
-    # Langsung query database MySQL untuk memeriksa isi kolom mentah
-    conn = db.get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT token_credential FROM users WHERE username = %s LIMIT 1", (uname,))
-            row = cur.fetchone()
-            assert row is not None
-            raw_db_token = row["token_credential"]
+    # Periksa record langsung dari database Supabase
+    users = [u for u in mock_supabase_db if u["username"] == uname]
+    assert len(users) == 1
+    row = users[0]
+    raw_db_token = row["credential_token"]
+    raw_pwd = row["password"]
 
-            # Token mentah di database HARUS terenkripsi AES-256 dan TIDAK sama dengan plaintext
-            assert raw_db_token != plain_token
-            assert raw_db_token.startswith(db.TOKEN_ENCRYPTION_PREFIX)
-            assert plain_token not in raw_db_token
+    # Password di database HARUS ter-hash pbkdf2_sha256
+    assert raw_pwd.startswith("pbkdf2_sha256$")
+    assert "strong_password_123" not in raw_pwd
 
-            # Fungsi dekripsi harus mengembalikan token asli
-            decrypted = db.decrypt_token(raw_db_token)
-            assert decrypted == plain_token
-    finally:
-        conn.close()
+    # Token mentah di database HARUS terenkripsi AES-256 dan TIDAK sama dengan plaintext
+    assert raw_db_token != plain_token
+    assert raw_db_token.startswith(db.TOKEN_ENCRYPTION_PREFIX)
+    assert plain_token not in raw_db_token
+
+    # Fungsi dekripsi harus mengembalikan token asli
+    decrypted = db.decrypt_token(raw_db_token)
+    assert decrypted == plain_token

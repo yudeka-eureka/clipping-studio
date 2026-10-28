@@ -26,7 +26,7 @@ const USER_TOKEN_KEY = "clipping_user_token";
 const USER_MEDIA_KEY = "clipping_user_media";
 
 function getStoredToken() {
-  return state.user?.token_credential || "";
+  return state.user?.credential_token || state.user?.token_credential || "";
 }
 
 async function loadAiCredentials() {
@@ -2412,6 +2412,19 @@ async function checkAuth() {
   }
 }
 
+async function loadJobs() {
+  try {
+    const list = await api("/api/jobs");
+    if (Array.isArray(list)) {
+      state.jobs = Object.fromEntries(list.map((j) => [j.id, j]));
+      renderJobList();
+      if (state.current && state.jobs[state.current]) renderJob();
+    }
+  } catch (e) {
+    console.warn("Gagal memuat daftar job:", e);
+  }
+}
+
 function showAuth(mode = "login") {
   state.backTo = state.current
     ? { view: "job", id: state.current }
@@ -2476,7 +2489,7 @@ function renderUserSettings() {
 
     const tokenInput = $("#user-token-display");
     if (tokenInput) {
-      tokenInput.value = state.user.token_credential || "";
+      tokenInput.value = state.user.credential_token || state.user.token_credential || "";
     }
     const tokenFeedback = $("#token-feedback");
     if (tokenFeedback) {
@@ -2551,6 +2564,7 @@ $("#form-login").onsubmit = async (e) => {
     state.user = res.user;
     localStorage.removeItem(USER_TOKEN_KEY);
     updateAuthUI();
+    await loadJobs();
     toast(`Berhasil masuk! Selamat datang, ${state.user.username}`);
     $("#login-password").value = "";
 
@@ -2591,6 +2605,7 @@ $("#form-register").onsubmit = async (e) => {
     state.user = res.user;
     localStorage.removeItem(USER_TOKEN_KEY);
     updateAuthUI();
+    await loadJobs();
     toast(`Akun '${state.user.username}' berhasil dibuat! Token kredensial aktif.`);
     $("#reg-password").value = "";
     showSettings();
@@ -2616,7 +2631,7 @@ $("#btn-toggle-token").onclick = () => {
 };
 
 $("#btn-copy-token").onclick = async () => {
-  const token = state.user?.token_credential;
+  const token = state.user?.credential_token || state.user?.token_credential;
   if (!token) return;
   try {
     await navigator.clipboard.writeText(token);
@@ -2637,9 +2652,11 @@ $("#btn-regen-token").onclick = async () => {
   btn.disabled = true;
   try {
     const res = await api("/api/auth/token/regenerate", { method: "POST" });
-    state.user.token_credential = res.token_credential;
+    const tok = res.credential_token || res.token_credential;
+    state.user.credential_token = tok;
+    state.user.token_credential = tok;
     localStorage.removeItem(USER_TOKEN_KEY);
-    $("#user-token-display").value = res.token_credential;
+    $("#user-token-display").value = tok;
     const fb = $("#token-feedback");
     fb.textContent = "Token baru berhasil dibuat.";
     fb.className = "small ok";
@@ -2669,9 +2686,11 @@ $("#btn-save-custom-token").onclick = async () => {
       method: "PATCH",
       body: JSON.stringify({ token: custom }),
     });
-    state.user.token_credential = res.token_credential;
+    const tok = res.credential_token || res.token_credential;
+    state.user.credential_token = tok;
+    state.user.token_credential = tok;
     localStorage.removeItem(USER_TOKEN_KEY);
-    $("#user-token-display").value = res.token_credential;
+    $("#user-token-display").value = tok;
     $("#in-custom-token").value = "";
     fb.textContent = "Token kustom berhasil disimpan.";
     fb.className = "small ok";
@@ -2693,6 +2712,7 @@ $("#btn-user-logout").onclick = async () => {
     state.user = null;
     localStorage.removeItem(USER_TOKEN_KEY);
     updateAuthUI();
+    await loadJobs();
     toast("Anda telah keluar dari akun.");
   } catch (err) {
     toast(err.message, true);
@@ -2702,7 +2722,7 @@ $("#btn-user-logout").onclick = async () => {
 (async () => {
   await migrateLegacyLocalStorage();
   await checkAuth();
-  await Promise.all([loadConfig(), loadUsage().catch((err) => toast(err.message, true))]);
+  await Promise.all([loadConfig(), loadJobs(), loadUsage().catch((err) => toast(err.message, true))]);
   loadBranding();
   connect();
 })();

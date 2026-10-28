@@ -14,7 +14,42 @@ from app import db, security, gemini
 
 
 @pytest.fixture(autouse=True)
-def init_database():
+def init_database(monkeypatch):
+    import httpx
+    users_db = []
+
+    def mock_supabase_request(method, path, params=None, json=None, headers=None, **kwargs):
+        req = httpx.Request(method, f"https://mockproject.supabase.co{path}")
+        if method == "GET":
+            if params and "credential_token" in params:
+                tok = params["credential_token"].replace("eq.", "")
+                matched = [u for u in users_db if u["credential_token"] == tok]
+                return httpx.Response(200, json=matched, request=req)
+            if params and "username" in params:
+                val = params["username"].replace("eq.", "")
+                matched = [u for u in users_db if u["username"] == val]
+                return httpx.Response(200, json=matched, request=req)
+            if params and "email" in params:
+                val = params["email"].replace("eq.", "")
+                matched = [u for u in users_db if u["email"].lower() == val.lower()]
+                return httpx.Response(200, json=matched, request=req)
+            return httpx.Response(200, json=[], request=req)
+        elif method == "POST":
+            new_id = len(users_db) + 1
+            row = {
+                "id": new_id,
+                "username": json["username"],
+                "email": json["email"],
+                "password": json["password"],
+                "credential_token": json["credential_token"],
+                "created_at": "2026-10-27T12:00:00",
+            }
+            users_db.append(row)
+            return httpx.Response(201, json=[row], request=req)
+        return httpx.Response(200, json=[], request=req)
+
+    monkeypatch.setattr(db, "_supabase_request", mock_supabase_request)
+    db.invalidate_user_cache()
     db.init_db()
 
 

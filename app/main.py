@@ -61,7 +61,7 @@ async def _retention_purge_loop(stop_event: asyncio.Event) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Inisialisasi database MySQL untuk manajemen akun pengguna
+    # Inisialisasi database Supabase untuk manajemen akun pengguna
     db.init_db()
     stop_event = asyncio.Event()
     purge_task = asyncio.create_task(_retention_purge_loop(stop_event))
@@ -153,22 +153,33 @@ def get_rate_keys(request: Request) -> list[str]:
     return keys
 
 
-def owned_jobs(session_id: str | None = None) -> list[dict]:
+def owned_jobs(session_id: str | None = None, user_id: int | str | None = None) -> list[dict]:
     jobs = sorted(store.jobs.values(), key=lambda j: j["created_at"], reverse=True)
     if PUBLIC_MODE:
         owner = session_id or current_session_id()
-        jobs = [job for job in jobs if job.get("owner_session_id") == owner]
+        uid = user_id if user_id is not None else (current_user().get("id") if current_user() else None)
+        jobs = [
+            job for job in jobs
+            if (owner and job.get("owner_session_id") == owner) or (uid is not None and job.get("user_id") == uid)
+        ]
     return jobs
 
 
-def visible_jobs(session_id: str | None = None) -> list[dict]:
-    return [store.public_job(job) for job in owned_jobs(session_id)]
+def visible_jobs(session_id: str | None = None, user_id: int | str | None = None) -> list[dict]:
+    return [store.public_job(job) for job in owned_jobs(session_id, user_id)]
 
 
 def get_job(job_id: str) -> dict:
     job = store.jobs.get(job_id)
-    if not job or (PUBLIC_MODE and job.get("owner_session_id") != current_session_id()):
+    if not job:
         raise HTTPException(404, "Job tidak ditemukan")
+    if PUBLIC_MODE:
+        owner = current_session_id()
+        user = current_user()
+        user_id = user.get("id") if user else None
+        is_owner = job.get("owner_session_id") == owner or (user_id is not None and job.get("user_id") == user_id)
+        if not is_owner:
+            raise HTTPException(404, "Job tidak ditemukan")
     return job
 
 
@@ -301,7 +312,7 @@ def get_config():
         "whisper_language": transcribe.language(),
         "whisper_languages": transcribe.LANGUAGES,
         "pricing": _pricing_info(),
-        "buffer_accounts": buffer.public_accounts(),
+        "buffer_accounts": [] if PUBLIC_MODE else buffer.public_accounts(),
         "media_host": "default",
         "server_media_configured": mediahost.server_is_configured(),
         "server_media_provider": mediahost.server_provider(),
@@ -326,6 +337,8 @@ def get_config():
 
 @app.post("/api/config")
 def save_config(cfg: ConfigIn):
+    if PUBLIC_MODE:
+        raise HTTPException(403, "Pengubahan konfigurasi global server dinonaktifkan dalam PUBLIC_MODE.")
     ENV_FILE.touch(mode=0o600, exist_ok=True)
     target = cfg.provider if cfg.provider in analysis.PROVIDERS else analysis.provider()
     spec = analysis.PROVIDERS[target]
@@ -480,6 +493,9 @@ async def create_job(
             job = store.create(safe_filename, "upload", opts)
             if PUBLIC_MODE:
                 job["owner_session_id"] = current_session_id()
+            user = current_user()
+            if user and user.get("id"):
+                job["user_id"] = user["id"]
             if ai_context:
                 job["_ai_context"] = ai_context
             dest = store.dir(job["id"]) / f"source{ext}"
@@ -497,6 +513,9 @@ async def create_job(
         job = store.create(url, "url", opts)
         if PUBLIC_MODE:
             job["owner_session_id"] = current_session_id()
+        user = current_user()
+        if user and user.get("id"):
+            job["user_id"] = user["id"]
         if ai_context:
             job["_ai_context"] = ai_context
         await store.publish(job)
@@ -679,6 +698,8 @@ async def _save_upload(file: UploadFile, name: str, is_image_only: bool = False)
 
 @app.post("/api/branding/logos")
 async def add_logo(file: UploadFile = File(...), label: str = Form("")):
+    if PUBLIC_MODE:
+        raise HTTPException(403, "Pengubahan branding dinonaktifkan dalam PUBLIC_MODE.")
     tmp = await _save_upload(file, "logo", is_image_only=True)
     try:
         added = await asyncio.to_thread(branding.add_logo, tmp, file.filename or "", label)
@@ -691,6 +712,8 @@ async def add_logo(file: UploadFile = File(...), label: str = Form("")):
 
 @app.patch("/api/branding/logos/{logo_id}")
 def update_logo(logo_id: str, body: LogoIn):
+    if PUBLIC_MODE:
+        raise HTTPException(403, "Pengubahan branding dinonaktifkan dalam PUBLIC_MODE.")
     try:
         branding.update_logo(logo_id, **body.model_dump(exclude_none=True))
     except ValueError as e:
@@ -700,6 +723,8 @@ def update_logo(logo_id: str, body: LogoIn):
 
 @app.delete("/api/branding/logos/{logo_id}")
 def delete_logo(logo_id: str):
+    if PUBLIC_MODE:
+        raise HTTPException(403, "Pengubahan branding dinonaktifkan dalam PUBLIC_MODE.")
     try:
         branding.remove_logo(logo_id)
     except ValueError as e:
@@ -709,6 +734,8 @@ def delete_logo(logo_id: str):
 
 @app.post("/api/branding/default-logo")
 def default_logo(body: DefaultLogoIn):
+    if PUBLIC_MODE:
+        raise HTTPException(403, "Pengubahan branding dinonaktifkan dalam PUBLIC_MODE.")
     try:
         branding.set_default_logo(body.logo_id or None)
     except ValueError as e:
@@ -729,6 +756,8 @@ class DefaultBumperIn(BaseModel):
 
 @app.post("/api/branding/bumpers")
 async def add_bumper(file: UploadFile = File(...), label: str = Form("")):
+    if PUBLIC_MODE:
+        raise HTTPException(403, "Pengubahan branding dinonaktifkan dalam PUBLIC_MODE.")
     tmp = await _save_upload(file, "bumper", is_image_only=False)
     try:
         added = await asyncio.to_thread(branding.add_bumper, tmp, file.filename or "", label)
@@ -741,6 +770,8 @@ async def add_bumper(file: UploadFile = File(...), label: str = Form("")):
 
 @app.patch("/api/branding/bumpers/{bumper_id}")
 def update_bumper(bumper_id: str, body: BumperIn):
+    if PUBLIC_MODE:
+        raise HTTPException(403, "Pengubahan branding dinonaktifkan dalam PUBLIC_MODE.")
     try:
         branding.update_bumper(bumper_id, **body.model_dump(exclude_none=True))
     except ValueError as e:
@@ -750,6 +781,8 @@ def update_bumper(bumper_id: str, body: BumperIn):
 
 @app.delete("/api/branding/bumpers/{bumper_id}")
 def delete_bumper(bumper_id: str):
+    if PUBLIC_MODE:
+        raise HTTPException(403, "Pengubahan branding dinonaktifkan dalam PUBLIC_MODE.")
     try:
         branding.remove_bumper(bumper_id)
     except ValueError as e:
@@ -759,6 +792,8 @@ def delete_bumper(bumper_id: str):
 
 @app.post("/api/branding/default-bumper")
 def default_bumper(body: DefaultBumperIn):
+    if PUBLIC_MODE:
+        raise HTTPException(403, "Pengubahan branding dinonaktifkan dalam PUBLIC_MODE.")
     try:
         branding.set_default_bumper(body.role, body.bumper_id or None)
     except ValueError as e:
@@ -787,6 +822,8 @@ class PricingIn(BaseModel):
 
 @app.post("/api/pricing")
 def save_pricing(body: PricingIn):
+    if PUBLIC_MODE:
+        raise HTTPException(403, "Pengubahan pricing dinonaktifkan dalam PUBLIC_MODE.")
     overrides = dict(pricing.settings()["overrides"])
     model = analysis.model_name()
     if body.clear_override:
@@ -864,6 +901,8 @@ async def recalculate_usage():
 
 @app.get("/api/buffer/channels")
 async def buffer_channels(refresh: bool = False, account_id: str | None = None):
+    if PUBLIC_MODE:
+        return {"channels": [], "errors": [], "accounts": []}
     try:
         channels, errors = await asyncio.to_thread(buffer.channels_and_errors, refresh, account_id)
     except Exception as e:  # noqa: BLE001
@@ -878,11 +917,15 @@ class AccountIn(BaseModel):
 
 @app.get("/api/buffer/accounts")
 def buffer_accounts():
+    if PUBLIC_MODE:
+        return {"accounts": []}
     return {"accounts": buffer.public_accounts()}
 
 
 @app.post("/api/buffer/accounts")
 async def add_buffer_account(body: AccountIn):
+    if PUBLIC_MODE:
+        raise HTTPException(403, "Pengelolaan akun Buffer dinonaktifkan dalam PUBLIC_MODE.")
     try:
         added = await asyncio.to_thread(buffer.add_account, body.label or "", body.api_key or "")
     except Exception as e:  # noqa: BLE001
@@ -892,6 +935,8 @@ async def add_buffer_account(body: AccountIn):
 
 @app.patch("/api/buffer/accounts/{account_id}")
 def rename_buffer_account(account_id: str, body: AccountIn):
+    if PUBLIC_MODE:
+        raise HTTPException(403, "Pengelolaan akun Buffer dinonaktifkan dalam PUBLIC_MODE.")
     try:
         buffer.rename_account(account_id, body.label or "")
     except Exception as e:  # noqa: BLE001
@@ -901,6 +946,8 @@ def rename_buffer_account(account_id: str, body: AccountIn):
 
 @app.delete("/api/buffer/accounts/{account_id}")
 def delete_buffer_account(account_id: str):
+    if PUBLIC_MODE:
+        raise HTTPException(403, "Pengelolaan akun Buffer dinonaktifkan dalam PUBLIC_MODE.")
     try:
         from_env = buffer.remove_account(account_id)
     except Exception as e:  # noqa: BLE001
@@ -940,6 +987,8 @@ class PublishIn(BaseModel):
 
 @app.post("/api/jobs/{job_id}/clips/{clip_id}/publish")
 async def publish_clip(request: Request, job_id: str, clip_id: str, body: PublishIn):
+    if PUBLIC_MODE:
+        raise HTTPException(403, "Posting ke Buffer dinonaktifkan dalam PUBLIC_MODE.")
     job = get_job(job_id)
     clip = store.clip(job, clip_id)
     if not clip or clip["status"] != "ready":
@@ -1107,10 +1156,11 @@ def auth_register(req: RegisterBody, request: Request, response: Response):
     except Exception as e:
         raise HTTPException(500, f"Gagal mendaftarkan pengguna: {e}")
 
+    token = user.get("credential_token") or user.get("token_credential")
     security.set_secure_cookie(
         response,
         USER_TOKEN_COOKIE,
-        user["token_credential"],
+        token,
         request=request,
     )
     return {"ok": True, "user": user}
@@ -1126,10 +1176,11 @@ def auth_login(req: LoginBody, request: Request, response: Response):
     if not user:
         raise HTTPException(401, "Username/email atau kata sandi tidak valid.")
 
+    token = user.get("credential_token") or user.get("token_credential")
     security.set_secure_cookie(
         response,
         USER_TOKEN_COOKIE,
-        user["token_credential"],
+        token,
         request=request,
     )
     return {"ok": True, "user": user}
@@ -1157,7 +1208,7 @@ def auth_regenerate_token(request: Request, response: Response):
         new_token,
         request=request,
     )
-    return {"ok": True, "token_credential": new_token}
+    return {"ok": True, "credential_token": new_token, "token_credential": new_token}
 
 
 @app.patch("/api/auth/token")
@@ -1178,11 +1229,16 @@ def auth_update_custom_token(req: CustomTokenBody, request: Request, response: R
         updated_token,
         request=request,
     )
-    return {"ok": True, "token_credential": updated_token}
+    return {"ok": True, "credential_token": updated_token, "token_credential": updated_token}
 
 
 @app.post("/api/auth/logout")
-def auth_logout(response: Response):
+def auth_logout(request: Request, response: Response):
+    user = CURRENT_USER.get() or resolve_user_from_request(request)
+    if user:
+        tok = user.get("credential_token") or user.get("token_credential")
+        if tok:
+            db.invalidate_user_cache(tok)
     security.clear_secure_cookie(response, USER_TOKEN_COOKIE)
     return {"ok": True}
 
@@ -1349,10 +1405,12 @@ async def ws(websocket: WebSocket):
     session_id = valid_session_id(websocket.cookies.get(SESSION_COOKIE))
     if not session_id:
         session_id = str(uuid4())
+    user = resolve_user_from_request(websocket)
+    user_id = user.get("id") if user else None
     await websocket.accept()
-    hub.sockets[websocket] = session_id
+    hub.sockets[websocket] = {"session_id": session_id, "user_id": user_id}
     try:
-        await websocket.send_json({"type": "snapshot", "jobs": visible_jobs(session_id)})
+        await websocket.send_json({"type": "snapshot", "jobs": visible_jobs(session_id=session_id, user_id=user_id)})
         while True:
             await websocket.receive_text()  # ping dari browser
     except WebSocketDisconnect:
@@ -1364,9 +1422,15 @@ async def ws(websocket: WebSocket):
 @app.middleware("http")
 async def no_stale_ui(request: Request, call_next):
     """Antarmuka selalu divalidasi ulang, supaya versi lama tidak nyangkut di cache browser."""
+    path = request.url.path
+    is_static = (
+        path.startswith(("/branding/", "/static/"))
+        or path in ("/", "/app", "/app.js", "/style.css", "/index.html", "/landing.html", "/landing.css", "/landing.js", "/favicon.ico")
+    )
     session_id = valid_session_id(request.cookies.get(SESSION_COOKIE)) or str(uuid4())
     token_sess = CURRENT_SESSION.set(session_id)
-    user = resolve_user_from_request(request)
+    # Hindari lookup database untuk aset statis murni yang tidak memerlukan otorisasi per-user
+    user = None if is_static else resolve_user_from_request(request)
     token_user = CURRENT_USER.set(user)
     try:
         response = await call_next(request)
@@ -1384,7 +1448,7 @@ async def no_stale_ui(request: Request, call_next):
             max_age=60 * 60 * 24 * 365,
             path="/",
         )
-    if request.url.path.startswith(("/branding/", "/static/")) or request.url.path in ("/", "/app.js", "/style.css", "/index.html"):
+    if is_static:
         response.headers["Cache-Control"] = "no-cache"
     return response
 

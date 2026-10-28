@@ -1,4 +1,11 @@
-"""Koneksi database MySQL untuk manajemen pengguna dan token kredensial."""
+"""Manajemen database pengguna dan token kredensial via Supabase (PostgREST HTTP API).
+
+Didesain untuk serverless / Vercel dan lingkungan terdistribusi:
+- Komunikasi stateless menggunakan HTTP PostgREST
+- Menggunakan SUPABASE_SECRET untuk bypass RLS pada operasi backend
+- Token kredensial disimpan terenkripsi dengan AES-256-GCM
+- Password di-hash menggunakan PBKDF2-HMAC-SHA256 (100.000 iterasi) dengan constant-time verification
+"""
 from __future__ import annotations
 
 import base64
@@ -7,19 +14,22 @@ import hmac
 import os
 import re
 import secrets
+import time
 from typing import Any
 from dotenv import load_dotenv
+import httpx
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 load_dotenv()
-
-import pymysql
-import pymysql.cursors
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
 USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9_-]{3,50}$")
 TOKEN_ENCRYPTION_PREFIX = "enc_aes256$"
 
+
+# ==============================================================================
+# Keamanan & Enkripsi Token / Password
+# ==============================================================================
 
 def get_token_encryption_key() -> bytes:
     """Ambil atau derivasi kunci master AES-256 (32 bytes = 256 bits)."""
@@ -70,52 +80,7 @@ def decrypt_token(stored_token: str | None) -> str:
         plain_bytes = aesgcm.decrypt(nonce, ciphertext_and_tag, None)
         return plain_bytes.decode("utf-8")
     except Exception:
-        return stored_token
-
-
-def get_db_config() -> dict[str, Any]:
-    return {
-        "host": os.environ.get("MYSQL_HOST", "127.0.0.1"),
-        "port": int(os.environ.get("MYSQL_PORT", "3306")),
-        "user": os.environ.get("MYSQL_USER", "agy"),
-        "password": os.environ.get("MYSQL_PASSWORD", "n!ggeradot"),
-        "database": os.environ.get("MYSQL_DATABASE", "clipping_studio"),
-        "charset": "utf8mb4",
-        "cursorclass": pymysql.cursors.DictCursor,
-        "connect_timeout": 5,
-        "autocommit": True,
-    }
-
-
-def get_connection():
-    config = get_db_config()
-    return pymysql.connect(**config)
-
-
-def init_db() -> None:
-    """Inisialisasi tabel users di database MySQL jika belum ada, serta migrasi kolom jika perlu."""
-    try:
-        conn = get_connection()
-        with conn.cursor() as cur:
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                username VARCHAR(50) NOT NULL UNIQUE,
-                email VARCHAR(100) NOT NULL UNIQUE,
-                password_hash VARCHAR(255) NOT NULL,
-                token_credential VARCHAR(255) NOT NULL UNIQUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-            """)
-            try:
-                cur.execute("ALTER TABLE users MODIFY COLUMN token_credential VARCHAR(255) NOT NULL;")
-            except Exception:
-                pass
-        conn.close()
-    except Exception as e:
-        # Jangan gagalkan startup jika database sedang offline; log peringatan
-        print(f"⚠️ [MySQL Init] Peringatan koneksi database: {e}")
+        return ""
 
 
 def hash_password(password: str) -> str:
@@ -149,152 +114,324 @@ def generate_credential_token() -> str:
 def _format_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if not row:
         return None
-    row.pop("password_hash", None)
-    if "token_credential" in row and row["token_credential"]:
-        row["token_credential"] = decrypt_token(row["token_credential"])
-    if "created_at" in row and row["created_at"] is not None:
-        if hasattr(row["created_at"], "isoformat"):
-            row["created_at"] = row["created_at"].isoformat()
+    user = dict(row)
+    # Jangan pernah kembalikan password di objek user
+    user.pop("password", None)
+    user.pop("password_hash", None)
+
+    # Dukung field credential_token baru serta alias token_credential untuk backward compatibility
+    tok = user.get("credential_token") or user.get("token_credential")
+    if tok:
+        dec = decrypt_token(tok)
+        user["credential_token"] = dec
+        user["token_credential"] = dec
+
+    for ts_col in ("created_at", "updated_at"):
+        if ts_col in user and user[ts_col] is not None:
+            if hasattr(user[ts_col], "isoformat"):
+                user[ts_col] = user[ts_col].isoformat()
+            else:
+                user[ts_col] = str(user[ts_col])
+    return user
+
+
+# Cache in-memory untuk meminimalkan beban request ke Supabase PostgREST
+_USER_CACHE: dict[str, tuple[float, dict[str, Any] | None]] = {}
+_CACHE_TTL_POSITIVE = 30.0  # 30 detik untuk user valid
+_CACHE_TTL_NEGATIVE = 5.0   # 5 detik untuk token tidak valid
+
+
+def invalidate_user_cache(token: str | None = None) -> None:
+    """Invalidasi cache user di memori."""
+    if token:
+        _USER_CACHE.pop(token, None)
+    else:
+        _USER_CACHE.clear()
+
+
+# ==============================================================================
+# Supabase HTTP PostgREST Client
+# ==============================================================================
+
+def get_supabase_config() -> dict[str, str]:
+    """Ambil konfigurasi URL dan Secret Key Supabase.
+
+    Menggunakan SUPABASE_SECRET untuk serverless backend agar melewati
+    Row Level Security (RLS) secara aman dan mencegah pembatasan anon key.
+    """
+    url = (os.getenv("SUPABASE_URL") or "").strip().rstrip("/")
+    key = (os.getenv("SUPABASE_SECRET") or "").strip()
+
+    # Peringatan jika anon key terdeteksi tanpa secret key
+    anon_key = (os.getenv("SUPABASE_ANON_KEY") or "").strip()
+    if not key and anon_key:
+        print("⚠️ [Supabase Config] SUPABASE_ANON_KEY terdeteksi, namun backend serverless memerlukan SUPABASE_SECRET untuk melewati RLS secara aman.")
+
+    return {"url": url, "key": key}
+
+
+def _supabase_headers(config: dict[str, str] | None = None) -> dict[str, str]:
+    cfg = config or get_supabase_config()
+    key = cfg["key"]
+    return {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+
+def _supabase_request(
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 10.0,
+) -> httpx.Response:
+    cfg = get_supabase_config()
+    if not cfg["url"] or not cfg["key"]:
+        raise ValueError(
+            "SUPABASE_URL dan SUPABASE_SECRET harus disetel di .env."
+        )
+
+    req_headers = _supabase_headers(cfg)
+    if headers:
+        req_headers.update(headers)
+
+    url = f"{cfg['url']}{path}"
+    with httpx.Client(timeout=timeout) as client:
+        return client.request(method, url, params=params, json=json, headers=req_headers)
+
+
+def init_db() -> None:
+    """Verifikasi koneksi ke tabel users di Supabase."""
+    cfg = get_supabase_config()
+    if not cfg["url"] or not cfg["key"]:
+        print("⚠️ [Supabase Init] SUPABASE_URL atau key (SUPABASE_SECRET) belum disetel.")
+        return
+    try:
+        r = _supabase_request("GET", "/rest/v1/users", params={"select": "id", "limit": 1})
+        if r.is_success:
+            print("✓ [Supabase Init] Tabel users siap terhubung.")
+        elif r.status_code in (401, 403):
+            err = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            if err.get("code") == "42501":
+                print("⚠️ [Supabase Init] Tabel users ditemukan namun RLS aktif. Pastikan SUPABASE_SECRET disetel dengan benar.")
+            else:
+                print(f"⚠️ [Supabase Init] Peringatan autentikasi Supabase ({r.status_code}): {r.text}")
         else:
-            row["created_at"] = str(row["created_at"])
-    return row
+            print(f"⚠️ [Supabase Init] Status endpoint Supabase: {r.status_code}")
+    except Exception as e:
+        print(f"⚠️ [Supabase Init] Peringatan koneksi database: {e}")
 
 
 def register_user(username: str, email: str, password: str) -> dict[str, Any]:
-    """Daftarkan user baru ke MySQL dan buatkan token kredensial terenkripsi AES-256."""
     uname = (username or "").strip()
     mail = (email or "").strip().lower()
     pwd = password or ""
 
     if not USERNAME_REGEX.match(uname):
         raise ValueError("Username harus terdiri dari 3–50 karakter alfanumerik (huruf, angka, _, -).")
-    if not EMAIL_REGEX.match(mail):
+    if not EMAIL_REGEX.match(mail) or len(mail) > 100:
         raise ValueError("Alamat email tidak valid.")
     if len(pwd) < 6:
         raise ValueError("Kata sandi minimal 6 karakter.")
+    if len(pwd) > 128:
+        raise ValueError("Kata sandi maksimal 128 karakter.")
+
+    # Cek username
+    r_u = _supabase_request(
+        "GET",
+        "/rest/v1/users",
+        params={"select": "id", "username": f"eq.{uname}", "limit": 1},
+    )
+    if r_u.is_success and r_u.json():
+        raise ValueError(f"Username '{uname}' sudah digunakan. Silakan pilih username lain.")
+
+    # Cek email
+    r_e = _supabase_request(
+        "GET",
+        "/rest/v1/users",
+        params={"select": "id", "email": f"eq.{mail}", "limit": 1},
+    )
+    if r_e.is_success and r_e.json():
+        raise ValueError(f"Alamat email '{mail}' sudah terdaftar.")
 
     pwd_hash = hash_password(pwd)
     plain_token = generate_credential_token()
     enc_token = encrypt_token(plain_token)
 
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            # Cek apakah username sudah dipakai
-            cur.execute("SELECT id FROM users WHERE username = %s LIMIT 1", (uname,))
-            if cur.fetchone():
-                raise ValueError(f"Username '{uname}' sudah digunakan. Silakan pilih username lain.")
+    payload = {
+        "username": uname,
+        "email": mail,
+        "password": pwd_hash,
+        "credential_token": enc_token,
+    }
+    r = _supabase_request(
+        "POST",
+        "/rest/v1/users",
+        json=payload,
+        headers={"Prefer": "return=representation"},
+    )
+    if r.status_code == 409:
+        err_msg = r.text
+        if "username" in err_msg.lower():
+            raise ValueError(f"Username '{uname}' sudah digunakan. Silakan pilih username lain.")
+        if "email" in err_msg.lower():
+            raise ValueError(f"Alamat email '{mail}' sudah terdaftar.")
+        raise ValueError(f"Data user sudah terdaftar: {err_msg}")
 
-            # Cek apakah email sudah dipakai
-            cur.execute("SELECT id FROM users WHERE email = %s LIMIT 1", (mail,))
-            if cur.fetchone():
-                raise ValueError(f"Alamat email '{mail}' sudah terdaftar.")
-
-            # Insert user dengan token_credential terenkripsi AES-256
-            cur.execute(
-                """
-                INSERT INTO users (username, email, password_hash, token_credential)
-                VALUES (%s, %s, %s, %s)
-                """,
-                (uname, mail, pwd_hash, enc_token),
+    if r.status_code in (401, 403):
+        err_body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        if err_body.get("code") == "42501" or "row-level security" in str(err_body.get("message", "")).lower():
+            raise RuntimeError(
+                "Akses database Supabase ditolak oleh Row Level Security (RLS) pada tabel 'users'. "
+                "Pastikan SUPABASE_SECRET disetel di .env."
             )
-            user_id = cur.lastrowid
-            cur.execute("SELECT id, username, email, token_credential, created_at FROM users WHERE id = %s", (user_id,))
-            user = cur.fetchone()
-            return _format_user(user)
-    finally:
-        conn.close()
+
+    if not r.is_success:
+        raise RuntimeError(f"Gagal mendaftarkan pengguna di Supabase ({r.status_code}): {r.text}")
+
+    rows = r.json()
+    if not rows:
+        raise RuntimeError("Gagal mendaftarkan pengguna: tidak ada respon dari Supabase.")
+    user = _format_user(rows[0])
+    if user and plain_token:
+        _USER_CACHE[plain_token] = (time.time(), user)
+    return user
 
 
 def authenticate_user(username_or_email: str, password: str) -> dict[str, Any] | None:
-    """Autentikasi user dengan username atau email beserta password."""
     identifier = (username_or_email or "").strip()
-    if not identifier or not password:
+    pwd = password or ""
+    if not identifier or not pwd:
+        return None
+    if len(pwd) > 128 or len(identifier) > 100:
+        return None
+    # Cegah PostgREST filter injection dengan membatasi karakter identifier
+    if not re.match(r"^[a-zA-Z0-9_.+@-]+$", identifier):
         return None
 
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, username, email, password_hash, token_credential, created_at
-                FROM users
-                WHERE username = %s OR email = %s
-                LIMIT 1
-                """,
-                (identifier, identifier.lower()),
-            )
-            row = cur.fetchone()
-            if not row:
-                return None
-            if not verify_password(password, row["password_hash"]):
-                return None
+    # Cari berdasarkan username
+    r = _supabase_request(
+        "GET",
+        "/rest/v1/users",
+        params={
+            "select": "id,username,email,password,credential_token,created_at,updated_at",
+            "username": f"eq.{identifier}",
+            "limit": 1,
+        },
+    )
+    rows = r.json() if r.is_success else []
+    if not rows:
+        # Cari berdasarkan email
+        r = _supabase_request(
+            "GET",
+            "/rest/v1/users",
+            params={
+                "select": "id,username,email,password,credential_token,created_at,updated_at",
+                "email": f"eq.{identifier.lower()}",
+                "limit": 1,
+            },
+        )
+        rows = r.json() if r.is_success else []
 
-            return _format_user(row)
-    finally:
-        conn.close()
+    if not rows:
+        return None
+
+    user = rows[0]
+    pwd_val = user.get("password") or user.get("password_hash")
+    if not pwd_val or not verify_password(pwd, pwd_val):
+        return None
+
+    formatted = _format_user(user)
+    if formatted:
+        tok = formatted.get("credential_token") or formatted.get("token_credential")
+        if tok:
+            _USER_CACHE[tok] = (time.time(), formatted)
+    return formatted
 
 
-def get_user_by_id(user_id: int) -> dict[str, Any] | None:
-    """Ambil data user berdasarkan ID."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, username, email, token_credential, created_at FROM users WHERE id = %s LIMIT 1",
-                (user_id,),
-            )
-            return _format_user(cur.fetchone())
-    finally:
-        conn.close()
+def get_user_by_id(user_id: int | str) -> dict[str, Any] | None:
+    uid_str = str(user_id or "").strip()
+    if not uid_str or not re.match(r"^[0-9a-fA-F-]+$", uid_str):
+        return None
+    r = _supabase_request(
+        "GET",
+        "/rest/v1/users",
+        params={
+            "select": "id,username,email,credential_token,created_at,updated_at",
+            "id": f"eq.{uid_str}",
+            "limit": 1,
+        },
+    )
+    if not r.is_success:
+        return None
+    rows = r.json()
+    return _format_user(rows[0]) if rows else None
 
 
 def get_user_by_token(token: str) -> dict[str, Any] | None:
-    """Ambil data user berdasarkan token kredensial (mencocokkan ciphertext AES-256)."""
     tok = (token or "").strip()
-    if not tok:
+    if not tok or len(tok) > 120 or not re.match(r"^[a-zA-Z0-9_\-\.]+$", tok):
         return None
+
+    now = time.time()
+    cached = _USER_CACHE.get(tok)
+    if cached:
+        cached_time, cached_user = cached
+        ttl = _CACHE_TTL_POSITIVE if cached_user is not None else _CACHE_TTL_NEGATIVE
+        if now - cached_time < ttl:
+            return dict(cached_user) if cached_user else None
+
     enc_tok = encrypt_token(tok)
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, username, email, token_credential, created_at FROM users WHERE token_credential = %s LIMIT 1",
-                (enc_tok,),
-            )
-            row = cur.fetchone()
-            if not row:
-                # Fallback jika record legacy tersimpan dalam plaintext
-                cur.execute(
-                    "SELECT id, username, email, token_credential, created_at FROM users WHERE token_credential = %s LIMIT 1",
-                    (tok,),
-                )
-                row = cur.fetchone()
-            return _format_user(row)
-    finally:
-        conn.close()
+    r = _supabase_request(
+        "GET",
+        "/rest/v1/users",
+        params={
+            "select": "id,username,email,credential_token,created_at,updated_at",
+            "credential_token": f"eq.{enc_tok}",
+            "limit": 1,
+        },
+    )
+    rows = r.json() if r.is_success else []
+    if not rows:
+        # Fallback jika record legacy tersimpan dalam plaintext
+        r = _supabase_request(
+            "GET",
+            "/rest/v1/users",
+            params={
+                "select": "id,username,email,credential_token,created_at,updated_at",
+                "credential_token": f"eq.{tok}",
+                "limit": 1,
+            },
+        )
+        rows = r.json() if r.is_success else []
+
+    user = _format_user(rows[0]) if rows else None
+    _USER_CACHE[tok] = (now, user)
+    return dict(user) if user else None
 
 
-def regenerate_token(user_id: int) -> str:
-    """Generate token kredensial baru untuk user dan enkripsi dengan AES-256 sebelum disimpan."""
+def regenerate_token(user_id: int | str) -> str:
     new_token = generate_credential_token()
     enc_token = encrypt_token(new_token)
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE users SET token_credential = %s WHERE id = %s",
-                (enc_token, user_id),
-            )
-            if cur.rowcount == 0:
-                raise ValueError("User tidak ditemukan.")
-            return new_token
-    finally:
-        conn.close()
+    r = _supabase_request(
+        "PATCH",
+        "/rest/v1/users",
+        params={"id": f"eq.{user_id}"},
+        json={"credential_token": enc_token},
+        headers={"Prefer": "return=representation"},
+    )
+    if not r.is_success or not r.json():
+        raise ValueError("User tidak ditemukan.")
+    invalidate_user_cache()
+    return new_token
 
 
-def update_custom_token(user_id: int, custom_token: str) -> str:
-    """Atur token kredensial kustom sesuai keinginan user dan enkripsi dengan AES-256 sebelum disimpan."""
+def update_custom_token(user_id: int | str, custom_token: str) -> str:
     tok = (custom_token or "").strip()
     if len(tok) < 8 or len(tok) > 80:
         raise ValueError("Token kredensial harus antara 8 hingga 80 karakter.")
@@ -302,22 +439,52 @@ def update_custom_token(user_id: int, custom_token: str) -> str:
         raise ValueError("Token hanya boleh berisi huruf, angka, garis bawah (_), tanda hubung (-), atau titik (.).")
 
     enc_token = encrypt_token(tok)
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id FROM users WHERE (token_credential = %s OR token_credential = %s) AND id != %s LIMIT 1",
-                (enc_token, tok, user_id),
-            )
-            if cur.fetchone():
-                raise ValueError("Token kredensial ini sudah digunakan oleh pengguna lain. Silakan pilih token lain.")
 
-            cur.execute(
-                "UPDATE users SET token_credential = %s WHERE id = %s",
-                (enc_token, user_id),
-            )
-            if cur.rowcount == 0:
-                raise ValueError("User tidak ditemukan.")
-            return tok
-    finally:
-        conn.close()
+    # Cek apakah token sudah digunakan oleh pengguna lain
+    r_enc = _supabase_request(
+        "GET",
+        "/rest/v1/users",
+        params={
+            "select": "id",
+            "id": f"neq.{user_id}",
+            "credential_token": f"eq.{enc_token}",
+            "limit": 1,
+        },
+    )
+    if r_enc.is_success and r_enc.json():
+        raise ValueError("Token kredensial ini sudah digunakan oleh pengguna lain. Silakan pilih token lain.")
+
+    r_plain = _supabase_request(
+        "GET",
+        "/rest/v1/users",
+        params={
+            "select": "id",
+            "id": f"neq.{user_id}",
+            "credential_token": f"eq.{tok}",
+            "limit": 1,
+        },
+    )
+    if r_plain.is_success and r_plain.json():
+        raise ValueError("Token kredensial ini sudah digunakan oleh pengguna lain. Silakan pilih token lain.")
+
+    r = _supabase_request(
+        "PATCH",
+        "/rest/v1/users",
+        params={"id": f"eq.{user_id}"},
+        json={"credential_token": enc_token},
+        headers={"Prefer": "return=representation"},
+    )
+    if not r.is_success or not r.json():
+        raise ValueError("User tidak ditemukan.")
+    invalidate_user_cache()
+    return tok
+
+
+# Backward-compatible internal aliases
+_supabase_init_db = init_db
+_supabase_register_user = register_user
+_supabase_authenticate_user = authenticate_user
+_supabase_get_user_by_id = get_user_by_id
+_supabase_get_user_by_token = get_user_by_token
+_supabase_regenerate_token = regenerate_token
+_supabase_update_custom_token = update_custom_token

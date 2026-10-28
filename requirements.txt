@@ -18,5 +18,7 @@ boto3>=1.34
 anthropic>=1.7
 openai>=3.0
 
-# Database MySQL untuk manajemen user & token credentials
-pymysql>=1.1.0
+# Database manajemen user & credential token
+# Supabase (serverless / Vercel ready via HTTP PostgREST API)
+httpx>=0.27.0
+cryptography>=42.0
