@@ -16,8 +16,8 @@ import pymysql
 import pymysql.cursors
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
-USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9_-]{3,50}$")
+EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+\-]+@[a-zA-Z0-9\-]+\.[a-zA-Z0-9\-.]+$")
+USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9_\-]{3,50}$")
 TOKEN_ENCRYPTION_PREFIX = "enc_aes256$"
 
 
@@ -102,14 +102,14 @@ def init_db() -> None:
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 username VARCHAR(50) NOT NULL UNIQUE,
                 email VARCHAR(100) NOT NULL UNIQUE,
-                password_hash VARCHAR(255) NOT NULL,
-                token_credential VARCHAR(255) NOT NULL UNIQUE,
+                password VARCHAR(255) NOT NULL,
+                credential_token VARCHAR(255) NOT NULL UNIQUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
             try:
-                cur.execute("ALTER TABLE users MODIFY COLUMN token_credential VARCHAR(255) NOT NULL;")
+                cur.execute("ALTER TABLE users MODIFY COLUMN credential_token VARCHAR(255) NOT NULL;")
             except Exception:
                 pass
         conn.close()
@@ -149,9 +149,9 @@ def generate_credential_token() -> str:
 def _format_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if not row:
         return None
-    row.pop("password_hash", None)
-    if "token_credential" in row and row["token_credential"]:
-        row["token_credential"] = decrypt_token(row["token_credential"])
+    row.pop("password", None)
+    if "credential_token" in row and row["credential_token"]:
+        row["credential_token"] = decrypt_token(row["credential_token"])
     if "created_at" in row and row["created_at"] is not None:
         if hasattr(row["created_at"], "isoformat"):
             row["created_at"] = row["created_at"].isoformat()
@@ -190,16 +190,16 @@ def register_user(username: str, email: str, password: str) -> dict[str, Any]:
             if cur.fetchone():
                 raise ValueError(f"Alamat email '{mail}' sudah terdaftar.")
 
-            # Insert user dengan token_credential terenkripsi AES-256
+            # Insert user dengan credential_token terenkripsi AES-256
             cur.execute(
                 """
-                INSERT INTO users (username, email, password_hash, token_credential)
+                INSERT INTO users (username, email, password, credential_token)
                 VALUES (%s, %s, %s, %s)
                 """,
                 (uname, mail, pwd_hash, enc_token),
             )
             user_id = cur.lastrowid
-            cur.execute("SELECT id, username, email, token_credential, created_at FROM users WHERE id = %s", (user_id,))
+            cur.execute("SELECT id, username, email, credential_token, created_at FROM users WHERE id = %s", (user_id,))
             user = cur.fetchone()
             return _format_user(user)
     finally:
@@ -217,7 +217,7 @@ def authenticate_user(username_or_email: str, password: str) -> dict[str, Any] |
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, username, email, password_hash, token_credential, created_at
+                SELECT id, username, email, password, credential_token, created_at
                 FROM users
                 WHERE username = %s OR email = %s
                 LIMIT 1
@@ -227,7 +227,7 @@ def authenticate_user(username_or_email: str, password: str) -> dict[str, Any] |
             row = cur.fetchone()
             if not row:
                 return None
-            if not verify_password(password, row["password_hash"]):
+            if not verify_password(password, row["password"]):
                 return None
 
             return _format_user(row)
@@ -241,7 +241,7 @@ def get_user_by_id(user_id: int) -> dict[str, Any] | None:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, username, email, token_credential, created_at FROM users WHERE id = %s LIMIT 1",
+                "SELECT id, username, email, credential_token, created_at FROM users WHERE id = %s LIMIT 1",
                 (user_id,),
             )
             return _format_user(cur.fetchone())
@@ -259,14 +259,14 @@ def get_user_by_token(token: str) -> dict[str, Any] | None:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, username, email, token_credential, created_at FROM users WHERE token_credential = %s LIMIT 1",
+                "SELECT id, username, email, credential_token, created_at FROM users WHERE credential_token = %s LIMIT 1",
                 (enc_tok,),
             )
             row = cur.fetchone()
             if not row:
                 # Fallback jika record legacy tersimpan dalam plaintext
                 cur.execute(
-                    "SELECT id, username, email, token_credential, created_at FROM users WHERE token_credential = %s LIMIT 1",
+                    "SELECT id, username, email, credential_token, created_at FROM users WHERE credential_token = %s LIMIT 1",
                     (tok,),
                 )
                 row = cur.fetchone()
@@ -283,7 +283,7 @@ def regenerate_token(user_id: int) -> str:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE users SET token_credential = %s WHERE id = %s",
+                "UPDATE users SET credential_token = %s WHERE id = %s",
                 (enc_token, user_id),
             )
             if cur.rowcount == 0:
@@ -306,14 +306,14 @@ def update_custom_token(user_id: int, custom_token: str) -> str:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id FROM users WHERE (token_credential = %s OR token_credential = %s) AND id != %s LIMIT 1",
+                "SELECT id FROM users WHERE (credential_token = %s OR credential_token = %s) AND id != %s LIMIT 1",
                 (enc_token, tok, user_id),
             )
             if cur.fetchone():
                 raise ValueError("Token kredensial ini sudah digunakan oleh pengguna lain. Silakan pilih token lain.")
 
             cur.execute(
-                "UPDATE users SET token_credential = %s WHERE id = %s",
+                "UPDATE users SET credential_token = %s WHERE id = %s",
                 (enc_token, user_id),
             )
             if cur.rowcount == 0:

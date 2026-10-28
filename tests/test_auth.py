@@ -30,7 +30,7 @@ def test_register_success():
     user = data["user"]
     assert user["username"] == uname
     assert user["email"] == email
-    assert user["token_credential"].startswith("cs_live_")
+    assert user["credential_token"].startswith("cs_live_")
     assert USER_TOKEN_COOKIE in res.cookies
 
 
@@ -135,7 +135,7 @@ def test_auth_me_resolution():
         "email": email,
         "password": "mypassword123",
     })
-    token = reg.json()["user"]["token_credential"]
+    token = reg.json()["user"]["credential_token"]
 
     # 1. Clean client (no cookie or header)
     clean_client = TestClient(app)
@@ -167,12 +167,12 @@ def test_token_regenerate_and_customization():
         "email": f"{uname}@example.com",
         "password": "password123",
     })
-    old_token = reg.json()["user"]["token_credential"]
+    old_token = reg.json()["user"]["credential_token"]
 
     # Regenerate token
     res_regen = client.post("/api/auth/token/regenerate")
     assert res_regen.status_code == 200
-    new_token = res_regen.json()["token_credential"]
+    new_token = res_regen.json()["credential_token"]
     assert new_token != old_token
     assert new_token.startswith("cs_live_")
 
@@ -180,7 +180,7 @@ def test_token_regenerate_and_customization():
     custom = f"my_custom_token_{uuid.uuid4().hex[:10]}"
     res_custom = client.patch("/api/auth/token", json={"token": custom})
     assert res_custom.status_code == 200
-    assert res_custom.json()["token_credential"] == custom
+    assert res_custom.json()["credential_token"] == custom
 
     # Verify custom token works on /api/auth/me
     verify_client = TestClient(app)
@@ -219,17 +219,17 @@ def test_token_is_encrypted_with_aes256_in_database():
     })
     assert res.status_code == 200
     user_data = res.json()["user"]
-    plain_token = user_data["token_credential"]
+    plain_token = user_data["credential_token"]
     assert plain_token.startswith("cs_live_")
 
     # Langsung query database MySQL untuk memeriksa isi kolom mentah
     conn = db.get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT token_credential FROM users WHERE username = %s LIMIT 1", (uname,))
+            cur.execute("SELECT credential_token FROM users WHERE username = %s LIMIT 1", (uname,))
             row = cur.fetchone()
             assert row is not None
-            raw_db_token = row["token_credential"]
+            raw_db_token = row["credential_token"]
 
             # Token mentah di database HARUS terenkripsi AES-256 dan TIDAK sama dengan plaintext
             assert raw_db_token != plain_token

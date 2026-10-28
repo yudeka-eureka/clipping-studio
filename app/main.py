@@ -1053,7 +1053,7 @@ def download_all_clips(job_id: str):
     if not files:
         raise HTTPException(400, "Belum ada klip yang siap diunduh")
 
-    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", job.get("name") or job["id"]).strip("._")
+    safe_name = re.sub(r"[^A-Za-z0-9._\-]+", "_", job.get("name") or job["id"]).strip("._")
     safe_name = (safe_name or job["id"])[:80]
     temp = tempfile.NamedTemporaryFile(prefix=f"clips_{safe_name}_", suffix=".zip", delete=False)
     temp_path = Path(temp.name)
@@ -1110,7 +1110,7 @@ def auth_register(req: RegisterBody, request: Request, response: Response):
     security.set_secure_cookie(
         response,
         USER_TOKEN_COOKIE,
-        user["token_credential"],
+        user["credential_token"],
         request=request,
     )
     return {"ok": True, "user": user}
@@ -1129,7 +1129,7 @@ def auth_login(req: LoginBody, request: Request, response: Response):
     security.set_secure_cookie(
         response,
         USER_TOKEN_COOKIE,
-        user["token_credential"],
+        user["credential_token"],
         request=request,
     )
     return {"ok": True, "user": user}
@@ -1157,7 +1157,7 @@ def auth_regenerate_token(request: Request, response: Response):
         new_token,
         request=request,
     )
-    return {"ok": True, "token_credential": new_token}
+    return {"ok": True, "credential_token": new_token}
 
 
 @app.patch("/api/auth/token")
@@ -1178,7 +1178,7 @@ def auth_update_custom_token(req: CustomTokenBody, request: Request, response: R
         updated_token,
         request=request,
     )
-    return {"ok": True, "token_credential": updated_token}
+    return {"ok": True, "credential_token": updated_token}
 
 
 @app.post("/api/auth/logout")

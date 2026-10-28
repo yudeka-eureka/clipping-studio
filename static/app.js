@@ -26,7 +26,7 @@ const USER_TOKEN_KEY = "clipping_user_token";
 const USER_MEDIA_KEY = "clipping_user_media";
 
 function getStoredToken() {
-  return state.user?.token_credential || "";
+  return state.user?.credential_token || "";
 }
 
 async function loadAiCredentials() {
@@ -186,14 +186,6 @@ async function migrateLegacyLocalStorage() {
   try {
     localStorage.removeItem(USER_TOKEN_KEY);
   } catch {}
-}
-  if (userCfg.whisper_model && cfg.whisper_models && cfg.whisper_models[userCfg.whisper_model]) {
-    cfg.whisper_model = userCfg.whisper_model;
-  }
-  if (userCfg.whisper_language && cfg.whisper_languages && cfg.whisper_languages[userCfg.whisper_language]) {
-    cfg.whisper_language = userCfg.whisper_language;
-  }
-  return cfg;
 }
 
 const STATUS_LABEL = {
@@ -2476,7 +2468,7 @@ function renderUserSettings() {
 
     const tokenInput = $("#user-token-display");
     if (tokenInput) {
-      tokenInput.value = state.user.token_credential || "";
+      tokenInput.value = state.user.credential_token || "";
     }
     const tokenFeedback = $("#token-feedback");
     if (tokenFeedback) {
@@ -2616,7 +2608,7 @@ $("#btn-toggle-token").onclick = () => {
 };
 
 $("#btn-copy-token").onclick = async () => {
-  const token = state.user?.token_credential;
+  const token = state.user?.credential_token;
   if (!token) return;
   try {
     await navigator.clipboard.writeText(token);
@@ -2637,9 +2629,9 @@ $("#btn-regen-token").onclick = async () => {
   btn.disabled = true;
   try {
     const res = await api("/api/auth/token/regenerate", { method: "POST" });
-    state.user.token_credential = res.token_credential;
+    state.user.credential_token = res.credential_token;
     localStorage.removeItem(USER_TOKEN_KEY);
-    $("#user-token-display").value = res.token_credential;
+    $("#user-token-display").value = res.credential_token;
     const fb = $("#token-feedback");
     fb.textContent = "Token baru berhasil dibuat.";
     fb.className = "small ok";
@@ -2669,9 +2661,9 @@ $("#btn-save-custom-token").onclick = async () => {
       method: "PATCH",
       body: JSON.stringify({ token: custom }),
     });
-    state.user.token_credential = res.token_credential;
+    state.user.credential_token = res.credential_token;
     localStorage.removeItem(USER_TOKEN_KEY);
-    $("#user-token-display").value = res.token_credential;
+    $("#user-token-display").value = res.credential_token;
     $("#in-custom-token").value = "";
     fb.textContent = "Token kustom berhasil disimpan.";
     fb.className = "small ok";
