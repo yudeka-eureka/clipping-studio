@@ -6,6 +6,10 @@ const state = { jobs: {}, current: null, src: "file", file: null, config: null,
 const ALL_VIEWS = ["#view-new", "#view-job", "#view-usage", "#view-settings", "#view-auth"];
 
 function setView(activeViewId) {
+  if (!state.user && activeViewId !== "#view-auth") {
+    showAuth(window.location.pathname === "/register" ? "register" : "login");
+    return;
+  }
   for (const v of ALL_VIEWS) {
     const el = $(v);
     if (el) el.hidden = v !== activeViewId;
@@ -2428,12 +2432,14 @@ function updateAuthUI() {
   const topbarUsername = $("#topbar-username");
 
   if (state.user) {
+    document.body.classList.remove("guest-mode");
     if (btnAuthOpen) btnAuthOpen.hidden = true;
     if (btnUserBadge) {
       btnUserBadge.hidden = false;
       if (topbarUsername) topbarUsername.textContent = state.user.username;
     }
   } else {
+    document.body.classList.add("guest-mode");
     if (btnAuthOpen) btnAuthOpen.hidden = false;
     if (btnUserBadge) btnUserBadge.hidden = true;
   }
@@ -2454,9 +2460,17 @@ async function checkAuth() {
 }
 
 function showAuth(mode = "login") {
-  state.backTo = state.current
-    ? { view: "job", id: state.current }
-    : { view: $("#view-settings").hidden ? ($("#view-usage").hidden ? "new" : "usage") : "settings" };
+  if (state.user) {
+    state.backTo = state.current
+      ? { view: "job", id: state.current }
+      : { view: $("#view-settings").hidden ? ($("#view-usage").hidden ? "new" : "usage") : "settings" };
+    $("#btn-auth-back").hidden = false;
+    $("#btn-auth-back").textContent = "← Kembali";
+  } else {
+    state.backTo = null;
+    $("#btn-auth-back").hidden = false;
+    $("#btn-auth-back").textContent = "← Beranda";
+  }
   state.current = null;
   setView("#view-auth");
   setAuthTab(mode);
@@ -2467,7 +2481,9 @@ function showAuth(mode = "login") {
     alertEl.textContent = "";
   }
   window.scrollTo(0, 0);
-  renderJobList();
+  if (state.user) {
+    renderJobList();
+  }
 }
 
 function setAuthTab(mode) {
@@ -2480,6 +2496,9 @@ function setAuthTab(mode) {
   $("#auth-sub").textContent = isLogin
     ? "Kelola token kredensial dan simpan preferensi studio Anda."
     : "Daftar sekarang untuk mendapatkan token akses otomatis yang terenkripsi aman.";
+  if (!state.user && (window.location.pathname === "/login" || window.location.pathname === "/register")) {
+    window.history.replaceState({}, "", isLogin ? "/login" : "/register");
+  }
   const alertEl = $("#auth-alert");
   if (alertEl) {
     alertEl.hidden = true;
@@ -2543,6 +2562,10 @@ $("#btn-user-badge").onclick = () => {
 $("#btn-settings-open-auth").onclick = () => showAuth("login");
 
 $("#btn-auth-back").onclick = () => {
+  if (!state.user) {
+    window.location.href = "/";
+    return;
+  }
   const back = state.backTo || { view: "new" };
   if (back.view === "job" && state.jobs[back.id]) openJob(back.id);
   else if (back.view === "settings") showSettings();
@@ -2594,6 +2617,16 @@ $("#form-login").onsubmit = async (e) => {
     updateAuthUI();
     toast(`Berhasil masuk! Selamat datang, ${state.user.username}`);
     $("#login-password").value = "";
+    window.history.replaceState({}, "", "/app");
+
+    await Promise.all([
+      loadConfig(),
+      loadAiCredentials(),
+      loadMediaCredentials(),
+      loadUsage().catch(() => {}),
+    ]);
+    loadBranding();
+    connect();
 
     if (state.backTo?.view === "settings") showSettings();
     else if (state.backTo?.view === "job" && state.jobs[state.backTo.id]) openJob(state.backTo.id);
@@ -2634,6 +2667,17 @@ $("#form-register").onsubmit = async (e) => {
     updateAuthUI();
     toast(`Akun '${state.user.username}' berhasil dibuat! Token kredensial aktif.`);
     $("#reg-password").value = "";
+    window.history.replaceState({}, "", "/app");
+
+    await Promise.all([
+      loadConfig(),
+      loadAiCredentials(),
+      loadMediaCredentials(),
+      loadUsage().catch(() => {}),
+    ]);
+    loadBranding();
+    connect();
+
     showSettings();
   } catch (err) {
     alertEl.textContent = err.message;
@@ -2733,8 +2777,7 @@ $("#btn-user-logout").onclick = async () => {
     await api("/api/auth/logout", { method: "POST" });
     state.user = null;
     localStorage.removeItem(USER_TOKEN_KEY);
-    updateAuthUI();
-    toast("Anda telah keluar dari akun.");
+    window.location.href = "/login";
   } catch (err) {
     toast(err.message, true);
   }
@@ -2743,7 +2786,22 @@ $("#btn-user-logout").onclick = async () => {
 (async () => {
   await migrateLegacyLocalStorage();
   await checkAuth();
-  await Promise.all([loadConfig(), loadUsage().catch((err) => toast(err.message, true))]);
-  loadBranding();
-  connect();
+  if (state.user) {
+    document.body.classList.remove("guest-mode");
+    if (window.location.pathname === "/login" || window.location.pathname === "/register") {
+      window.history.replaceState({}, "", "/app");
+    }
+    await Promise.all([
+      loadConfig(),
+      loadAiCredentials(),
+      loadMediaCredentials(),
+      loadUsage().catch((err) => toast(err.message, true)),
+    ]);
+    loadBranding();
+    connect();
+  } else {
+    document.body.classList.add("guest-mode");
+    const mode = window.location.pathname === "/register" ? "register" : "login";
+    showAuth(mode);
+  }
 })();

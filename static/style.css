@@ -382,6 +382,23 @@ details.targets[open] summary { margin-bottom: 6px; }
   border-color: var(--accent);
 }
 
+body.guest-mode .sidebar,
+body.guest-mode #btn-settings,
+body.guest-mode #btn-auth-open,
+body.guest-mode #btn-user-badge {
+  display: none !important;
+}
+body.guest-mode .layout {
+  display: flex !important;
+  justify-content: center !important;
+  align-items: flex-start !important;
+  padding: 40px 16px !important;
+}
+body.guest-mode #main {
+  width: 100% !important;
+  max-width: 520px !important;
+}
+
 .auth-pane {
   display: flex;
   flex-direction: column;

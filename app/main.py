@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv, set_key
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
@@ -91,8 +91,28 @@ def landing_page():
     return FileResponse(ROOT / "static" / "landing.html")
 
 
+@app.get("/login", response_class=HTMLResponse)
+@app.get("/register", response_class=HTMLResponse)
+def auth_page(request: Request):
+    user = CURRENT_USER.get() or resolve_user_from_request(request)
+    if user:
+        return RedirectResponse(url="/app", status_code=303)
+    return FileResponse(ROOT / "static" / "index.html")
+
+
 @app.get("/app", response_class=HTMLResponse)
-def dashboard_page():
+def dashboard_page(request: Request):
+    user = CURRENT_USER.get() or resolve_user_from_request(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    return FileResponse(ROOT / "static" / "index.html")
+
+
+@app.get("/index.html", response_class=HTMLResponse)
+def index_redirect(request: Request):
+    user = CURRENT_USER.get() or resolve_user_from_request(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
     return FileResponse(ROOT / "static" / "index.html")
 
 
@@ -156,6 +176,13 @@ def get_rate_keys(request: Request) -> list[str]:
 def owned_jobs(session_id: str | None = None) -> list[dict]:
     jobs = sorted(store.jobs.values(), key=lambda j: j["created_at"], reverse=True)
     if PUBLIC_MODE:
+        user = CURRENT_USER.get()
+        if user:
+            return [
+                job for job in jobs
+                if job.get("user_id") == user.get("id")
+                or job.get("owner_session_id") in (user.get("credential_token"), session_id, current_session_id())
+            ]
         owner = session_id or current_session_id()
         jobs = [job for job in jobs if job.get("owner_session_id") == owner]
     return jobs
@@ -167,8 +194,19 @@ def visible_jobs(session_id: str | None = None) -> list[dict]:
 
 def get_job(job_id: str) -> dict:
     job = store.jobs.get(job_id)
-    if not job or (PUBLIC_MODE and job.get("owner_session_id") != current_session_id()):
+    if not job:
         raise HTTPException(404, "Job tidak ditemukan")
+    if PUBLIC_MODE:
+        user = CURRENT_USER.get()
+        if user:
+            allowed = (
+                job.get("user_id") == user.get("id")
+                or job.get("owner_session_id") in (user.get("credential_token"), current_session_id())
+            )
+            if not allowed:
+                raise HTTPException(404, "Job tidak ditemukan")
+        elif job.get("owner_session_id") != current_session_id():
+            raise HTTPException(404, "Job tidak ditemukan")
     return job
 
 
@@ -212,7 +250,25 @@ def _request_ai_context(provider_name: str | None, key: str | None, model: str |
     name = (provider_name or "").strip().lower()
     selected_model = (model or "").strip()
 
-    # Ambil kredensial AI dari cookie terenkripsi jika tidak dikirim via header/argumen
+    # Ambil kredensial AI dari akun pengguna di database MySQL jika ada
+    user = (CURRENT_USER.get() or resolve_user_from_request(request)) if request else None
+    if user and not secret:
+        try:
+            user_ai = db.get_user_ai_credentials(user["id"])
+            if isinstance(user_ai, dict):
+                db_prov = (user_ai.get("provider") or "").strip().lower()
+                if not name and db_prov:
+                    name = db_prov
+                target_prov = name or analysis.provider()
+                p_data = (user_ai.get("providers") or {}).get(target_prov) or {}
+                if p_data.get("key"):
+                    secret = p_data["key"].strip()
+                if not selected_model and p_data.get("model"):
+                    selected_model = p_data["model"].strip()
+        except Exception:
+            pass
+
+    # Ambil kredensial AI dari cookie terenkripsi jika tidak dikirim via header/argumen/database
     if request and not secret:
         cookie_creds = security.decrypt_cookie_data(request.cookies.get(AI_CREDS_COOKIE))
         if isinstance(cookie_creds, dict):
@@ -281,7 +337,16 @@ def _providers() -> dict:
 
 @app.get("/api/config")
 def get_config(request: Request = None):
-    cookie_creds = security.decrypt_cookie_data(request.cookies.get(AI_CREDS_COOKIE)) if request else None
+    user = (CURRENT_USER.get() or resolve_user_from_request(request)) if request else None
+    user_ai = None
+    if user:
+        try:
+            user_ai = db.get_user_ai_credentials(user["id"])
+        except Exception:
+            pass
+    cookie_creds = user_ai if isinstance(user_ai, dict) and user_ai.get("providers") else (
+        security.decrypt_cookie_data(request.cookies.get(AI_CREDS_COOKIE)) if request else None
+    )
     cookie_prov = (cookie_creds.get("provider") or "").strip().lower() if isinstance(cookie_creds, dict) else ""
     current = cookie_prov if cookie_prov in analysis.PROVIDERS else analysis.provider()
 
@@ -495,7 +560,11 @@ async def create_job(
             safe_filename = Path(file.filename).name
             ai_context = _request_ai_context(x_ai_provider, x_ai_key, x_ai_model, request=request)
             job = store.create(safe_filename, "upload", opts)
-            if PUBLIC_MODE:
+            user = CURRENT_USER.get() or resolve_user_from_request(request)
+            if user:
+                job["user_id"] = user["id"]
+                job["owner_session_id"] = user.get("credential_token") or current_session_id()
+            elif PUBLIC_MODE:
                 job["owner_session_id"] = current_session_id()
             if ai_context:
                 job["_ai_context"] = ai_context
@@ -512,7 +581,11 @@ async def create_job(
             raise HTTPException(400, str(e))
         ai_context = _request_ai_context(x_ai_provider, x_ai_key, x_ai_model, request=request)
         job = store.create(url, "url", opts)
-        if PUBLIC_MODE:
+        user = CURRENT_USER.get() or resolve_user_from_request(request)
+        if user:
+            job["user_id"] = user["id"]
+            job["owner_session_id"] = user.get("credential_token") or current_session_id()
+        elif PUBLIC_MODE:
             job["owner_session_id"] = current_session_id()
         if ai_context:
             job["_ai_context"] = ai_context
@@ -938,9 +1011,15 @@ async def test_mediahost(request: Request, body: MediaHostTestIn | None = None):
         p = body.provider if body else "default"
         creds = body.credentials if body else {}
         if not creds and p in ("cloudinary", "r2"):
-            cookie_creds = security.decrypt_cookie_data(request.cookies.get(MEDIA_CREDS_COOKIE))
-            if isinstance(cookie_creds, dict):
-                creds = cookie_creds.get(p) or {}
+            user = CURRENT_USER.get() or resolve_user_from_request(request)
+            if user:
+                user_media = db.get_user_media_credentials(user["id"])
+                if isinstance(user_media, dict):
+                    creds = user_media.get(p) or {}
+            if not creds:
+                cookie_creds = security.decrypt_cookie_data(request.cookies.get(MEDIA_CREDS_COOKIE))
+                if isinstance(cookie_creds, dict):
+                    creds = cookie_creds.get(p) or {}
         return {"ok": True, "message": await asyncio.to_thread(mediahost.check_context, p, creds)}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, str(e))
@@ -982,9 +1061,15 @@ async def publish_clip(request: Request, job_id: str, clip_id: str, body: Publis
     media_provider = (body.media_host or "default").strip().lower()
     media_creds = body.media_credentials or {}
     if not media_creds and media_provider in ("cloudinary", "r2"):
-        cookie_creds = security.decrypt_cookie_data(request.cookies.get(MEDIA_CREDS_COOKIE))
-        if isinstance(cookie_creds, dict):
-            media_creds = cookie_creds.get(media_provider) or {}
+        user = CURRENT_USER.get() or resolve_user_from_request(request)
+        if user:
+            user_media = db.get_user_media_credentials(user["id"])
+            if isinstance(user_media, dict):
+                media_creds = user_media.get(media_provider) or {}
+        if not media_creds:
+            cookie_creds = security.decrypt_cookie_data(request.cookies.get(MEDIA_CREDS_COOKIE))
+            if isinstance(cookie_creds, dict):
+                media_creds = cookie_creds.get(media_provider) or {}
     if media_provider == "default":
         if not mediahost.server_is_configured():
             raise HTTPException(400, "Server default belum mengonfigurasi hosting video di .env. Hubungkan Cloudinary atau R2 pribadi Anda di Pengaturan.")
@@ -1149,6 +1234,22 @@ def auth_login(req: LoginBody, request: Request, response: Response):
         user["credential_token"],
         request=request,
     )
+
+    # Sinkronisasi kredensial AI dan Cloud Media yang tersimpan di akun ke cookie terenkripsi
+    try:
+        user_ai = db.get_user_ai_credentials(user["id"])
+        if user_ai:
+            security.set_secure_cookie(response, AI_CREDS_COOKIE, user_ai, request=request)
+    except Exception:
+        pass
+
+    try:
+        user_media = db.get_user_media_credentials(user["id"])
+        if user_media:
+            security.set_secure_cookie(response, MEDIA_CREDS_COOKIE, user_media, request=request)
+    except Exception:
+        pass
+
     return {"ok": True, "user": user}
 
 
@@ -1201,6 +1302,8 @@ def auth_update_custom_token(req: CustomTokenBody, request: Request, response: R
 @app.post("/api/auth/logout")
 def auth_logout(response: Response):
     security.clear_secure_cookie(response, USER_TOKEN_COOKIE)
+    security.clear_secure_cookie(response, AI_CREDS_COOKIE)
+    security.clear_secure_cookie(response, MEDIA_CREDS_COOKIE)
     return {"ok": True}
 
 
@@ -1236,8 +1339,16 @@ def _summarize_ai_credentials(creds: dict) -> dict:
 
 @app.get("/api/credentials/ai")
 def get_ai_credentials(request: Request):
-    """Ambil status dan hint kredensial AI dari cookie terenkripsi tanpa membocorkan secret key."""
-    creds = security.decrypt_cookie_data(request.cookies.get(AI_CREDS_COOKIE))
+    """Ambil status dan hint kredensial AI dari akun pengguna di database (MySQL) atau cookie terenkripsi."""
+    user = CURRENT_USER.get() or resolve_user_from_request(request)
+    creds = None
+    if user:
+        try:
+            creds = db.get_user_ai_credentials(user["id"])
+        except Exception:
+            pass
+    if not isinstance(creds, dict):
+        creds = security.decrypt_cookie_data(request.cookies.get(AI_CREDS_COOKIE))
     if not isinstance(creds, dict):
         creds = {"provider": analysis.provider(), "providers": {}}
     return _summarize_ai_credentials(creds)
@@ -1245,12 +1356,21 @@ def get_ai_credentials(request: Request):
 
 @app.post("/api/credentials/ai")
 def set_ai_credentials(body: AiCredentialsIn, request: Request, response: Response):
-    """Simpan kredensial AI ke dalam cookie HttpOnly terenkripsi AES-256."""
-    target_prov = (body.provider or "").strip().lower()
+    """Simpan kredensial AI ke akun pengguna di tabel model_keys dan cookie HttpOnly terenkripsi AES-256."""
+    raw_prov = (body.provider or "").strip().lower()
+    target_prov = db.normalize_provider(raw_prov)
     if target_prov not in analysis.PROVIDERS:
         raise HTTPException(400, "Penyedia AI tidak valid.")
 
-    creds = security.decrypt_cookie_data(request.cookies.get(AI_CREDS_COOKIE))
+    user = CURRENT_USER.get() or resolve_user_from_request(request)
+    creds = None
+    if user:
+        try:
+            creds = db.get_user_ai_credentials(user["id"])
+        except Exception:
+            pass
+    if not isinstance(creds, dict):
+        creds = security.decrypt_cookie_data(request.cookies.get(AI_CREDS_COOKIE))
     if not isinstance(creds, dict):
         creds = {"provider": target_prov, "providers": {}}
 
@@ -1264,18 +1384,50 @@ def set_ai_credentials(body: AiCredentialsIn, request: Request, response: Respon
     if body.model:
         existing_p["model"] = body.model.strip()
 
+    if user:
+        try:
+            db.save_model_key(
+                user["id"],
+                "ai",
+                target_prov,
+                key=new_key or existing_p.get("key"),
+                model=body.model.strip() if body.model else existing_p.get("model"),
+                is_active=True,
+            )
+            full_user_ai = db.get_user_ai_credentials(user["id"])
+            if full_user_ai:
+                creds = full_user_ai
+        except Exception:
+            pass
+
     security.set_secure_cookie(response, AI_CREDS_COOKIE, creds, request=request)
     return _summarize_ai_credentials(creds)
 
 
 @app.delete("/api/credentials/ai")
 def clear_ai_credentials(request: Request, response: Response, provider: str | None = None):
-    """Hapus kredensial AI dari cookie terenkripsi."""
+    """Hapus kredensial AI dari akun pengguna di database dan cookie terenkripsi."""
+    user = CURRENT_USER.get() or resolve_user_from_request(request)
     if not provider:
+        if user:
+            try:
+                db.delete_model_key(user["id"], "ai")
+            except Exception:
+                pass
         security.clear_secure_cookie(response, AI_CREDS_COOKIE)
         return {"ok": True}
 
-    target = provider.strip().lower()
+    target = db.normalize_provider(provider)
+    if user:
+        try:
+            db.delete_model_key(user["id"], "ai", target)
+            updated = db.get_user_ai_credentials(user["id"])
+            if updated:
+                security.set_secure_cookie(response, AI_CREDS_COOKIE, updated, request=request)
+                return {"ok": True}
+        except Exception:
+            pass
+
     creds = security.decrypt_cookie_data(request.cookies.get(AI_CREDS_COOKIE))
     if isinstance(creds, dict) and "providers" in creds:
         creds["providers"].pop(target, None)
@@ -1320,8 +1472,16 @@ def _summarize_media_credentials(creds: dict) -> dict:
 
 @app.get("/api/credentials/media")
 def get_media_credentials(request: Request):
-    """Ambil status hosting media kustom dari cookie terenkripsi tanpa mengekspos secret."""
-    creds = security.decrypt_cookie_data(request.cookies.get(MEDIA_CREDS_COOKIE))
+    """Ambil status hosting media kustom dari akun pengguna di database atau cookie terenkripsi tanpa mengekspos secret."""
+    user = CURRENT_USER.get() or resolve_user_from_request(request)
+    creds = None
+    if user:
+        try:
+            creds = db.get_user_media_credentials(user["id"])
+        except Exception:
+            pass
+    if not isinstance(creds, dict):
+        creds = security.decrypt_cookie_data(request.cookies.get(MEDIA_CREDS_COOKIE))
     if not isinstance(creds, dict):
         creds = {"host": "default", "cloudinary": {}, "r2": {}}
     return _summarize_media_credentials(creds)
@@ -1329,12 +1489,20 @@ def get_media_credentials(request: Request):
 
 @app.post("/api/credentials/media")
 def set_media_credentials(body: MediaCredentialsIn, request: Request, response: Response):
-    """Simpan pengaturan hosting media kustom ke dalam cookie HttpOnly terenkripsi AES-256."""
+    """Simpan pengaturan hosting media kustom ke akun pengguna di tabel model_keys dan cookie HttpOnly terenkripsi AES-256."""
     host = body.host.strip().lower()
     if host not in ("default", "cloudinary", "r2"):
         raise HTTPException(400, "Media host tidak valid.")
 
-    creds = security.decrypt_cookie_data(request.cookies.get(MEDIA_CREDS_COOKIE))
+    user = CURRENT_USER.get() or resolve_user_from_request(request)
+    creds = None
+    if user:
+        try:
+            creds = db.get_user_media_credentials(user["id"])
+        except Exception:
+            pass
+    if not isinstance(creds, dict):
+        creds = security.decrypt_cookie_data(request.cookies.get(MEDIA_CREDS_COOKIE))
     if not isinstance(creds, dict):
         creds = {"host": host, "cloudinary": {}, "r2": {}}
 
@@ -1348,13 +1516,31 @@ def set_media_credentials(body: MediaCredentialsIn, request: Request, response: 
                 continue
             target_dict[k] = val
 
+    if user:
+        try:
+            db.save_user_media_credentials(user["id"], creds)
+            full_user_media = db.get_user_media_credentials(user["id"])
+            if full_user_media:
+                creds = full_user_media
+        except Exception:
+            pass
+
     security.set_secure_cookie(response, MEDIA_CREDS_COOKIE, creds, request=request)
     return _summarize_media_credentials(creds)
 
 
 @app.delete("/api/credentials/media")
-def clear_media_credentials(response: Response):
-    """Hapus cookie kredensial hosting media kustom."""
+def clear_media_credentials(request: Request, response: Response, provider: str | None = None):
+    """Hapus cookie dan preferensi kredensial hosting media kustom dari akun."""
+    user = CURRENT_USER.get() or resolve_user_from_request(request)
+    if user:
+        try:
+            if provider:
+                db.delete_model_key(user["id"], "media", provider)
+            else:
+                db.delete_model_key(user["id"], "media")
+        except Exception:
+            pass
     security.clear_secure_cookie(response, MEDIA_CREDS_COOKIE)
     return {"ok": True}
 
