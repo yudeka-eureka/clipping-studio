@@ -280,18 +280,35 @@ def _providers() -> dict:
 
 
 @app.get("/api/config")
-def get_config():
-    current = analysis.provider()
-    key = os.environ.get(analysis.PROVIDERS[current]["env"], "")
-    if PUBLIC_MODE:
-        key = ""
+def get_config(request: Request = None):
+    cookie_creds = security.decrypt_cookie_data(request.cookies.get(AI_CREDS_COOKIE)) if request else None
+    cookie_prov = (cookie_creds.get("provider") or "").strip().lower() if isinstance(cookie_creds, dict) else ""
+    current = cookie_prov if cookie_prov in analysis.PROVIDERS else analysis.provider()
+
+    providers_data = _providers()
+    if isinstance(cookie_creds, dict):
+        cookie_providers = cookie_creds.get("providers") or {}
+        for p_name, p_val in cookie_providers.items():
+            if p_name in providers_data and isinstance(p_val, dict):
+                p_key = (p_val.get("key") or "").strip()
+                if p_key:
+                    providers_data[p_name]["has_key"] = True
+                    providers_data[p_name]["key_hint"] = f"…{p_key[-4:]}"
+                if p_val.get("model"):
+                    providers_data[p_name]["model"] = p_val["model"].strip()
+
+    active_p_data = providers_data.get(current, {})
+    has_key = active_p_data.get("has_key", False)
+    key_hint = active_p_data.get("key_hint", "")
+    current_model = active_p_data.get("model", analysis.PROVIDERS[current]["default_model"])
+
     return {
         "provider": current,
         "public_mode": PUBLIC_MODE,
-        "providers": _providers(),
-        "has_key": bool(key),
-        "key_hint": f"…{key[-4:]}" if key else "",
-        "model": analysis.PROVIDERS[current]["default_model"] if PUBLIC_MODE else analysis.model_name(),
+        "providers": providers_data,
+        "has_key": has_key,
+        "key_hint": key_hint,
+        "model": current_model,
         "ffmpeg": media.FFMPEG,
         "subtitles_supported": media.SUBTITLES_SUPPORTED,
         "face_tracking": facetrack.available(),
@@ -325,7 +342,7 @@ def get_config():
 
 
 @app.post("/api/config")
-def save_config(cfg: ConfigIn):
+def save_config(cfg: ConfigIn, request: Request = None):
     ENV_FILE.touch(mode=0o600, exist_ok=True)
     target = cfg.provider if cfg.provider in analysis.PROVIDERS else analysis.provider()
     spec = analysis.PROVIDERS[target]
@@ -358,7 +375,7 @@ def save_config(cfg: ConfigIn):
         _set_env("JOB_RETENTION_HOURS", str(cfg.job_retention_hours))
     if cfg.execution_timeout_minutes is not None and cfg.execution_timeout_minutes > 0:
         _set_env("EXECUTION_TIMEOUT_MINUTES", str(cfg.execution_timeout_minutes))
-    return get_config()
+    return get_config(request)
 
 
 @app.get("/api/models")

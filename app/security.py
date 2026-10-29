@@ -379,8 +379,8 @@ def is_cookie_secure(request: Request | None = None) -> bool:
 
     - Jika COOKIE_SECURE disetel di environment, prioritaskan nilai tersebut.
     - Jika request melalui HTTPS (atau reverse proxy X-Forwarded-Proto: https), kembalikan True.
-    - Jika request dari localhost / 127.0.0.1 / testserver via plain HTTP, kembalikan False agar tidak memblokir pengembangan lokal / testing.
-    - Default ke nilai PUBLIC_MODE jika di luar kondisi di atas.
+    - Jika request melalui plain HTTP, kembalikan False agar browser tidak membuang cookie (RFC 6265bis).
+    - Default ke nilai PUBLIC_MODE jika request tidak tersedia.
     """
     explicit = os.environ.get("COOKIE_SECURE")
     if explicit is not None:
@@ -390,9 +390,9 @@ def is_cookie_secure(request: Request | None = None) -> bool:
             proto = request.headers.get("x-forwarded-proto") or request.scope.get("scheme", "http")
             if str(proto).lower() == "https":
                 return True
-            host = request.headers.get("host", "").split(":")[0]
-            if host in ("localhost", "127.0.0.1", "testserver"):
-                return False
+            # Jika request melalui plain HTTP, jangan aktifkan flag Secure
+            # karena browser akan membuang cookie Secure yang dikirim melalui HTTP (RFC 6265bis).
+            return False
         except Exception:
             pass
     return os.environ.get("PUBLIC_MODE", "false").strip().lower() in ("1", "true", "yes", "on")

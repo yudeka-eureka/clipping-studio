@@ -42,10 +42,39 @@ async function loadAiCredentials() {
         }
       }
       if (res.provider) state.config.provider = res.provider;
+      const curProv = state.config.provider;
+      state.config.has_key = Boolean(state.config.providers?.[curProv]?.has_key);
+      state.config.key_hint = state.config.providers?.[curProv]?.key_hint || "";
+      state.config.model = state.config.providers?.[curProv]?.model || state.config.model;
     }
+    updateAiSummaryUI();
     return res;
   } catch {
     return null;
+  }
+}
+
+function updateAiSummaryUI() {
+  const el = $("#ai-active-summary");
+  if (!el || !state.config) return;
+  const prov = state.config.provider || "gemini";
+  const p = state.config.providers?.[prov] || {};
+  const model = p.model || state.config.model || p.default_model || "gemini-3.8-flash";
+  const hasKey = Boolean(p.has_key || state.config.has_key);
+
+  const labelEl = $("#ai-active-label");
+  const statusEl = $("#ai-active-status");
+  if (labelEl) {
+    labelEl.textContent = `${p.label || prov} (${model})`;
+  }
+  if (statusEl) {
+    if (hasKey) {
+      statusEl.textContent = p.key_hint ? `● API Key Siap (${p.key_hint})` : "● API Key Siap";
+      statusEl.className = "small ok";
+    } else {
+      statusEl.textContent = "○ Belum ada API key (Klik untuk mengatur)";
+      statusEl.className = "small muted";
+    }
   }
 }
 
@@ -90,7 +119,7 @@ function aiHeaders(providerOverride) {
   const userCfg = getUserConfig();
   const provider = providerOverride || userCfg.provider || state.aiCredentials?.provider || state.config?.provider || "gemini";
   const profile = (state.aiCredentials?.providers || {})[provider] || {};
-  const configModel = state.config?.providers?.[provider]?.model || "";
+  const configModel = state.config?.providers?.[provider]?.model || state.config?.model || "";
   return {
     "X-AI-Provider": provider,
     "X-AI-Model": profile.model || configModel,
@@ -133,6 +162,8 @@ function applyStoredAi(cfg) {
       cfg.model = cfg.providers[provider].default_model || "gemini-3.8-flash";
     }
   }
+  cfg.has_key = Boolean(cfg.providers?.[provider]?.has_key || cfg.has_key);
+  cfg.key_hint = cfg.providers?.[provider]?.key_hint || cfg.key_hint || "";
   if (userCfg.whisper_model && cfg.whisper_models && cfg.whisper_models[userCfg.whisper_model]) {
     cfg.whisper_model = userCfg.whisper_model;
   }
@@ -727,9 +758,11 @@ drop.addEventListener("drop", (e) => {
 
 $("#form-new").onsubmit = (e) => {
   e.preventDefault();
-  if (!state.config?.has_key) {
-    toast(`Isi API key ${state.config?.providers?.[state.config.provider]?.label || "AI"} dulu di Pengaturan.`, true);
-    showSettings();
+  const prov = state.config?.provider || "gemini";
+  const hasKey = Boolean(state.config?.providers?.[prov]?.has_key || state.config?.has_key);
+  if (!hasKey) {
+    toast(`Isi API key ${state.config?.providers?.[prov]?.label || "AI"} dulu di Pengaturan.`, true);
+    showSettings("ai");
     return;
   }
   const fd = new FormData();
@@ -1710,12 +1743,15 @@ async function loadConfig() {
   state.config = applyStoredAi(await api("/api/config"));
   fillSettings();
   updateRetentionUI();
-  if (!state.config.has_key) showSettings("ai");
+  updateAiSummaryUI();
+  const activeProv = state.config?.provider || "gemini";
+  const hasKey = Boolean(state.config?.providers?.[activeProv]?.has_key || state.config?.has_key);
+  if (!hasKey) showSettings("ai");
 }
 
 // Isian yang sedang diedit (belum disimpan) tidak boleh tertimpa saat konfigurasi dimuat ulang.
 const settingsForm = $("#form-settings");
-settingsForm.addEventListener("input", (e) => (e.target.dataset.dirty = "1"));
+["input", "change"].forEach((evt) => settingsForm.addEventListener(evt, (e) => (e.target.dataset.dirty = "1")));
 // Enter di kolom isian = Simpan (bukan menutup dialog).
 settingsForm.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && e.target.tagName === "INPUT" && !e.isComposing) {
@@ -1768,10 +1804,23 @@ function fillProviderFields() {
     : "Belum ada key yang tersimpan. Masukkan API key baru di kolom 'Ganti API Key'.";
   const sel = $("#set-model");
   const modelToSet = isModelUnavailable(p.model) ? (p.default_model || "gemini-3.8-flash") : p.model;
-  if (![...sel.options].some((o) => o.value === modelToSet) && !isModelUnavailable(modelToSet)) {
-    sel.add(new Option(modelToSet, modelToSet));
+  const availList = (state.availableModels || {})[name] || [];
+  if (availList.length > 0) {
+    const keepVal = sel.dataset.dirty ? sel.value : modelToSet;
+    sel.innerHTML = "";
+    availList.forEach((m) => sel.add(new Option(m, m)));
+    if (!availList.includes(keepVal) && !isModelUnavailable(keepVal)) {
+      sel.add(new Option(keepVal, keepVal));
+    }
+    sel.value = keepVal;
+  } else {
+    if (![...sel.options].some((o) => o.value === modelToSet) && !isModelUnavailable(modelToSet)) {
+      sel.add(new Option(modelToSet, modelToSet));
+    }
+    if (!sel.dataset.dirty) {
+      sel.value = modelToSet;
+    }
   }
-  sel.value = modelToSet;
 }
 
 function fillSettings() {
@@ -1783,14 +1832,6 @@ function fillSettings() {
     psel.add(new Option(`${p.label}${p.has_key ? "" : " — belum ada API key"}`, name));
   }
   psel.value = keep;
-  const sel = $("#set-model");
-  const currentModel = isModelUnavailable(cfg.providers[keep].model)
-    ? (cfg.providers[keep].default_model || "gemini-3.8-flash")
-    : cfg.providers[keep].model;
-  if (![...sel.options].some((o) => o.value === currentModel) && !isModelUnavailable(currentModel)) {
-    sel.add(new Option(currentModel, currentModel));
-  }
-  setField(sel, currentModel);
   fillProviderFields();
   const wsel = $("#set-whisper");
   const wval = wsel.dataset.dirty ? wsel.value : cfg.whisper_model;
@@ -2188,6 +2229,10 @@ $("#set-provider").onchange = () => {
   delete $("#set-model").dataset.dirty;
   fillProviderFields();
 };
+const aiSummaryBox = $("#ai-active-summary");
+if (aiSummaryBox) {
+  aiSummaryBox.onclick = () => showSettings("ai");
+}
 $("#btn-test-buffer").onclick = async () => {
   const out = $("#buffer-test");
   out.textContent = "Menghubungkan…";
@@ -2223,6 +2268,8 @@ $("#btn-load-models").onclick = async () => {
     sel.innerHTML = "";
     // Filter model yang tidak tersedia (seperti 2.5 flash dll)
     const availableModels = (models || []).filter((m) => !isModelUnavailable(m));
+    state.availableModels = state.availableModels || {};
+    state.availableModels[provider] = availableModels;
     availableModels.forEach((m) => sel.add(new Option(m, m)));
     if (availableModels.includes(current) && !isModelUnavailable(current)) {
       sel.value = current;
@@ -2239,6 +2286,7 @@ $("#btn-load-models").onclick = async () => {
     delete $("#set-key").dataset.dirty;
     state.config = applyStoredAi(await api("/api/config"));
     fillSettings();
+    updateAiSummaryUI();
   } catch (err) {
     toast(err.message, true);
   } finally {
@@ -2318,6 +2366,7 @@ async function saveSettings() {
   clearDirty();
   state.config = applyStoredAi(await api("/api/config").catch(() => state.config));
   fillSettings();
+  updateAiSummaryUI();
 }
 // Tombol Simpan maupun Enter di kolom isian sama-sama menyimpan.
 settingsForm.addEventListener("submit", async (e) => {

@@ -10,7 +10,7 @@ from app.main import (
     SESSION_COOKIE,
     _request_ai_context,
 )
-from app import db, security, gemini
+from app import db, security, gemini, main
 
 
 @pytest.fixture(autouse=True)
@@ -186,3 +186,81 @@ def test_cookie_secure_logic(monkeypatch):
     assert security.is_cookie_secure(req_local) is True
     monkeypatch.setenv("COOKIE_SECURE", "false")
     assert security.is_cookie_secure(req_https) is False
+
+    # Plain HTTP from 0.0.0.0 or LAN IP should not set Secure flag
+    scope_http_ip = {
+        "type": "http",
+        "scheme": "http",
+        "path": "/",
+        "headers": [(b"host", b"0.0.0.0:8765")],
+    }
+    monkeypatch.delenv("COOKIE_SECURE", raising=False)
+    monkeypatch.setattr(main, "PUBLIC_MODE", True)
+    req_ip = Request(scope_http_ip)
+    assert security.is_cookie_secure(req_ip) is False
+
+
+def test_api_config_reflects_user_ai_cookie_in_public_mode(monkeypatch):
+    monkeypatch.setattr(main, "PUBLIC_MODE", True)
+    client = TestClient(app)
+
+    # Initially in PUBLIC_MODE without cookie, has_key is False
+    res_init = client.get("/api/config")
+    assert res_init.status_code == 200
+    assert res_init.json()["has_key"] is False
+
+    # Save AI credentials via BYOK
+    post_res = client.post(
+        "/api/credentials/ai",
+        json={"provider": "gemini", "key": "AIzaSyUserKey123", "model": "gemini-3.7-flash"},
+    )
+    assert post_res.status_code == 200
+
+    # /api/config should now read the cookie and reflect has_key=True and the model
+    res_after = client.get("/api/config")
+    assert res_after.status_code == 200
+    data = res_after.json()
+    assert data["has_key"] is True
+    assert data["provider"] == "gemini"
+    assert data["model"] == "gemini-3.7-flash"
+    assert data["providers"]["gemini"]["has_key"] is True
+    assert data["providers"]["gemini"]["model"] == "gemini-3.7-flash"
+
+
+def test_job_creation_reads_user_ai_model_and_key_from_cookie(tmp_path, monkeypatch):
+    from unittest.mock import patch
+    import io
+    store = main.store
+
+    monkeypatch.setattr(main, "PUBLIC_MODE", True)
+    monkeypatch.setattr(store, "DATA_DIR", tmp_path / "jobs")
+    (tmp_path / "jobs").mkdir(parents=True, exist_ok=True)
+
+    client = TestClient(app)
+
+    # 1. User sets AI key and custom model in cookie
+    client.post(
+        "/api/credentials/ai",
+        json={"provider": "gemini", "key": "AIzaSyUserSecretKey99", "model": "gemini-3.8-flash"},
+    )
+
+    # 2. User creates a video clipping job without passing X-AI-Key header
+    with patch("app.pipeline.run", return_value=None):
+        valid_video_data = b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2avc1mp41" + b"\x00" * 4096
+        fake_file = io.BytesIO(valid_video_data)
+        res = client.post(
+            "/api/jobs",
+            files={"file": ("test_clip_video.mp4", fake_file, "video/mp4")},
+        )
+        assert res.status_code == 200
+        job_id = res.json()["id"]
+
+        # 3. Verify internal job has _ai_context with the user's key and model
+        internal_job = store.jobs.get(job_id)
+        assert internal_job is not None
+        assert internal_job.get("_ai_context") == {
+            "provider": "gemini",
+            "key": "AIzaSyUserSecretKey99",
+            "model": "gemini-3.8-flash",
+        }
+
