@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import anthropic
 
-from . import pricing
+from . import pricing, security
 from .analysis import Analysis, AnalysisError, build_prompt, transcript_text
 
 
 def client(api_key: str) -> anthropic.Anthropic:
-    return anthropic.Anthropic(api_key=api_key)
+    return anthropic.Anthropic(api_key=api_key, timeout=float(security.ai_timeout_seconds()))
 
 
 def list_models(api_key: str) -> list[str]:

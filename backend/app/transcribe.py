@@ -16,6 +16,7 @@ from typing import Callable
 
 import numpy as np
 
+from . import security
 from .media import FFMPEG
 
 SAMPLE_RATE = 16000
@@ -51,7 +52,9 @@ def _model(name: str):
     return _models[name]
 
 
-def _load_audio(src: Path, start: float, end: float, timeout: float = 60.0) -> np.ndarray:
+def _load_audio(src: Path, start: float, end: float, timeout: float | None = None) -> np.ndarray:
+    if timeout is None:
+        timeout = max(120.0, float(security.execution_timeout_seconds()))
     cmd = [
         FFMPEG, "-hide_banner", "-loglevel", "error", "-ss", f"{start:.3f}", "-i", str(src),
         "-t", f"{end - start:.3f}", "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "s16le", "pipe:1",

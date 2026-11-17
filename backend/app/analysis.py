@@ -18,6 +18,7 @@ from typing import Callable
 
 from pydantic import BaseModel, Field
 
+from . import security
 from .media import FFMPEG
 
 MAX_FRAMES = 20
@@ -144,16 +145,17 @@ def sample_frames(src: Path, duration: float, work_dir: Path, count: int = MAX_F
     out_dir = work_dir / "frames"
     shutil.rmtree(out_dir, ignore_errors=True)
     out_dir.mkdir(parents=True)
+    extract_timeout = max(300, int(duration * 0.5), security.execution_timeout_seconds())
     try:
         subprocess.run(
             [FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
              "-vf", f"fps=1/{interval:.3f},scale={FRAME_WIDTH}:-2", "-q:v", "6",
              str(out_dir / "f_%03d.jpg")],
             check=True,
-            timeout=120,
+            timeout=extract_timeout,
         )
     except subprocess.TimeoutExpired as e:
-        raise RuntimeError("Ekstraksi frame video melebihi batas waktu (120 detik).") from e
+        raise RuntimeError(f"Ekstraksi frame video melebihi batas waktu ({int(extract_timeout)} detik).") from e
     frames = []
     for i, path in enumerate(sorted(out_dir.glob("f_*.jpg"))[:count]):
         frames.append((i * interval, path.read_bytes()))

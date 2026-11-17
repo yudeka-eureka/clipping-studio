@@ -432,6 +432,8 @@ async def run(job: dict, upload_path: Path | None, url: str | None) -> None:
         key = ""
         stage_timeout = float(security.execution_timeout_seconds())
         timeout_min = security.execution_timeout_minutes()
+        ai_stage_timeout = float(security.ai_timeout_seconds())
+        ai_timeout_min = security.ai_timeout_minutes()
         try:
             # 1. Sumber video - keluar dari antrean dan mulai persiapan
             await store.update(job, status="preparing", stage="Menyiapkan video…", progress=0)
@@ -460,7 +462,7 @@ async def run(job: dict, upload_path: Path | None, url: str | None) -> None:
                         transcribe.source_words, src, meta["duration"], store.dir(job["id"]),
                         lambda p: asyncio.run_coroutine_threadsafe(
                             store.progress(job, p, "Membuat transkrip video…"), loop) and None),
-                    timeout=stage_timeout,
+                    timeout=ai_stage_timeout,
                 )
                 if not words:
                     raise RuntimeError("Transkrip kosong: video ini tidak ada suaranya, "
@@ -489,7 +491,7 @@ async def run(job: dict, upload_path: Path | None, url: str | None) -> None:
                 await store.update(job, status="analyzing", stage="Mengunggah ke Gemini…", progress=0)
                 uploaded = await asyncio.wait_for(
                     asyncio.to_thread(gemini.upload_video, key, proxy, on_state),
-                    timeout=stage_timeout,
+                    timeout=ai_stage_timeout,
                 )
                 await store.log(job, f"Video diterima Gemini. Menganalisis dengan {model}…")
                 await store.update(job, stage=f"AI ({model}) sedang menonton & memilih momen…", progress=0)
@@ -500,7 +502,7 @@ async def run(job: dict, upload_path: Path | None, url: str | None) -> None:
                     asyncio.to_thread(
                         analysis.analyze, *analyze_args, provider_name=provider,
                         api_key_value=key, model=model),
-                    timeout=stage_timeout,
+                    timeout=ai_stage_timeout,
                 )
             except analysis.AnalysisError as e:
                 await record_usage(job, e.usage)
@@ -528,7 +530,8 @@ async def run(job: dict, upload_path: Path | None, url: str | None) -> None:
                 proxy.unlink(missing_ok=True)
             shutil.rmtree(store.dir(job["id"]) / "frames", ignore_errors=True)
         except TimeoutError:
-            msg = f"Tahapan proses melebihi batas waktu ({timeout_min} menit)."
+            max_limit = max(timeout_min, ai_timeout_min)
+            msg = f"Tahapan proses melebihi batas waktu ({max_limit} menit)."
             await store.log(job, f"❌ {msg}")
             await store.update(job, status="error", error=msg, stage="Gagal")
         except Exception as e:  # noqa: BLE001

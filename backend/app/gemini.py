@@ -11,7 +11,7 @@ from typing import Callable
 
 from google import genai
 from google.genai import types
-from . import pricing
+from . import pricing, security
 from .analysis import Analysis, AnalysisError, build_prompt
 
 # Model atau varian yang sudah tidak tersedia untuk pengguna baru / di-sunset oleh Google
@@ -30,7 +30,10 @@ UNAVAILABLE_PATTERNS = {
 
 
 def client(api_key: str) -> genai.Client:
-    return genai.Client(api_key=api_key)
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=float(security.ai_timeout_seconds())),
+    )
 
 
 def _is_model_available(c: genai.Client, model_name: str) -> bool:

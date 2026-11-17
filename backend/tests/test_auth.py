@@ -243,45 +243,14 @@ def test_token_is_encrypted_with_aes256_in_database():
         conn.close()
 
 
-def test_unauthenticated_app_access_redirects_to_login():
-    """Pastikan akses ke /app atau /index.html oleh guest dialihkan (redirect 303) ke /login."""
-    guest_client = TestClient(app)
-
-    # 1. Guest akses /app -> redirect 303 ke /login
-    res_app = guest_client.get("/app", follow_redirects=False)
-    assert res_app.status_code == 303
-    assert res_app.headers["location"] == "/login"
-
-    # 2. Guest akses /index.html -> redirect 303 ke /login
-    res_index = guest_client.get("/index.html", follow_redirects=False)
-    assert res_index.status_code == 303
-    assert res_index.headers["location"] == "/login"
-
-    # 3. Guest akses /login dan /register -> 200 OK (halaman form auth)
-    res_login = guest_client.get("/login", follow_redirects=False)
-    assert res_login.status_code == 200
-    res_reg = guest_client.get("/register", follow_redirects=False)
-    assert res_reg.status_code == 200
-
-    # 4. User terautentikasi akses /app -> 200 OK
-    auth_client = TestClient(app)
-    uname = random_uname()
-    auth_client.post("/api/auth/register", json={
-        "username": uname,
-        "email": f"{uname}@example.com",
-        "password": "valid_password_123",
-    })
-    res_auth_app = auth_client.get("/app", follow_redirects=False)
-    assert res_auth_app.status_code == 200
-
-    # 5. User terautentikasi akses /login atau /register -> redirect 303 ke /app
-    res_auth_login = auth_client.get("/login", follow_redirects=False)
-    assert res_auth_login.status_code == 303
-    assert res_auth_login.headers["location"] == "/app"
-
-    res_auth_reg = auth_client.get("/register", follow_redirects=False)
-    assert res_auth_reg.status_code == 303
-    assert res_auth_reg.headers["location"] == "/app"
+def test_api_root():
+    """Pastikan root endpoint API mengembalikan status 200 dan informasi servis."""
+    client = TestClient(app)
+    res = client.get("/")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is True
+    assert "Clipping Studio API" in data["service"]
 
 
 def test_ai_credentials_tied_to_user_account_in_database():

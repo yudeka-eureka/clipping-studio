@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import openai
 
-from . import pricing
+from . import pricing, security
 from .analysis import Analysis, AnalysisError, build_prompt, transcript_text
 
 
 def client(api_key: str) -> openai.OpenAI:
-    return openai.OpenAI(api_key=api_key)
+    return openai.OpenAI(api_key=api_key, timeout=float(security.ai_timeout_seconds()))
 
 
 def list_models(api_key: str) -> list[str]:

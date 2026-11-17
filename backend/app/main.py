@@ -22,7 +22,6 @@ from dotenv import load_dotenv, set_key
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
@@ -112,34 +111,9 @@ def spawn(coro) -> None:
     t.add_done_callback(tasks.discard)
 
 
-@app.get("/", response_class=HTMLResponse)
-def landing_page():
-    return FileResponse(ROOT / "static" / "landing.html")
-
-
-@app.get("/login", response_class=HTMLResponse)
-@app.get("/register", response_class=HTMLResponse)
-def auth_page(request: Request):
-    user = CURRENT_USER.get() or resolve_user_from_request(request)
-    if user:
-        return RedirectResponse(url="/app", status_code=303)
-    return FileResponse(ROOT / "static" / "index.html")
-
-
-@app.get("/app", response_class=HTMLResponse)
-def dashboard_page(request: Request):
-    user = CURRENT_USER.get() or resolve_user_from_request(request)
-    if not user:
-        return RedirectResponse(url="/login", status_code=303)
-    return FileResponse(ROOT / "static" / "index.html")
-
-
-@app.get("/index.html", response_class=HTMLResponse)
-def index_redirect(request: Request):
-    user = CURRENT_USER.get() or resolve_user_from_request(request)
-    if not user:
-        return RedirectResponse(url="/login", status_code=303)
-    return FileResponse(ROOT / "static" / "index.html")
+@app.get("/")
+def api_root():
+    return {"ok": True, "service": "Clipping Studio API"}
 
 
 def current_session_id() -> str | None:
@@ -322,6 +296,7 @@ class ConfigIn(BaseModel):
     max_duration_minutes: int | None = None
     job_retention_hours: int | None = None
     execution_timeout_minutes: int | None = None
+    ai_timeout_minutes: int | None = None
 
 
 def _request_ai_context(provider_name: str | None, key: str | None, model: str | None,
@@ -482,6 +457,7 @@ def get_config(request: Request = None):
             "max_concurrent_jobs": pipeline.MAX_CONCURRENT_JOBS,
             "max_concurrent_renders": pipeline.MAX_CONCURRENT_RENDERS,
             "execution_timeout_minutes": security.execution_timeout_minutes(),
+            "ai_timeout_minutes": security.ai_timeout_minutes(),
         },
     }
 
@@ -520,6 +496,8 @@ def save_config(cfg: ConfigIn, request: Request = None):
         _set_env("JOB_RETENTION_HOURS", str(cfg.job_retention_hours))
     if cfg.execution_timeout_minutes is not None and cfg.execution_timeout_minutes > 0:
         _set_env("EXECUTION_TIMEOUT_MINUTES", str(cfg.execution_timeout_minutes))
+    if cfg.ai_timeout_minutes is not None and cfg.ai_timeout_minutes > 0:
+        _set_env("AI_TIMEOUT_MINUTES", str(cfg.ai_timeout_minutes))
     return get_config(request)
 
 
@@ -2052,9 +2030,6 @@ async def no_stale_ui(request: Request, call_next):
             max_age=60 * 60 * 24 * 365,
             path="/",
         )
-    if request.url.path.startswith(("/branding/", "/static/")) or request.url.path in ("/", "/app.js", "/style.css", "/index.html"):
+    if request.url.path.startswith("/branding/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
-
-
-app.mount("/", StaticFiles(directory=ROOT / "static", html=True), name="static")

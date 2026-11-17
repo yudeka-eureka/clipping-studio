@@ -54,7 +54,8 @@ VERIFIED_DOMAINS: set[str] = {
 DEFAULT_MAX_FILESIZE_MB: int = 500
 DEFAULT_MAX_DURATION_MINUTES: int = 45
 DEFAULT_JOB_RETENTION_HOURS: int = 24
-DEFAULT_EXECUTION_TIMEOUT_MINUTES: int = 15
+DEFAULT_EXECUTION_TIMEOUT_MINUTES: int = 60
+DEFAULT_AI_TIMEOUT_MINUTES: int = 60
 
 ALLOWED_VIDEO_EXTENSIONS: set[str] = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
 ALLOWED_VIDEO_MIMES: set[str] = {
@@ -111,6 +112,18 @@ def execution_timeout_minutes() -> int:
 
 def execution_timeout_seconds() -> int:
     return execution_timeout_minutes() * 60
+
+
+def ai_timeout_minutes() -> int:
+    try:
+        val = int(os.environ.get("AI_TIMEOUT_MINUTES", "").strip() or os.environ.get("EXECUTION_TIMEOUT_MINUTES", "").strip() or DEFAULT_AI_TIMEOUT_MINUTES)
+        return max(1, val)
+    except (ValueError, TypeError):
+        return DEFAULT_AI_TIMEOUT_MINUTES
+
+
+def ai_timeout_seconds() -> int:
+    return ai_timeout_minutes() * 60
 
 
 def detect_video_mime(header: bytes) -> str | None:
