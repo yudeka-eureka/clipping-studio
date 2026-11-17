@@ -5,6 +5,7 @@ set -e
 export GLOG_minloglevel=2 TF_CPP_MIN_LOG_LEVEL=3 GRPC_VERBOSITY=ERROR
 cd "$(dirname "$0")"
 PORT="${PORT:-8765}"
+HOST="${HOST:-0.0.0.0}"
 if [ ! -x .venv/bin/python ]; then
   echo "Menyiapkan environment Python (sekali saja)…"
   if command -v uv >/dev/null; then
@@ -16,4 +17,4 @@ if [ ! -x .venv/bin/python ]; then
   fi
 fi
 ( sleep 2 && open "http://localhost:$PORT" 2>/dev/null || true ) &
-exec .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port "$PORT"
+exec .venv/bin/python -m uvicorn app.main:app --host "$HOST" --port "$PORT" --proxy-headers --forwarded-allow-ips "*"

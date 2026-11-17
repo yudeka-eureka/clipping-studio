@@ -423,3 +423,43 @@ def set_secure_cookie(
 def clear_secure_cookie(response: Response, key: str) -> None:
     """Hapus cookie secara aman."""
     response.delete_cookie(key=key, path="/")
+
+
+# ---------- JWT (JSON Web Token) Autentikasi ----------
+
+JWT_ALGORITHM = "HS256"
+JWT_DEFAULT_EXPIRE_SECONDS = 7 * 24 * 3600  # 7 hari
+
+
+def get_jwt_secret() -> str:
+    """Ambil kunci rahasia untuk menandatangani dan memverifikasi token JWT."""
+    return os.environ.get("JWT_SECRET_KEY") or os.environ.get("SECRET_KEY") or "clipping-studio-jwt-secret-key-32b"
+
+
+def create_jwt_token(payload: dict[str, Any], expires_in_seconds: int = JWT_DEFAULT_EXPIRE_SECONDS) -> str:
+    """Buat token JWT beralgoritma HS256 dengan claims standar iat dan exp."""
+    import time
+    import jwt
+
+    now = int(time.time())
+    claims = payload.copy()
+    claims.setdefault("iat", now)
+    claims.setdefault("exp", now + expires_in_seconds)
+    secret = get_jwt_secret()
+    return jwt.encode(claims, secret, algorithm=JWT_ALGORITHM)
+
+
+def decode_jwt_token(token: str) -> dict[str, Any]:
+    """Dekode dan verifikasi tanda tangan token JWT HS256.
+
+    Melempar jwt.ExpiredSignatureError jika token kedaluwarsa,
+    atau jwt.InvalidTokenError jika tanda tangan/format tidak valid.
+    """
+    import jwt
+
+    tok = (token or "").strip()
+    if tok.lower().startswith("bearer "):
+        tok = tok[7:].strip()
+    secret = get_jwt_secret()
+    return jwt.decode(tok, secret, algorithms=[JWT_ALGORITHM])
+

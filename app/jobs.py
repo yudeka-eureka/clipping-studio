@@ -21,16 +21,52 @@ class Hub:
     """Semua browser yang terbuka menerima event yang sama secara realtime."""
 
     def __init__(self) -> None:
-        self.sockets: dict[WebSocket, str] = {}
+        self.sockets: dict[WebSocket, set[str]] = {}
         # Pendengar lokal (dipakai mode command line untuk menampilkan progres).
         self.listeners: list = []
 
-    async def send(self, event: dict, session_id: str | None = None) -> None:
+    def register(self, ws: WebSocket, identifiers: str | set[str] | list[str] | None = None) -> None:
+        ids: set[str] = set()
+        if isinstance(identifiers, str):
+            ids.add(identifiers)
+        elif isinstance(identifiers, (set, list, tuple)):
+            for item in identifiers:
+                if item:
+                    ids.add(str(item))
+        self.sockets[ws] = ids
+
+    def unregister(self, ws: WebSocket) -> None:
+        self.sockets.pop(ws, None)
+
+    async def send(
+        self,
+        event: dict,
+        session_id: str | int | None = None,
+        user_id: int | str | None = None,
+    ) -> None:
         for listen in list(self.listeners):
             listen(event)
         dead = []
-        for ws, socket_session in list(self.sockets.items()):
-            if session_id and socket_session != session_id:
+
+        target_keys: set[str] = set()
+        if session_id:
+            target_keys.add(str(session_id))
+        if user_id:
+            target_keys.add(str(user_id))
+            target_keys.add(f"user:{user_id}")
+
+        for ws, socket_keys in list(self.sockets.items()):
+            # Backward-compat: support case where socket_keys is a plain str
+            if isinstance(socket_keys, str):
+                s_keys = {socket_keys}
+            elif isinstance(socket_keys, (set, list, tuple)):
+                s_keys = {str(k) for k in socket_keys}
+            elif isinstance(socket_keys, dict):
+                s_keys = {str(v) for v in socket_keys.values() if v}
+            else:
+                s_keys = set()
+
+            if target_keys and not (target_keys & s_keys):
                 continue
             try:
                 await ws.send_json(event)
@@ -55,14 +91,20 @@ class Store:
             except (OSError, json.JSONDecodeError):
                 continue
             # Proses yang terputus karena server dimatikan.
+            needs_save = False
             if job["status"] not in ("done", "error"):
                 job["status"], job["error"] = "error", "Server dihentikan saat proses berjalan."
+                needs_save = True
             for c in job["clips"]:
                 if c["status"] in ("queued", "rendering"):
                     c["status"], c["error"] = "error", "Render terputus. Klik Render ulang."
+                    needs_save = True
                 pub = c.get("publish")
                 if pub and pub["status"] in ("uploading", "posting"):
                     pub["status"], pub["error"] = "error", "Posting terputus karena server dimatikan."
+                    needs_save = True
+            if needs_save:
+                self.save(job)
             self.jobs[job["id"]] = job
 
     def dir(self, job_id: str) -> Path:
@@ -122,7 +164,11 @@ class Store:
 
     async def publish(self, job: dict) -> None:
         self.save(job)
-        await hub.send({"type": "job", "job": self.public_job(job)}, job.get("owner_session_id"))
+        await hub.send(
+            {"type": "job", "job": self.public_job(job)},
+            session_id=job.get("owner_session_id"),
+            user_id=job.get("user_id"),
+        )
 
     async def update(self, job: dict, **fields) -> None:
         job.update(fields)
@@ -133,7 +179,11 @@ class Store:
         entry = {"t": time.time(), "line": line}
         job["logs"] = (job["logs"] + [entry])[-200:]
         self.save(job)
-        await hub.send({"type": "log", "job_id": job["id"], **entry}, job.get("owner_session_id"))
+        await hub.send(
+            {"type": "log", "job_id": job["id"], **entry},
+            session_id=job.get("owner_session_id"),
+            user_id=job.get("user_id"),
+        )
 
     async def progress(self, job: dict, value: float, stage: str | None = None, clip_id: str | None = None) -> None:
         """Progres dikirim ringan (tanpa seluruh job) dan dibatasi ~8x per detik."""
@@ -149,12 +199,29 @@ class Store:
                 clip["progress"] = value
                 if stage:
                     clip["stage"] = stage
+            clips = job.get("clips") or []
+            if clips:
+                # Agregasikan progres klip ke progres keseluruhan job
+                job["progress"] = sum(c.get("progress", 0.0) for c in clips) / len(clips)
+                ready_count = sum(1 for c in clips if c.get("status") == "ready")
+                if ready_count > 0:
+                    job["stage"] = f"Merender klip ({ready_count}/{len(clips)} selesai)…"
         else:
             job["progress"] = value
             if stage:
                 job["stage"] = stage
-        await hub.send({"type": "progress", "job_id": job["id"], "clip_id": clip_id,
-                        "progress": value, "stage": stage}, job.get("owner_session_id"))
+        await hub.send(
+            {
+                "type": "progress",
+                "job_id": job["id"],
+                "clip_id": clip_id,
+                "progress": value,
+                "value": value,
+                "stage": stage,
+            },
+            session_id=job.get("owner_session_id"),
+            user_id=job.get("user_id"),
+        )
 
     @staticmethod
     def clip(job: dict, clip_id: str) -> dict | None:
@@ -163,8 +230,11 @@ class Store:
     async def delete(self, job_id: str) -> None:
         job = self.jobs.pop(job_id, None)
         await asyncio.to_thread(shutil.rmtree, self.dir(job_id), True)
-        await hub.send({"type": "deleted", "job_id": job_id},
-                       job.get("owner_session_id") if job else None)
+        await hub.send(
+            {"type": "deleted", "job_id": job_id},
+            session_id=job.get("owner_session_id") if job else None,
+            user_id=job.get("user_id") if job else None,
+        )
 
     async def purge_expired(self, retention_seconds: float | None = None) -> list[str]:
         """Hapus seluruh folder proyek di data/jobs/<id> yang sudah melewati masa retensi."""

@@ -7,7 +7,7 @@ imageio-ffmpeg>=0.5
 python-dotenv>=1.0
 pydantic>=2.7
 # Deteksi wajah untuk tata letak "Fokus wajah" (versi ini masih membawa model BlazeFace & FaceMesh)
-mediapipe==0.10.21
+mediapipe>=0.10.21
 opencv-python-headless>=4.9,<5
 # Subtitle yang pas dengan suara (timestamp per kata, jalan lokal)
 faster-whisper>=1.1
@@ -20,3 +20,6 @@ openai>=3.0
 
 # Database MySQL untuk manajemen user & token credentials
 pymysql>=1.1.0
+cryptography>=42.0
+pyjwt>=2.8.0
+httpx>=0.27.0

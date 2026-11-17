@@ -203,6 +203,8 @@ async def _words(job: dict, clip: dict, src: Path, clips_dir: Path, prog: ClipPr
     clip.setdefault("ai_captions", clip.get("captions") or [])
     if not transcribe.model_downloaded_or_loading():
         await store.log(job, f"⬇️ Mengunduh model Whisper “{transcribe.model_name()}” (sekali saja)…")
+        clip["stage"] = f"Mengunduh model Whisper ({transcribe.model_name()})…"
+        await store.publish(job)
     timeout_sec = float(security.execution_timeout_seconds())
     try:
         return await asyncio.wait_for(
@@ -431,7 +433,8 @@ async def run(job: dict, upload_path: Path | None, url: str | None) -> None:
         stage_timeout = float(security.execution_timeout_seconds())
         timeout_min = security.execution_timeout_minutes()
         try:
-            # 1. Sumber video
+            # 1. Sumber video - keluar dari antrean dan mulai persiapan
+            await store.update(job, status="preparing", stage="Menyiapkan video…", progress=0)
             src, meta = await asyncio.wait_for(
                 prepare_source(job, upload_path, url),
                 timeout=stage_timeout,

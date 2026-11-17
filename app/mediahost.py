@@ -207,6 +207,65 @@ def _upload_cloudinary(path: Path, key: str, on_progress: Callable[[float], None
     return result["secure_url"]
 
 
+def upload_profile_image_to_cloudinary(
+    content: bytes,
+    filename: str = "avatar.jpg",
+    mime_type: str = "image/jpeg",
+    user_id: int | str = "user",
+    creds: dict | None = None,
+) -> str:
+    """Unggah foto profil pengguna ke Cloudinary milik server (atau kredensial pengguna) dan kembalikan secure_url."""
+    creds = creds or {}
+    cloud = (
+        creds.get("cloud_name")
+        or creds.get("CLOUDINARY_CLOUD_NAME")
+        or os.environ.get("CLOUDINARY_CLOUD_NAME", "")
+    ).strip()
+    api_key = (
+        creds.get("api_key")
+        or creds.get("CLOUDINARY_API_KEY")
+        or os.environ.get("CLOUDINARY_API_KEY", "")
+    ).strip()
+    secret = (
+        creds.get("api_secret")
+        or creds.get("CLOUDINARY_API_SECRET")
+        or os.environ.get("CLOUDINARY_API_SECRET", "")
+    ).strip()
+
+    if not (cloud and api_key and secret):
+        raise RuntimeError(
+            "Kredensial Cloudinary server belum lengkap (CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET)."
+        )
+
+    public_id = f"profile_user_{user_id}_{uuid.uuid4().hex[:12]}"
+    timestamp = str(int(time.time()))
+    params = {
+        "folder": "clipping-studio/profiles",
+        "public_id": public_id,
+        "timestamp": timestamp,
+    }
+    signature = cloudinary_signature(params, secret)
+    data = {**params, "api_key": api_key, "signature": signature}
+    url = f"https://api.cloudinary.com/v1_1/{cloud}/image/upload"
+
+    with httpx.Client(timeout=60) as client:
+        resp = client.post(
+            url,
+            data=data,
+            files={"file": (filename, content, mime_type)},
+        )
+        if resp.status_code >= 400:
+            msg = resp.json().get("error", {}).get("message", resp.text) if resp.content else resp.status_code
+            raise RuntimeError(f"Cloudinary menolak upload foto: {msg}")
+        result = resp.json()
+
+    secure_url = result.get("secure_url") or result.get("url")
+    if not secure_url:
+        raise RuntimeError("Cloudinary tidak mengembalikan URL foto.")
+    return secure_url
+
+
+
 def _upload_r2(path: Path, key: str, on_progress: Callable[[float], None], creds: dict | None = None) -> str:
     import boto3
     from boto3.s3.transfer import TransferConfig

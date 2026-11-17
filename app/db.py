@@ -113,6 +113,14 @@ def init_db() -> None:
                 cur.execute("ALTER TABLE users MODIFY COLUMN credential_token VARCHAR(255) NOT NULL;")
             except Exception:
                 pass
+            try:
+                cur.execute("ALTER TABLE users ADD COLUMN profile_photo VARCHAR(500) NULL;")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE users ADD COLUMN username_changed_at TIMESTAMP NULL;")
+            except Exception:
+                pass
 
             # Tabel terpisah untuk kredensial model AI, media hosting, dan buffer
             cur.execute("""
@@ -195,6 +203,16 @@ def _format_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
             row["created_at"] = row["created_at"].isoformat()
         else:
             row["created_at"] = str(row["created_at"])
+    if "username_changed_at" in row and row["username_changed_at"] is not None:
+        if hasattr(row["username_changed_at"], "isoformat"):
+            row["username_changed_at"] = row["username_changed_at"].isoformat()
+        else:
+            row["username_changed_at"] = str(row["username_changed_at"])
+    if "updated_at" in row and row["updated_at"] is not None:
+        if hasattr(row["updated_at"], "isoformat"):
+            row["updated_at"] = row["updated_at"].isoformat()
+        else:
+            row["updated_at"] = str(row["updated_at"])
     return row
 
 
@@ -237,7 +255,7 @@ def register_user(username: str, email: str, password: str) -> dict[str, Any]:
                 (uname, mail, pwd_hash, enc_token),
             )
             user_id = cur.lastrowid
-            cur.execute("SELECT id, username, email, credential_token, created_at FROM users WHERE id = %s", (user_id,))
+            cur.execute("SELECT id, username, email, credential_token, profile_photo, username_changed_at, created_at FROM users WHERE id = %s", (user_id,))
             user = cur.fetchone()
             return _format_user(user)
     finally:
@@ -255,7 +273,7 @@ def authenticate_user(username_or_email: str, password: str) -> dict[str, Any] |
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, username, email, password, credential_token, created_at
+                SELECT id, username, email, password, credential_token, profile_photo, username_changed_at, created_at
                 FROM users
                 WHERE username = %s OR email = %s
                 LIMIT 1
@@ -279,7 +297,7 @@ def get_user_by_id(user_id: int) -> dict[str, Any] | None:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, username, email, credential_token, created_at FROM users WHERE id = %s LIMIT 1",
+                "SELECT id, username, email, credential_token, profile_photo, username_changed_at, created_at FROM users WHERE id = %s LIMIT 1",
                 (user_id,),
             )
             return _format_user(cur.fetchone())
@@ -297,14 +315,14 @@ def get_user_by_token(token: str) -> dict[str, Any] | None:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, username, email, credential_token, created_at FROM users WHERE credential_token = %s LIMIT 1",
+                "SELECT id, username, email, credential_token, profile_photo, username_changed_at, created_at FROM users WHERE credential_token = %s LIMIT 1",
                 (enc_tok,),
             )
             row = cur.fetchone()
             if not row:
                 # Fallback jika record legacy tersimpan dalam plaintext
                 cur.execute(
-                    "SELECT id, username, email, credential_token, created_at FROM users WHERE credential_token = %s LIMIT 1",
+                    "SELECT id, username, email, credential_token, profile_photo, username_changed_at, created_at FROM users WHERE credential_token = %s LIMIT 1",
                     (tok,),
                 )
                 row = cur.fetchone()
@@ -357,6 +375,131 @@ def update_custom_token(user_id: int, custom_token: str) -> str:
             if cur.rowcount == 0:
                 raise ValueError("User tidak ditemukan.")
             return tok
+    finally:
+        conn.close()
+
+
+def update_user_profile_photo(user_id: int, photo_url: str) -> dict[str, Any]:
+    """Perbarui URL foto profil pengguna di database."""
+    url = (photo_url or "").strip()
+    if not url:
+        raise ValueError("URL foto profil tidak boleh kosong.")
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET profile_photo = %s WHERE id = %s",
+                (url, user_id),
+            )
+            if cur.rowcount == 0:
+                cur.execute("SELECT id FROM users WHERE id = %s LIMIT 1", (user_id,))
+                if not cur.fetchone():
+                    raise ValueError("Pengguna tidak ditemukan.")
+            cur.execute(
+                "SELECT id, username, email, credential_token, profile_photo, username_changed_at, created_at FROM users WHERE id = %s",
+                (user_id,),
+            )
+            return _format_user(cur.fetchone())
+    finally:
+        conn.close()
+
+
+def update_user_username(user_id: int, new_username: str) -> dict[str, Any]:
+    """Perbarui username pengguna dengan validasi format, keunikan, dan aturan 7 hari."""
+    uname = (new_username or "").strip()
+    if not USERNAME_REGEX.match(uname):
+        raise ValueError("Username harus terdiri dari 3–50 karakter alfanumerik (huruf, angka, _, -).")
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, username, username_changed_at FROM users WHERE id = %s LIMIT 1",
+                (user_id,),
+            )
+            current_user = cur.fetchone()
+            if not current_user:
+                raise ValueError("Pengguna tidak ditemukan.")
+
+            if current_user["username"] == uname:
+                raise ValueError("Username baru tidak boleh sama dengan username saat ini.")
+
+            # Menolak merubah username jika dalam 7 hari terakhir ada perubahan username
+            last_changed = current_user.get("username_changed_at")
+            if last_changed is not None:
+                from datetime import datetime, timedelta
+                if isinstance(last_changed, str):
+                    try:
+                        last_changed = datetime.fromisoformat(last_changed)
+                    except Exception:
+                        pass
+                if isinstance(last_changed, datetime):
+                    now = datetime.now(last_changed.tzinfo) if last_changed.tzinfo else datetime.now()
+                    diff = now - last_changed
+                    seven_days = timedelta(days=7)
+                    if diff < seven_days:
+                        remaining = seven_days - diff
+                        days = remaining.days
+                        hours = int(remaining.seconds // 3600)
+                        mins = int((remaining.seconds % 3600) // 60)
+                        time_desc = f"{days} hari {hours} jam" if days > 0 else f"{hours} jam {mins} menit"
+                        raise ValueError(
+                            f"Perubahan username ditolak. Anda hanya dapat mengubah username sekali dalam 7 hari. "
+                            f"Silakan coba lagi dalam {time_desc}."
+                        )
+
+            # Cek keunikan username
+            cur.execute(
+                "SELECT id FROM users WHERE username = %s AND id != %s LIMIT 1",
+                (uname, user_id),
+            )
+            if cur.fetchone():
+                raise ValueError(f"Username '{uname}' sudah digunakan oleh pengguna lain. Silakan pilih username lain.")
+
+            cur.execute(
+                "UPDATE users SET username = %s, username_changed_at = CURRENT_TIMESTAMP WHERE id = %s",
+                (uname, user_id),
+            )
+            cur.execute(
+                "SELECT id, username, email, credential_token, profile_photo, username_changed_at, created_at FROM users WHERE id = %s",
+                (user_id,),
+            )
+            return _format_user(cur.fetchone())
+    finally:
+        conn.close()
+
+
+def update_user_password(user_id: int, old_password: str, new_password: str, confirmation_password: str) -> None:
+    """Perbarui kata sandi pengguna dengan 3 field konfirmasi (old, new, confirmation)."""
+    old_p = old_password or ""
+    new_p = new_password or ""
+    conf_p = confirmation_password or ""
+
+    if not old_p:
+        raise ValueError("Kata sandi lama wajib diisi.")
+    if not new_p:
+        raise ValueError("Kata sandi baru wajib diisi.")
+    if not conf_p:
+        raise ValueError("Konfirmasi kata sandi baru wajib diisi.")
+    if new_p != conf_p:
+        raise ValueError("Konfirmasi kata sandi baru tidak cocok.")
+    if new_p == old_p:
+        raise ValueError("Kata sandi baru tidak boleh sama dengan kata sandi lama.")
+    if len(new_p) < 6:
+        raise ValueError("Kata sandi baru minimal 6 karakter.")
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, password FROM users WHERE id = %s LIMIT 1", (user_id,))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("Pengguna tidak ditemukan.")
+            if not verify_password(old_p, row["password"]):
+                raise ValueError("Kata sandi lama salah.")
+
+            new_hash = hash_password(new_p)
+            cur.execute("UPDATE users SET password = %s WHERE id = %s", (new_hash, user_id))
     finally:
         conn.close()
 

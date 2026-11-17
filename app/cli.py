@@ -610,8 +610,16 @@ async def cmd_bumpers(args) -> None:
 async def cmd_serve(args) -> None:
     import uvicorn
 
-    print(f"Web UI: http://127.0.0.1:{args.port}", file=sys.stderr)
-    config = uvicorn.Config("app.main:app", host=args.host, port=args.port, log_level="warning")
+    display_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
+    print(f"Web UI: http://{display_host}:{args.port} (listening on {args.host})", file=sys.stderr)
+    config = uvicorn.Config(
+        "app.main:app",
+        host=args.host,
+        port=args.port,
+        log_level="warning",
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )
     await uvicorn.Server(config).serve()
 
 
@@ -788,7 +796,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("serve", help="jalankan antarmuka web")
     sp.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))
-    sp.add_argument("--host", default="127.0.0.1")
+    sp.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
     sp.set_defaults(func=cmd_serve)
     return p
 

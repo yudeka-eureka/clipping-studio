@@ -17,8 +17,10 @@ from pathlib import Path
 from uuid import UUID, uuid4
 from contextlib import asynccontextmanager
 
+import jwt
 from dotenv import load_dotenv, set_key
-from fastapi import FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -77,6 +79,30 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Clipping Studio", lifespan=lifespan)
+
+# Dukungan Cross-Origin Resource Sharing (CORS) untuk frontend React terpisah
+cors_origins_env = os.environ.get("CORS_ORIGINS", "").strip()
+cors_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+
+if cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^https?://.*",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
+
 tasks: set[asyncio.Task] = set()
 
 
@@ -124,8 +150,35 @@ def current_user() -> dict | None:
     return CURRENT_USER.get()
 
 
+def resolve_user_from_token(token: str | None) -> dict | None:
+    if not token or not isinstance(token, str):
+        return None
+    token = token.strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    if not token:
+        return None
+
+    # Coba dekode token JWT terlebih dahulu jika berformat header.payload.signature
+    if token.count(".") == 2:
+        try:
+            payload = security.decode_jwt_token(token)
+            uid = payload.get("user_id") or payload.get("sub") or payload.get("id")
+            if uid is not None:
+                u = db.get_user_by_id(int(uid))
+                if u:
+                    return u
+        except Exception:
+            pass
+
+    try:
+        return db.get_user_by_token(token)
+    except Exception:
+        return None
+
+
 def resolve_user_from_request(request: Request) -> dict | None:
-    """Ambil data pengguna dari header Authorization (Bearer), X-Auth-Token, atau cookie terenkripsi."""
+    """Ambil data pengguna dari header Authorization (Bearer), X-Auth-Token, query param token, atau cookie terenkripsi."""
     token = None
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.lower().startswith("bearer "):
@@ -133,25 +186,43 @@ def resolve_user_from_request(request: Request) -> dict | None:
     if not token:
         token = request.headers.get("X-Auth-Token", "").strip() or None
     if not token:
+        token = request.query_params.get("token", "").strip() or None
+    if not token:
         raw_cookie = request.cookies.get(USER_TOKEN_COOKIE)
         if raw_cookie:
             dec = security.decrypt_cookie_data(raw_cookie)
             token = dec if isinstance(dec, str) else None
 
     if token:
-        try:
-            return db.get_user_by_token(token)
-        except Exception:
-            return None
+        return resolve_user_from_token(token)
     return None
 
 
 def valid_session_id(value: str | None) -> str | None:
+    if not value or not isinstance(value, str):
+        return None
     try:
-        parsed = UUID(value or "")
+        parsed = UUID(value.strip())
     except (ValueError, AttributeError):
         return None
     return str(parsed) if parsed.version == 4 else None
+
+
+def resolve_session_id_from_request(request: Request) -> str:
+    """Ambil session ID dari header X-Session-ID, query param, cookie, atau generate UUID baru."""
+    sid = valid_session_id(request.headers.get("X-Session-ID"))
+    if sid:
+        return sid
+    sid = valid_session_id(request.query_params.get("session_id"))
+    if sid:
+        return sid
+    sid = valid_session_id(request.query_params.get("token"))
+    if sid:
+        return sid
+    sid = valid_session_id(request.cookies.get(SESSION_COOKIE))
+    if sid:
+        return sid
+    return str(uuid4())
 
 
 def get_client_ip(request: Request) -> str:
@@ -167,46 +238,55 @@ def get_client_ip(request: Request) -> str:
 
 def get_rate_keys(request: Request) -> list[str]:
     keys = [f"ip:{get_client_ip(request)}"]
-    cookie_session = valid_session_id(request.cookies.get(SESSION_COOKIE))
-    if cookie_session:
-        keys.append(f"sess:{cookie_session}")
+    sid = resolve_session_id_from_request(request)
+    if sid:
+        keys.append(f"sess:{sid}")
     return keys
 
 
-def owned_jobs(session_id: str | None = None) -> list[dict]:
+def owned_jobs(session_id: str | None = None, user: dict | None = None) -> list[dict]:
     jobs = sorted(store.jobs.values(), key=lambda j: j["created_at"], reverse=True)
     if PUBLIC_MODE:
-        user = CURRENT_USER.get()
-        if user:
+        effective_user = user or CURRENT_USER.get()
+        if effective_user:
             return [
                 job for job in jobs
-                if job.get("user_id") == user.get("id")
-                or job.get("owner_session_id") in (user.get("credential_token"), session_id, current_session_id())
+                if job.get("user_id") == effective_user.get("id")
+                or job.get("owner_session_id") in (effective_user.get("credential_token"), session_id, current_session_id())
             ]
         owner = session_id or current_session_id()
         jobs = [job for job in jobs if job.get("owner_session_id") == owner]
     return jobs
 
 
-def visible_jobs(session_id: str | None = None) -> list[dict]:
-    return [store.public_job(job) for job in owned_jobs(session_id)]
+def visible_jobs(session_id: str | None = None, user: dict | None = None) -> list[dict]:
+    return [store.public_job(job) for job in owned_jobs(session_id, user=user)]
 
 
-def get_job(job_id: str) -> dict:
+def get_job(job_id: str, token_or_session: str | None = None) -> dict:
+    tok = token_or_session if isinstance(token_or_session, str) else None
     job = store.jobs.get(job_id)
     if not job:
         raise HTTPException(404, "Job tidak ditemukan")
     if PUBLIC_MODE:
         user = CURRENT_USER.get()
+        if not user and tok:
+            user = resolve_user_from_token(tok)
+            if user:
+                CURRENT_USER.set(user)
         if user:
             allowed = (
                 job.get("user_id") == user.get("id")
-                or job.get("owner_session_id") in (user.get("credential_token"), current_session_id())
+                or job.get("owner_session_id") in (user.get("credential_token"), tok, current_session_id())
             )
             if not allowed:
                 raise HTTPException(404, "Job tidak ditemukan")
-        elif job.get("owner_session_id") != current_session_id():
-            raise HTTPException(404, "Job tidak ditemukan")
+        else:
+            allowed_sessions = {current_session_id()}
+            if tok:
+                allowed_sessions.add(tok)
+            if job.get("owner_session_id") not in allowed_sessions:
+                raise HTTPException(404, "Job tidak ditemukan")
     return job
 
 
@@ -1134,8 +1214,20 @@ async def refresh_publish(job_id: str, clip_id: str):
 # ---------- File media (mendukung Range request untuk seek video) ----------
 
 @app.get("/api/jobs/{job_id}/download-all")
-def download_all_clips(job_id: str):
-    job = get_job(job_id)
+def download_all_clips(
+    job_id: str,
+    request: Request = None,
+    token: str | None = Query(None),
+    session_id: str | None = Query(None),
+):
+    tok = token or (request.query_params.get("token") if request else None)
+    sid = session_id or (request.query_params.get("session_id") if request else None) or (request.headers.get("X-Session-ID") if request else None) or tok
+    user = resolve_user_from_token(tok) or CURRENT_USER.get()
+    if not user and request:
+        user = resolve_user_from_request(request)
+    if user:
+        CURRENT_USER.set(user)
+    job = get_job(job_id, token_or_session=tok or sid)
     base = store.dir(job["id"]).resolve()
     files: list[Path] = []
 
@@ -1175,8 +1267,23 @@ def download_all_clips(job_id: str):
     )
 
 @app.get("/media/{job_id}/{path:path}")
-def media_file(job_id: str, path: str, download: bool = False):
-    base = store.dir(get_job(job_id)["id"]).resolve()
+def media_file(
+    job_id: str,
+    path: str,
+    request: Request = None,
+    download: bool = False,
+    token: str | None = Query(None),
+    session_id: str | None = Query(None),
+):
+    tok = token or (request.query_params.get("token") if request else None)
+    sid = session_id or (request.query_params.get("session_id") if request else None) or (request.headers.get("X-Session-ID") if request else None) or tok
+    user = resolve_user_from_token(tok) or CURRENT_USER.get()
+    if not user and request:
+        user = resolve_user_from_request(request)
+    if user:
+        CURRENT_USER.set(user)
+    job = get_job(job_id, token_or_session=tok or sid)
+    base = store.dir(job["id"]).resolve()
     target = (base / path).resolve()
     if base not in target.parents or not target.is_file():
         raise HTTPException(404)
@@ -1215,7 +1322,13 @@ def auth_register(req: RegisterBody, request: Request, response: Response):
         user["credential_token"],
         request=request,
     )
-    return {"ok": True, "user": user}
+    jwt_token = security.create_jwt_token({
+        "user_id": user["id"],
+        "sub": str(user["id"]),
+        "username": user["username"],
+        "email": user["email"],
+    })
+    return {"ok": True, "user": user, "token": jwt_token, "access_token": jwt_token, "token_type": "bearer"}
 
 
 @app.post("/api/auth/login")
@@ -1250,7 +1363,13 @@ def auth_login(req: LoginBody, request: Request, response: Response):
     except Exception:
         pass
 
-    return {"ok": True, "user": user}
+    jwt_token = security.create_jwt_token({
+        "user_id": user["id"],
+        "sub": str(user["id"]),
+        "username": user["username"],
+        "email": user["email"],
+    })
+    return {"ok": True, "user": user, "token": jwt_token, "access_token": jwt_token, "token_type": "bearer"}
 
 
 @app.get("/api/auth/me")
@@ -1305,6 +1424,296 @@ def auth_logout(response: Response):
     security.clear_secure_cookie(response, AI_CREDS_COOKIE)
     security.clear_secure_cookie(response, MEDIA_CREDS_COOKIE)
     return {"ok": True}
+
+
+# ---------- Endpoint Manajemen Profil Pengguna (React Frontend Terpisah) ----------
+
+def verify_profile_auth(
+    user_id_val: Any = None,
+    token_val: str | None = None,
+    auth_header: str | None = None,
+    x_auth_token: str | None = None,
+    cookie_val: str | None = None,
+) -> dict[str, Any]:
+    """Verifikasi token JWT untuk endpoint profil pengguna.
+
+    Data akun pengguna diekstraksi langsung dari payload token JWT yang kredibel,
+    sehingga request tidak diwajibkan mengirimkan userid. Jika userid tetap dikirimkan,
+    nilainya akan divalidasi agar sesuai dengan identitas pemilik token.
+    """
+    token = (token_val or "").strip() or None
+    if not token and auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+    if not token and x_auth_token:
+        token = x_auth_token.strip()
+    if not token and cookie_val:
+        dec = security.decrypt_cookie_data(cookie_val)
+        if isinstance(dec, str):
+            token = dec.strip()
+
+    if not token:
+        raise HTTPException(401, "Token JWT tidak ditemukan. Harap sertakan token JWT.")
+
+    authenticated_user_id: int | None = None
+    user: dict[str, Any] | None = None
+
+    # Cek apakah token adalah JWT (memiliki 2 titik pemisah: header.payload.signature)
+    if token.count(".") == 2:
+        try:
+            payload = security.decode_jwt_token(token)
+            uid = payload.get("user_id") or payload.get("sub") or payload.get("id")
+            if uid is not None:
+                authenticated_user_id = int(uid)
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(401, "Token JWT telah kedaluwarsa. Silakan masuk kembali.")
+        except jwt.InvalidTokenError:
+            pass
+
+    # Fallback jika token adalah credential_token di database
+    if authenticated_user_id is None:
+        try:
+            user_by_token = db.get_user_by_token(token)
+            if user_by_token:
+                authenticated_user_id = user_by_token["id"]
+                user = user_by_token
+        except Exception:
+            pass
+
+    if authenticated_user_id is None:
+        raise HTTPException(401, "Token JWT tidak valid.")
+
+    # Jika client opsional menyertakan user_id_val, pastikan tidak bentrok dengan identitas token
+    if user_id_val is not None and str(user_id_val).strip() != "":
+        try:
+            target_user_id = int(user_id_val)
+            if authenticated_user_id != target_user_id:
+                raise HTTPException(403, f"Akses ditolak: token JWT bukan milik akun dengan userid {target_user_id}.")
+        except (ValueError, TypeError):
+            raise HTTPException(400, "Format userid tidak valid (harus berupa bilangan bulat).")
+
+    if not user:
+        user = db.get_user_by_id(authenticated_user_id)
+    if not user:
+        raise HTTPException(404, f"Pengguna dengan userid {authenticated_user_id} tidak ditemukan.")
+
+    return user
+
+
+async def _extract_profile_request_data(request: Request) -> tuple[dict[str, Any], bytes | None, str | None]:
+    """Ekstraksi parameter data dan berkas (jika ada) dari JSON atau form-data/multipart."""
+    content_type = request.headers.get("content-type", "").lower()
+    fields: dict[str, Any] = {}
+    file_bytes: bytes | None = None
+    filename: str | None = None
+
+    if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
+        form = await request.form()
+        for k, v in form.items():
+            if hasattr(v, "read"):
+                file_bytes = await v.read()
+                filename = getattr(v, "filename", None)
+            else:
+                fields[k] = v
+    elif "application/json" in content_type:
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                fields = body
+        except Exception:
+            pass
+    else:
+        raw_body = await request.body()
+        if raw_body:
+            try:
+                parsed = json.loads(raw_body)
+                if isinstance(parsed, dict):
+                    fields = parsed
+            except Exception:
+                pass
+
+    for k, v in request.query_params.items():
+        if k not in fields:
+            fields[k] = v
+
+    return fields, file_bytes, filename
+
+
+@app.post("/app/profile/change-photo")
+@app.post("/api/profile/change-photo")
+async def profile_change_photo(request: Request):
+    """Menerima request perubahan foto profil dengan token JWT (userid diekstraksi dari token), lalu menyimpannya ke Cloudinary."""
+    fields, file_bytes, filename = await _extract_profile_request_data(request)
+
+    user_id_val = fields.get("userid") or fields.get("user_id") or fields.get("id")
+    token_val = fields.get("token") or fields.get("jwt") or fields.get("jwt_token") or fields.get("access_token")
+    auth_header = request.headers.get("Authorization")
+    x_auth_token = request.headers.get("X-Auth-Token")
+    cookie_val = request.cookies.get(USER_TOKEN_COOKIE)
+
+    user = verify_profile_auth(
+        user_id_val=user_id_val,
+        token_val=token_val,
+        auth_header=auth_header,
+        x_auth_token=x_auth_token,
+        cookie_val=cookie_val,
+    )
+
+    image_bytes = file_bytes
+    if not image_bytes:
+        photo_val = fields.get("photo") or fields.get("file") or fields.get("image") or fields.get("avatar") or fields.get("photo_base64")
+        if isinstance(photo_val, str) and photo_val.strip():
+            if "," in photo_val and "base64" in photo_val:
+                photo_val = photo_val.split(",", 1)[1]
+            try:
+                import base64
+                image_bytes = base64.b64decode(photo_val)
+            except Exception:
+                raise HTTPException(400, "Format data foto base64 tidak valid.")
+
+    if not image_bytes:
+        raise HTTPException(400, "Berkas foto profil baru wajib diunggah (field 'photo' atau 'file').")
+
+    if len(image_bytes) > 5 * 1024 * 1024:
+        raise HTTPException(400, "Ukuran berkas foto melebihi batas maksimum 5MB.")
+
+    mime = security.detect_image_mime(image_bytes[:16])
+    if not mime or mime not in ("image/jpeg", "image/png", "image/webp"):
+        raise HTTPException(400, "Format berkas harus berupa gambar valid (JPEG, PNG, atau WebP).")
+
+    user_media = None
+    try:
+        user_media = db.get_user_media_credentials(user["id"])
+    except Exception:
+        pass
+    c_creds = user_media.get("cloudinary") if isinstance(user_media, dict) else {}
+
+    ext_map = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+    default_fname = f"avatar{ext_map.get(mime, '.jpg')}"
+
+    try:
+        photo_url = mediahost.upload_profile_image_to_cloudinary(
+            content=image_bytes,
+            filename=filename or default_fname,
+            mime_type=mime,
+            user_id=user["id"],
+            creds=c_creds,
+        )
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Gagal memproses unggahan foto profil ke Cloudinary: {e}")
+
+    try:
+        updated_user = db.update_user_profile_photo(user["id"], photo_url)
+    except Exception as e:
+        raise HTTPException(500, f"Gagal memperbarui foto profil di database: {e}")
+
+    return {
+        "ok": True,
+        "message": "Foto profil berhasil diperbarui.",
+        "photo_url": photo_url,
+        "user": updated_user,
+    }
+
+
+@app.post("/app/profile/change-name")
+@app.post("/api/profile/change-name")
+async def profile_change_name(request: Request):
+    """Menerima request perubahan username dengan validasi token JWT (userid diekstraksi dari token) dan batasan 7 hari."""
+    fields, _, _ = await _extract_profile_request_data(request)
+
+    user_id_val = fields.get("userid") or fields.get("user_id") or fields.get("id")
+    token_val = fields.get("token") or fields.get("jwt") or fields.get("jwt_token") or fields.get("access_token")
+    auth_header = request.headers.get("Authorization")
+    x_auth_token = request.headers.get("X-Auth-Token")
+    cookie_val = request.cookies.get(USER_TOKEN_COOKIE)
+
+    user = verify_profile_auth(
+        user_id_val=user_id_val,
+        token_val=token_val,
+        auth_header=auth_header,
+        x_auth_token=x_auth_token,
+        cookie_val=cookie_val,
+    )
+
+    new_username = (
+        fields.get("username")
+        or fields.get("new_username")
+        or fields.get("name")
+        or fields.get("new_name")
+        or ""
+    ).strip()
+
+    if not new_username:
+        raise HTTPException(400, "Username baru wajib diisi.")
+
+    try:
+        updated_user = db.update_user_username(user["id"], new_username)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Gagal memperbarui username: {e}")
+
+    return {
+        "ok": True,
+        "message": "Username berhasil diperbarui.",
+        "user": updated_user,
+    }
+
+
+@app.post("/app/profile/change-pw")
+@app.post("/api/profile/change-pw")
+async def profile_change_password(request: Request):
+    """Menerima request perubahan kata sandi dengan 3 field konfirmasi (old, new, confirmation) dan validasi JWT."""
+    fields, _, _ = await _extract_profile_request_data(request)
+
+    user_id_val = fields.get("userid") or fields.get("user_id") or fields.get("id")
+    token_val = fields.get("token") or fields.get("jwt") or fields.get("jwt_token") or fields.get("access_token")
+    auth_header = request.headers.get("Authorization")
+    x_auth_token = request.headers.get("X-Auth-Token")
+    cookie_val = request.cookies.get(USER_TOKEN_COOKIE)
+
+    user = verify_profile_auth(
+        user_id_val=user_id_val,
+        token_val=token_val,
+        auth_header=auth_header,
+        x_auth_token=x_auth_token,
+        cookie_val=cookie_val,
+    )
+
+    old_pwd = (
+        fields.get("old_password")
+        or fields.get("old")
+        or fields.get("current")
+        or fields.get("current_password")
+        or ""
+    )
+    new_pwd = (
+        fields.get("new_password")
+        or fields.get("new")
+        or fields.get("next")
+        or ""
+    )
+    confirm_pwd = (
+        fields.get("confirm_password")
+        or fields.get("confirm")
+        or fields.get("confirmation")
+        or fields.get("new_password_confirm")
+        or fields.get("confirm_new_password")
+        or ""
+    )
+
+    try:
+        db.update_user_password(user["id"], old_pwd, new_pwd, confirm_pwd)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Gagal memperbarui kata sandi: {e}")
+
+    return {
+        "ok": True,
+        "message": "Kata sandi berhasil diperbarui.",
+    }
 
 
 # ---------- Kredensial AI & Media BYOK Terenkripsi (HttpOnly, Secure, SameSite) ----------
@@ -1548,26 +1957,82 @@ def clear_media_credentials(request: Request, response: Response, provider: str 
 # ---------- Realtime ----------
 
 @app.websocket("/ws")
-async def ws(websocket: WebSocket):
-    session_id = valid_session_id(websocket.cookies.get(SESSION_COOKIE))
-    if not session_id:
-        session_id = str(uuid4())
+async def ws(
+    websocket: WebSocket,
+    token: str | None = Query(None),
+    session_id: str | None = Query(None),
+):
+    tok = token or websocket.query_params.get("token")
+    if not tok:
+        auth_header = websocket.headers.get("Authorization")
+        if auth_header and auth_header.lower().startswith("bearer "):
+            tok = auth_header[7:].strip()
+    if not tok:
+        tok = websocket.headers.get("X-Auth-Token", "").strip() or None
+    if not tok:
+        raw_cookie = websocket.cookies.get(USER_TOKEN_COOKIE)
+        if raw_cookie:
+            dec = security.decrypt_cookie_data(raw_cookie)
+            tok = dec if isinstance(dec, str) else None
+
+    user = resolve_user_from_token(tok) if tok else None
+
+    sid = (
+        valid_session_id(session_id)
+        or valid_session_id(websocket.query_params.get("session_id"))
+        or valid_session_id(websocket.headers.get("X-Session-ID"))
+        or (valid_session_id(tok) if not user else None)
+        or valid_session_id(websocket.cookies.get(SESSION_COOKIE))
+        or str(uuid4())
+    )
+
+    ident_set: set[str] = {sid}
+    if session_id:
+        ident_set.add(session_id)
+    if websocket.query_params.get("session_id"):
+        ident_set.add(websocket.query_params["session_id"])
+    if user:
+        ident_set.add(str(user["id"]))
+        ident_set.add(f"user:{user['id']}")
+        cred_tok = user.get("credential_token")
+        if cred_tok:
+            ident_set.add(cred_tok)
+            try:
+                plain = db.decrypt_token(cred_tok)
+                if plain:
+                    ident_set.add(plain)
+            except Exception:
+                pass
+    if tok:
+        ident_set.add(tok)
+        try:
+            enc = db.encrypt_token(tok)
+            if enc:
+                ident_set.add(enc)
+        except Exception:
+            pass
+
     await websocket.accept()
-    hub.sockets[websocket] = session_id
+    hub.sockets[websocket] = ident_set
+
+    token_sess = CURRENT_SESSION.set(sid)
+    token_user = CURRENT_USER.set(user)
     try:
-        await websocket.send_json({"type": "snapshot", "jobs": visible_jobs(session_id)})
+        await websocket.send_json({"type": "snapshot", "jobs": visible_jobs(sid, user=user)})
         while True:
             await websocket.receive_text()  # ping dari browser
     except WebSocketDisconnect:
         pass
     finally:
         hub.sockets.pop(websocket, None)
+        CURRENT_SESSION.reset(token_sess)
+        CURRENT_USER.reset(token_user)
 
 
 @app.middleware("http")
 async def no_stale_ui(request: Request, call_next):
     """Antarmuka selalu divalidasi ulang, supaya versi lama tidak nyangkut di cache browser."""
-    session_id = valid_session_id(request.cookies.get(SESSION_COOKIE)) or str(uuid4())
+    session_id = resolve_session_id_from_request(request)
     token_sess = CURRENT_SESSION.set(session_id)
     user = resolve_user_from_request(request)
     token_user = CURRENT_USER.set(user)
