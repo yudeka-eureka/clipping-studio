@@ -70,6 +70,15 @@
   white-space: nowrap;
 }
 
+.landing-page .landing-logo {
+  display: block;
+  width: 148px;
+  height: 42px;
+  object-fit: cover;
+  object-position: center;
+  border-radius: 7px;
+}
+
 .landing-page .wordmark em {
   color: var(--muted);
   font-style: normal;
@@ -1462,6 +1471,10 @@
     padding: 0 16px;
     gap: 0;
     justify-content: space-between;
+  }
+  .landing-page .landing-logo {
+    width: 124px;
+    height: 36px;
   }
   .landing-page .desktop-nav,
   .landing-page .header-actions {

@@ -26,14 +26,7 @@ export function LandingPage() {
     <div className="landing-page">
       <header className="site-header">
         <Link className="wordmark" to="/" aria-label="Clipping Studio beranda">
-          <span className="wordmark-mark" aria-hidden="true">
-            <span></span>
-            <span></span>
-            <span></span>
-          </span>
-          <span>
-            Clipping <em>Studio</em>
-          </span>
+          <img className="landing-logo" src="/landing/logo.jpeg" alt="Clipping Studio" />
         </Link>
 
         <nav className="desktop-nav" aria-label="Navigasi utama">
@@ -631,14 +624,7 @@ export function LandingPage() {
 
       <footer className="site-footer shell">
         <Link className="wordmark" to="/">
-          <span className="wordmark-mark" aria-hidden="true">
-            <span></span>
-            <span></span>
-            <span></span>
-          </span>
-          <span>
-            Clipping <em>Studio</em>
-          </span>
+          <img className="landing-logo" src="/landing/logo.jpeg" alt="Clipping Studio" />
         </Link>
         <p>Workspace untuk menemukan, merender, dan meninjau klip video.</p>
         <div>
