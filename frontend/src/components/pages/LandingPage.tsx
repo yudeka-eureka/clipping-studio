@@ -156,6 +156,13 @@ export function LandingPage() {
           </div>
 
           <div className="hero-visual" aria-label="Preview workflow Clipping Studio" role="img">
+            <picture className="hero-screenshot">
+              <source media="(max-width: 650px)" srcSet="/landing/workspace-mobile.png" />
+              <img
+                src="/landing/workspace-desktop.png"
+                alt="Workspace Clipping Studio untuk mengunggah video dan mengatur opsi klip"
+              />
+            </picture>
             <div className="visual-glow"></div>
             <div className="window-card">
               <div className="window-topbar">

@@ -290,6 +290,27 @@
   padding: 45px 0 52px 25px;
 }
 
+.landing-page .hero-screenshot {
+  display: block;
+  position: relative;
+  z-index: 2;
+  overflow: hidden;
+  aspect-ratio: 2 / 1;
+  border: 1px solid rgba(73, 69, 81, 0.18);
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 24px 60px rgba(73, 69, 81, 0.18);
+  transform: perspective(1200px) rotateY(-4deg) rotateX(1deg);
+}
+
+.landing-page .hero-screenshot img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center top;
+}
+
 .landing-page .visual-glow {
   position: absolute;
   width: 70%;
@@ -312,6 +333,12 @@
     0 30px 90px rgba(0, 0, 0, 0.43),
     0 0 0 8px rgba(255, 255, 255, 0.025);
   transform: perspective(1200px) rotateY(-5deg) rotateX(2deg);
+}
+
+/* The real workspace screenshot is the source of truth for the hero preview. */
+.landing-page .window-card,
+.landing-page .floating-chip {
+  display: none;
 }
 
 .landing-page .window-topbar {
@@ -1475,6 +1502,12 @@
   }
   .landing-page .hero-visual {
     padding-top: 30px;
+  }
+  .landing-page .hero-screenshot {
+    width: min(100%, 280px);
+    margin: 0 auto;
+    aspect-ratio: 0.42;
+    transform: none;
   }
   .landing-page .window-card {
     transform: none;
