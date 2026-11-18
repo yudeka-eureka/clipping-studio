@@ -18,8 +18,10 @@ boto3>=1.34
 anthropic>=1.7
 openai>=3.0
 
-# Database MySQL untuk manajemen user & token credentials
+# Database MySQL & Migrasi Skema (Alembic)
 pymysql>=1.1.0
+alembic>=1.13
+sqlalchemy>=2.0
 cryptography>=42.0
 pyjwt>=2.8.0
 httpx>=0.27.0

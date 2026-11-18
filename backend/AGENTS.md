@@ -40,6 +40,7 @@ Tabel ini ringkasan. Semua pilihan tiap perintah ada di [docs/cli.md](docs/cli.m
 | `provider [gemini\|anthropic\|openai] [--model M]` | Lihat / ganti penyedia AI pemilih klip |
 | `logos [--add F --label X] [--id ID --position P --size N] [--default ID] [--remove ID]` | Pustaka logo watermark (beberapa logo, pilih per proyek) |
 | `bumpers [--add F --label X --role intro\|outro] [--id ID --duration N --mute] [--remove ID]` | Pustaka bumper: video/gambar pembuka & penutup |
+| `migrate [--status] [--rollback N] [--target V]` | Jalankan atau cek migrasi skema database MySQL |
 | `config [NAMA [NILAI]]` | Lihat/ubah `.env`. Tanpa NILAI, dibaca dari stdin (aman untuk kredensial) |
 | `serve --port 8765` | Jalankan antarmuka web |
 

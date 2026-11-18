@@ -1,0 +1,16 @@
+Clipping Studio Database Migrations (Alembic)
+==============================================
+
+Folder ini mengelola migrasi skema database MySQL menggunakan Alembic.
+Perintah dapat dijalankan via CLI Clipping Studio:
+    ./clip migrate
+    ./clip migrate --status
+    ./clip migrate --rollback [N]
+    ./clip migrate --target <rev>
+
+Atau langsung menggunakan CLI Alembic:
+    alembic upgrade head
+    alembic downgrade -1
+    alembic current
+    alembic history
+    alembic revision --autogenerate -m "keterangan_migrasi"

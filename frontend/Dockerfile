@@ -1,22 +1,31 @@
-# Stage 1: Build React
+# Stage 1: Build TanStack Start SSR
 FROM node:20-alpine AS builder
+RUN corepack enable && corepack prepare pnpm@latest --activate
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm ci
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 
 COPY . .
-# Sesuaikan output folder jika pakai CRA (build/) atau Vite (dist/)
-RUN npm run build
+ENV NITRO_PRESET=node-server
+RUN pnpm run build
 
-# Stage 2: Serve dengan Nginx
-FROM nginx:alpine
-# Hapus konfigurasi default nginx
-RUN rm /etc/nginx/conf.d/default.conf
-# Salin konfigurasi custom
-COPY nginx.conf /etc/nginx/conf.d/
-# Salin hasil build dari Stage 1 (ganti 'dist' ke 'build' jika memakai Create React App)
-COPY --from=builder /app/dist /usr/share/nginx/html
+# Stage 2: Serve dengan Node.js + Nginx
+FROM node:20-alpine AS runner
+RUN apk add --no-cache nginx
+
+WORKDIR /app
+
+# Salin output build Nitro
+COPY --from=builder /app/.output ./.output
+
+# Salin konfigurasi Nginx ke Alpine default http.d
+COPY nginx.conf /etc/nginx/http.d/default.conf
+
+# Salin startup script
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
 EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+
+CMD ["/app/start.sh"]

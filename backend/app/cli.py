@@ -191,12 +191,15 @@ async def source_job(args, opts: dict) -> tuple[dict, Path | None, str | None]:
 # ---------- perintah ----------
 
 async def cmd_doctor(args) -> None:
+    from . import database_preparation
     whisper_ok = {m: transcribe.is_downloaded(m) for m in transcribe.MODELS}
     disk = system.disk_info(store.dir(""))
     disk_status = system.disk_status(disk["free_gb"])
+    db_health = database_preparation.check_database_health()
     info = {
         "ffmpeg": media.FFMPEG, "subtitles_supported": media.SUBTITLES_SUPPORTED,
         "face_tracking": facetrack.available(),
+        "database": db_health,
         "provider": analysis.provider(), "model": analysis.model_name(),
         "providers": {n: {"label": spec["label"], "video": spec["video"],
                           "key": bool(os.environ.get(spec["env"], "").strip()),
@@ -219,6 +222,8 @@ async def cmd_doctor(args) -> None:
         f"{mark(True)} ffmpeg            {info['ffmpeg']}",
         f"{mark(media.SUBTITLES_SUPPORTED)} subtitle (libass)",
         f"{mark(info['face_tracking'])} deteksi wajah (mediapipe)",
+        (f"{mark(db_health['ok'])} database MySQL      {db_health['database']} ({db_health['applied_migrations']} migrasi aktif)"
+         if db_health["ok"] else f"✗ database MySQL      {db_health['database']} (koneksi gagal: {db_health['error']})"),
         *[f"{mark(p['key'])} {p['label']:<18}{'(aktif) ' if n == info['provider'] else ''}model: {p['model']}"
           + ("" if p["video"] else "  [pakai transkrip lokal]")
           for n, p in info["providers"].items()],
@@ -623,6 +628,77 @@ async def cmd_serve(args) -> None:
     await uvicorn.Server(config).serve()
 
 
+async def cmd_migrate(args) -> None:
+    from . import database_preparation
+
+    if args.status:
+        try:
+            status_list = database_preparation.get_migration_status()
+            text_lines = ["Status Migrasi Database:"]
+            for m in status_list:
+                status_icon = "✓" if m["status"] == "applied" else "…"
+                time_str = f" ({m['applied_at']})" if m["applied_at"] else ""
+                desc_str = f" — {m['description']}" if m.get("description") else ""
+                text_lines.append(f"  {status_icon} [{m['version']}] {m['name']}{time_str}{desc_str}")
+            emit(args, {"ok": True, "migrations": status_list}, "\n".join(text_lines))
+        except Exception as e:
+            fail(f"Gagal memeriksa status migrasi: {e}", args)
+        return
+
+    if args.rollback is not None:
+        try:
+            rolled_back = database_preparation.rollback_migration(
+                steps=args.rollback,
+                target_version=args.target,
+            )
+            if not rolled_back:
+                emit(args, {"ok": True, "rolled_back": [], "message": "Tidak ada migrasi yang di-rollback."}, "Tidak ada migrasi yang di-rollback.")
+            else:
+                emit(args, {"ok": True, "rolled_back": rolled_back}, f"Berhasil rollback {len(rolled_back)} migrasi: {', '.join(rolled_back)}")
+        except Exception as e:
+            fail(f"Gagal rollback migrasi: {e}", args)
+        return
+
+    if args.target:
+        try:
+            status_list = database_preparation.get_migration_status()
+            applied_versions = [s["version"] for s in status_list if s["status"] == "applied"]
+            all_versions = [s["version"] for s in status_list]
+
+            if args.target not in all_versions and args.target != "head" and args.target != "base":
+                fail(f"Versi target '{args.target}' tidak ditemukan dalam riwayat migrasi.", args)
+
+            # Jika target sudah diterapkan dan bukan versi head yang sedang aktif, lakukan rollback ke target
+            if args.target in applied_versions and applied_versions and args.target != applied_versions[-1]:
+                rolled_back = database_preparation.rollback_migration(target_version=args.target)
+                if not rolled_back:
+                    emit(args, {"ok": True, "rolled_back": [], "message": f"Database sudah berada pada versi {args.target}."}, f"Database sudah berada pada versi {args.target}.")
+                else:
+                    emit(args, {"ok": True, "rolled_back": rolled_back}, f"Berhasil rollback ke versi {args.target} ({len(rolled_back)} migrasi: {', '.join(rolled_back)})")
+                return
+
+            database_preparation.ensure_database_exists()
+            applied = database_preparation.run_migrations(target_version=args.target)
+            if not applied:
+                emit(args, {"ok": True, "applied": [], "message": f"Database sudah berada pada versi {args.target}."}, f"Database sudah up-to-date pada versi {args.target}.")
+            else:
+                emit(args, {"ok": True, "applied": applied}, f"Berhasil menerapkan migrasi ke {args.target} ({len(applied)} migrasi: {', '.join(applied)})")
+        except Exception as e:
+            fail(f"Gagal migrasi ke target {args.target}: {e}", args)
+        return
+
+    # Default: jalankan migrasi yang belum diterapkan
+    try:
+        database_preparation.ensure_database_exists()
+        applied = database_preparation.run_migrations()
+        if not applied:
+            emit(args, {"ok": True, "applied": [], "message": "Database sudah up-to-date."}, "Database sudah up-to-date (tidak ada migrasi baru).")
+        else:
+            emit(args, {"ok": True, "applied": applied}, f"Berhasil menerapkan {len(applied)} migrasi: {', '.join(applied)}")
+    except Exception as e:
+        fail(f"Gagal menjalankan migrasi: {e}", args)
+
+
 # ---------- argumen ----------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -798,6 +874,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))
     sp.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
     sp.set_defaults(func=cmd_serve)
+
+    sp = sub.add_parser("migrate", help="jalankan atau cek migrasi skema database MySQL")
+    sp.add_argument("--status", action="store_true", help="tampilkan status seluruh migrasi")
+    sp.add_argument("--rollback", type=int, nargs="?", const=1, default=None, metavar="N",
+                    help="rollback N migrasi terakhir (default 1)")
+    sp.add_argument("--target", help="jalankan migrasi hingga versi target tertentu")
+    sp.set_defaults(func=cmd_migrate)
     return p
 
 

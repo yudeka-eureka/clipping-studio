@@ -50,6 +50,7 @@ atau awalannya.
 | [`publish`](#publish) | Kirim klip ke media sosial lewat Buffer | **memposting ke akun Anda** |
 | [`publish-status`](#publish-status) | Status terbaru post di Buffer | 1 request Buffer |
 | [`config`](#config) | Lihat / ubah pengaturan di `.env` | gratis |
+| [`migrate`](#migrate) | Jalankan atau cek migrasi skema database MySQL | gratis |
 | [`serve`](#serve) | Jalankan antarmuka web | gratis |
 
 ---
@@ -428,6 +429,20 @@ Nilai yang bisa diatur:
 | `MAX_FILESIZE_MB` | Batas ukuran video unduhan (default: `500` MB) |
 | `MAX_DURATION_MINUTES` | Batas durasi video sumber (default: `45` menit) |
 | `ALLOWED_DOMAINS` | Domain tambahan yang diizinkan selain penyedia terverifikasi (dipisah koma) |
+
+---
+
+## migrate
+
+Mengelola dan menjalankan migrasi skema database MySQL secara berurutan.
+
+```bash
+./clip migrate                    # terapkan seluruh migrasi baru
+./clip migrate --status           # lihat status migrasi (applied / pending)
+./clip migrate --rollback 1       # rollback 1 migrasi terakhir
+./clip migrate --target 0002      # jalankan migrasi hingga versi tertentu
+./clip migrate --status --json    # keluaran terstruktur JSON
+```
 
 ---
 

@@ -4,8 +4,8 @@ services:
     restart: unless-stopped
     environment:
       MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
-      MARIADB_DATABASE: ${DB_NAME}
-      MARIADB_USER: ${DB_USER}
+      MARIADB_DATABASE: ${DB_NAME:-clipping_studio}
+      MARIADB_USER: ${DB_USER:-clipping_user}
       MARIADB_PASSWORD: ${DB_PASSWORD}
     volumes:
       - mariadb_data:/var/lib/mysql
@@ -28,12 +28,20 @@ services:
       - --host
       - 0.0.0.0
       - --port
-      - "8082"
+      - "8765"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
     env_file:
       - .env
     environment:
       MYSQL_HOST: db
       MYSQL_PORT: 3306
+      MYSQL_DATABASE: ${DB_NAME:-clipping_studio}
+      MYSQL_USER: ${DB_USER:-clipping_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - backend_data:/app/data
     depends_on:
       db:
         condition: service_healthy
@@ -56,3 +64,4 @@ services:
 
 volumes:
   mariadb_data:
+  backend_data:

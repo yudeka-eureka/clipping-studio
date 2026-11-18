@@ -93,73 +93,32 @@ def get_connection():
     return pymysql.connect(**config)
 
 
-def init_db() -> None:
-    """Inisialisasi tabel users dan model_keys di database MySQL jika belum ada, serta migrasi kolom jika perlu."""
-    try:
-        conn = get_connection()
-        with conn.cursor() as cur:
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                username VARCHAR(50) NOT NULL UNIQUE,
-                email VARCHAR(100) NOT NULL UNIQUE,
-                password VARCHAR(255) NOT NULL,
-                credential_token VARCHAR(255) NOT NULL UNIQUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            ) DEFAULT CHARSET=utf8mb4;
-            """)
-            try:
-                cur.execute("ALTER TABLE users MODIFY COLUMN credential_token VARCHAR(255) NOT NULL;")
-            except Exception:
-                pass
-            try:
-                cur.execute("ALTER TABLE users ADD COLUMN profile_photo VARCHAR(500) NULL;")
-            except Exception:
-                pass
-            try:
-                cur.execute("ALTER TABLE users ADD COLUMN username_changed_at TIMESTAMP NULL;")
-            except Exception:
-                pass
+def get_db_url(db_name: str | None = None) -> str:
+    """Buat URL koneksi SQLAlchemy untuk MySQL PyMySQL dengan safe URL quoting."""
+    import urllib.parse
+    cfg = get_db_config()
+    user = urllib.parse.quote_plus(str(cfg.get("user", "agy")))
+    pwd = urllib.parse.quote_plus(str(cfg.get("password", "")))
+    host = cfg.get("host", "127.0.0.1")
+    port = cfg.get("port", 3306)
+    target_db = db_name or cfg.get("database", "clipping_studio")
+    return f"mysql+pymysql://{user}:{pwd}@{host}:{port}/{target_db}?charset=utf8mb4"
 
-            # Tabel terpisah untuk kredensial model AI, media hosting, dan buffer
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS model_keys (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id INT NOT NULL,
-                type VARCHAR(30) NOT NULL,
-                provider VARCHAR(50) NOT NULL,
-                `key` TEXT NOT NULL,
-                secret_key TEXT NULL,
-                r2_account_id TEXT NULL,
-                r2_bucket VARCHAR(255) NULL,
-                r2_bucket_url VARCHAR(255) NULL,
-                cloud_name VARCHAR(120) NULL,
-                model VARCHAR(100) NULL,
-                is_active BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                UNIQUE KEY uq_user_type_provider (user_id, type, provider),
-                INDEX idx_user_type (user_id, type),
-                CONSTRAINT fk_model_keys_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-            ) DEFAULT CHARSET=utf8mb4;
-            """)
-            try:
-                cur.execute("ALTER TABLE model_keys ADD COLUMN cloud_name VARCHAR(120) NULL;")
-            except Exception:
-                pass
-            try:
-                cur.execute("ALTER TABLE model_keys ADD COLUMN model VARCHAR(100) NULL;")
-            except Exception:
-                pass
-            try:
-                cur.execute("ALTER TABLE model_keys ADD COLUMN is_active BOOLEAN DEFAULT FALSE;")
-            except Exception:
-                pass
-        conn.close()
-    except Exception as e:
-        # Jangan gagalkan startup jika database sedang offline; log peringatan
-        print(f"⚠️ [MySQL Init] Peringatan koneksi database: {e}")
+
+def init_db() -> None:
+    """Inisialisasi database dan terapkan migrasi skema Alembic jika belum ada.
+
+    Catatan: Logika database preparation dan migrasi kini dipisahkan ke modul terpisah
+    app.database_preparation dengan Alembic sebagai migration tool.
+    """
+    from .database_preparation import prepare_database
+    prepare_database(raise_on_error=False)
+
+
+def prepare_database(raise_on_error: bool = False) -> bool:
+    """Jalankan database preparation dan migrasi skema via Alembic."""
+    from .database_preparation import prepare_database as _prep
+    return _prep(raise_on_error=raise_on_error)
 
 
 def hash_password(password: str) -> str:
