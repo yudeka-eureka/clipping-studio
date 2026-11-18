@@ -469,6 +469,12 @@ export function LandingPage() {
               </div>
             </div>
             <div className="product-window">
+              <picture className="product-screenshot">
+                <img
+                  src="/landing/target-platform-aspect-ratio.png"
+                  alt="Pengaturan target platform dan aspect ratio di Clipping Studio"
+                />
+              </picture>
               <div className="product-top">
                 <span className="product-brand">
                   <i></i> Clipping Studio <em>· Gemini API</em>

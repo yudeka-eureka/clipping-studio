@@ -1152,6 +1152,22 @@
   box-shadow: 0 25px 60px rgba(0, 0, 0, 0.25);
 }
 
+.landing-page .product-screenshot {
+  display: block;
+  background: #ffffff;
+}
+
+.landing-page .product-screenshot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.landing-page .product-window > .product-top,
+.landing-page .product-window > .product-content {
+  display: none;
+}
+
 .landing-page .product-top {
   height: 40px;
   display: flex;
