@@ -1,12 +1,13 @@
 services:
   db:
     image: mariadb:11
+    container_name: db
     restart: unless-stopped
     environment:
-      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
-      MARIADB_DATABASE: ${DB_NAME:-clipping_studio}
-      MARIADB_USER: ${DB_USER:-clipping_user}
-      MARIADB_PASSWORD: ${DB_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MARIADB_DATABASE: ${MYSQL_NAME}
+      MARIADB_USER: ${MYSQL_USER}
+      MARIADB_PASSWORD: ${MYSQL_PASSWORD}
     volumes:
       - mariadb_data:/var/lib/mysql
     healthcheck:
@@ -21,27 +22,19 @@ services:
 
   backend:
     image: ghcr.io/yudeka-eureka/clipping-studio-backend:latest
+    container_name: app
     restart: unless-stopped
-    command:
-      - uvicorn
-      - app.main:app
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8765"
-      - --proxy-headers
-      - --forwarded-allow-ips
-      - "*"
     env_file:
       - .env
-    environment:
-      MYSQL_HOST: db
-      MYSQL_PORT: 3306
-      MYSQL_DATABASE: ${DB_NAME:-clipping_studio}
-      MYSQL_USER: ${DB_USER:-clipping_user}
-      MYSQL_PASSWORD: ${DB_PASSWORD}
     volumes:
       - backend_data:/app/data
+    environment:
+      MYSQL_HOST: db
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_NAME}
+    entrypoint: ["sh", "-c"]
+    command:
+      - "chmod +x /app/clip && /app/clip migrate"
+      - "uvicorn app.main:app --host 0.0.0.0 --port 8082"
     depends_on:
       db:
         condition: service_healthy
@@ -52,6 +45,7 @@ services:
 
   frontend:
     image: ghcr.io/yudeka-eureka/clipping-studio-frontend:latest
+    container_name: webserver
     restart: unless-stopped
     ports:
       - "18080:80"
@@ -61,6 +55,16 @@ services:
       driver: "json-file"
       options:
         max-size: "10m"
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watcher
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Jika repo GHCR kamu private, mount config login docker VPS ke sini:
+      - /home/ubuntu/.docker/config.json:/config.json:ro
+    command: --interval 60 --cleanup
 
 volumes:
   mariadb_data:
