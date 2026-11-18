@@ -136,8 +136,8 @@ export function LandingPage() {
               <span>jadi klip</span> untuk ditinjau.
             </h1>
             <p className="hero-lede">
-              Masukkan file atau link video, biarkan AI membantu menemukan beberapa kandidat momen,
-              lalu tinjau dan render klip yang sesuai kebutuhanmu.
+              Berjalan lokal di komputer kamu. Pilih Gemini, Claude, atau ChatGPT untuk membantu
+              menemukan momen terbaik, lalu tinjau dan render klip sesuai kebutuhanmu.
             </p>
             <div className="hero-actions">
               <button className="button button-large" type="button" onClick={handleStartClipping}>
@@ -317,7 +317,10 @@ export function LandingPage() {
               </div>
               <div>
                 <h3>Dapatkan kandidat momen</h3>
-                <p>AI membantu menganalisis video dan memberi beberapa kandidat klip untuk ditinjau.</p>
+                <p>
+                  Pilih Gemini, Claude, atau ChatGPT. Lihat estimasi biaya token dalam USD/IDR dan
+                  pantau pemakaian tiap proyek.
+                </p>
               </div>
               <span className="feature-index">01</span>
             </article>
@@ -330,7 +333,10 @@ export function LandingPage() {
               </div>
               <div>
                 <h3>Atur format untuk tiap channel</h3>
-                <p>Pilih rasio 9:16, 1:1, 4:5, 16:9, atau pertahankan format asli.</p>
+                <p>
+                  Pilih 9:16, 1:1, 4:5, 16:9, atau asli. Gunakan fokus wajah, crop tengah, atau
+                  video utuh dengan latar blur.
+                </p>
               </div>
               <span className="feature-index">02</span>
             </article>
@@ -344,10 +350,27 @@ export function LandingPage() {
               <div>
                 <h3>Tambahkan subtitle dan judul</h3>
                 <p>
-                  Aktifkan subtitle, judul di atas video, dan penghapusan jeda sesuai kebutuhan.
+                  Subtitle per kata dari Whisper lokal dengan file .srt, judul di atas video,
+                  penghapusan jeda, serta logo dan bumper per proyek.
                 </p>
               </div>
               <span className="feature-index">03</span>
+            </article>
+            <article className="feature-card">
+              <div className="feature-icon icon-green">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 7.5h14M5 12h14M5 16.5h9" />
+                  <path d="m16 15 3 3 3-3M19 18v-6" />
+                </svg>
+              </div>
+              <div>
+                <h3>Jadwalkan lewat Buffer</h3>
+                <p>
+                  Hubungkan satu atau beberapa akun untuk mengantre atau menjadwalkan klip ke
+                  Instagram, TikTok, Shorts, LinkedIn, X, dan Threads.
+                </p>
+              </div>
+              <span className="feature-index">04</span>
             </article>
           </div>
         </section>
@@ -464,8 +487,8 @@ export function LandingPage() {
               </button>
               <div className="product-list">
                 <span>✓ Upload file atau link video</span>
-                <span>✓ Progres pemrosesan realtime</span>
-                <span>✓ Editor klip dan render ulang</span>
+                <span>✓ Progres render &amp; analisis realtime</span>
+                <span>✓ Editor I/O, render ulang, &amp; integrasi Buffer</span>
               </div>
             </div>
             <div className="product-window">
@@ -571,8 +594,20 @@ export function LandingPage() {
                 Apakah saya harus mengirim video ke layanan lain?<span>+</span>
               </summary>
               <p>
-                Untuk workflow lokal, pemrosesan dilakukan di komputer yang menjalankan Clipping
-                Studio. Konfigurasi penyedia AI tetap mengikuti pengaturan aplikasi.
+                Deteksi wajah, transkripsi subtitle, penghapusan jeda, dan render ffmpeg berjalan
+                lokal di komputer kamu. Hanya data analisis video atau transkrip yang dikirim ke
+                penyedia AI pilihanmu—Gemini, Claude, atau ChatGPT—menggunakan API key milikmu
+                sendiri.
+              </p>
+            </details>
+            <details>
+              <summary>
+                Apakah klip bisa langsung diposting ke media sosial?<span>+</span>
+              </summary>
+              <p>
+                Bisa. Hubungkan satu atau beberapa akun Buffer untuk mengantre, menjadwalkan, atau
+                memposting klip setelah selesai dirender ke Instagram Reels, TikTok, YouTube Shorts,
+                LinkedIn, X, Threads, dan channel lain yang didukung Buffer.
               </p>
             </details>
           </div>

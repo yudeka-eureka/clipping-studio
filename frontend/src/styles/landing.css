@@ -788,7 +788,7 @@
 
 .landing-page .feature-grid {
   display: grid;
-  grid-template-columns: 1.18fr 1fr 1fr;
+  grid-template-columns: repeat(4, 1fr);
   gap: 12px;
   margin-top: 58px;
 }
@@ -863,6 +863,11 @@
 .landing-page .icon-orange {
   background: rgba(240, 163, 109, 0.16);
   color: #ffc49c;
+}
+
+.landing-page .icon-green {
+  background: rgba(91, 176, 125, 0.16);
+  color: #3f9160;
 }
 
 .landing-page .feature-card h3 {

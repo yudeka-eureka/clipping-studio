@@ -8,7 +8,7 @@ export const Route = createFileRoute("/")({
       {
         name: "description",
         content:
-          "Masukkan video, dapatkan kandidat klip berbantuan AI untuk meninjau dan merender hasilnya di satu workspace.",
+          "Workspace lokal untuk menemukan momen klip dengan Gemini, Claude, atau ChatGPT, lalu meninjau dan merender hasilnya.",
       },
       {
         property: "og:title",
@@ -17,7 +17,7 @@ export const Route = createFileRoute("/")({
       {
         property: "og:description",
         content:
-          "Masukkan video, dapatkan kandidat klip berbantuan AI untuk meninjau dan merender hasilnya di satu workspace.",
+          "Workspace lokal untuk menemukan momen klip dengan Gemini, Claude, atau ChatGPT, lalu meninjau dan merender hasilnya.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
