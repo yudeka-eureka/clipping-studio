@@ -4,20 +4,20 @@ import { LandingPage } from "@/components/pages/LandingPage";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Clipping Studio \u2014 Dari satu video, jadi banyak momen" },
+      { title: "Clipping Studio \u2014 Dari video panjang ke klip untuk ditinjau" },
       {
         name: "description",
         content:
-          "Clipping Studio membantu kreator mengubah video panjang menjadi klip pendek yang siap dipakai.",
+          "Masukkan video, dapatkan kandidat klip berbantuan AI untuk meninjau dan merender hasilnya di satu workspace.",
       },
       {
         property: "og:title",
-        content: "Clipping Studio \u2014 Dari satu video, jadi banyak momen",
+        content: "Clipping Studio \u2014 Dari video panjang ke klip untuk ditinjau",
       },
       {
         property: "og:description",
         content:
-          "Clipping Studio membantu kreator mengubah video panjang menjadi klip pendek yang siap dipakai.",
+          "Masukkan video, dapatkan kandidat klip berbantuan AI untuk meninjau dan merender hasilnya di satu workspace.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },

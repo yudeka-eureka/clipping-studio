@@ -1,16 +1,16 @@
 .landing-page {
-  --ink: #0e0f13;
-  --ink-2: #171920;
-  --paper: #e8e9ee;
-  --paper-2: #e9e9ec;
-  --violet: #7c5cff;
-  --violet-2: #a18bff;
+  --ink: #fef7ff;
+  --ink-2: #f8f2f9;
+  --paper: #1d1b20;
+  --paper-2: #494551;
+  --violet: #6750a4;
+  --violet-2: #7c5aa6;
   --blue: #6d9ff6;
   --orange: #f0a36d;
-  --muted: #8d92a1;
-  --line: #2b2f3a;
+  --muted: #686177;
+  --line: #ded8df;
   --radius: 22px;
-  color-scheme: dark;
+  color-scheme: light;
   margin: 0;
   background: var(--ink);
   color: var(--paper);
@@ -53,8 +53,8 @@
   display: flex;
   align-items: center;
   gap: 42px;
-  border-bottom: 1px solid rgba(244, 244, 245, 0.1);
-  background: rgba(17, 19, 24, 0.92);
+  border-bottom: 1px solid rgba(73, 69, 81, 0.14);
+  background: rgba(254, 247, 255, 0.92);
   position: sticky;
   top: 0;
   z-index: 20;
@@ -83,7 +83,7 @@
   align-items: flex-end;
   gap: 3px;
   padding: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.35);
+  border: 1px solid rgba(73, 69, 81, 0.24);
   border-radius: 8px;
   transform: rotate(-8deg);
 }
@@ -165,7 +165,7 @@
 }
 
 .landing-page .button:hover {
-  background: #9d75ff;
+  background: #7d61b6;
   box-shadow: 0 10px 28px rgba(139, 92, 246, 0.23);
   transform: translateY(-2px);
 }
@@ -235,7 +235,7 @@
 
 .landing-page .hero-lede {
   max-width: 510px;
-  color: #bebec7;
+  color: #625b71;
   font-size: 17px;
   line-height: 1.65;
 }
@@ -704,6 +704,20 @@
   font-size: 12px;
 }
 
+/* Keep marketing surfaces aligned with the studio's light Material 3 shell. */
+.landing-page .proof-strip {
+  border-color: rgba(73, 69, 81, 0.14);
+  color: #686177;
+}
+
+.landing-page .proof-strip span {
+  color: #7a7582;
+}
+
+.landing-page .proof-strip strong {
+  color: #494551;
+}
+
 .landing-page .proof-strip span {
   color: #555862;
   font-size: 9px;
@@ -766,6 +780,13 @@
   overflow: hidden;
 }
 
+.landing-page .feature-card {
+  border-color: rgba(73, 69, 81, 0.14);
+  background: #ffffff;
+  color: #1d1b20;
+  box-shadow: 0 18px 45px rgba(73, 69, 81, 0.08);
+}
+
 .landing-page .feature-card:after {
   content: "";
   position: absolute;
@@ -781,7 +802,7 @@
 }
 
 .landing-page .feature-featured {
-  background: linear-gradient(135deg, rgba(91, 64, 145, 0.62), #191b22 63%);
+  background: linear-gradient(135deg, #ede5ff, #ffffff 63%);
 }
 
 .landing-page .feature-icon {
@@ -830,6 +851,14 @@
   margin: 0;
   color: #92949e;
   font-size: 13px;
+}
+
+.landing-page .feature-card p,
+.landing-page .section-intro > p:last-child,
+.landing-page .product-copy > p:not(.eyebrow),
+.landing-page .step p,
+.landing-page .faq-list p {
+  color: #625b71;
 }
 
 .landing-page .feature-index {
@@ -1059,6 +1088,12 @@
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.landing-page .product-section {
+  background: #f8f2f9;
+  border-color: rgba(73, 69, 81, 0.14);
+  color: #1d1b20;
+}
+
 .landing-page .product-grid {
   display: grid;
   grid-template-columns: 0.75fr 1.25fr;
@@ -1236,6 +1271,11 @@
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
+.landing-page .faq-list details,
+.landing-page .final-cta {
+  border-color: rgba(73, 69, 81, 0.14);
+}
+
 .landing-page .faq-list summary {
   display: flex;
   justify-content: space-between;
@@ -1289,6 +1329,10 @@
   margin: 0;
   color: #9698a2;
   font-size: 13px;
+}
+
+.landing-page .final-cta p:last-child {
+  color: #625b71;
 }
 
 .landing-page .site-footer {
@@ -1399,17 +1443,18 @@
     padding: 17px;
     flex-direction: column;
     gap: 14px;
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(73, 69, 81, 0.16);
     border-radius: 14px;
-    background: #20222a;
-    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+    background: #fef7ff;
+    color: #1d1b20;
+    box-shadow: 0 20px 40px rgba(73, 69, 81, 0.16);
   }
   .landing-page .mobile-nav.open {
     display: flex;
   }
   .landing-page .mobile-nav a:not(.button),
   .landing-page .mobile-nav button.text-link {
-    color: #b1b2bc;
+    color: #625b71;
     text-align: left;
   }
   .landing-page .hero {
