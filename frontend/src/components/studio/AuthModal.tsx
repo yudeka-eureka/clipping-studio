@@ -1,4 +1,5 @@
 import { useState, useEffect, type FormEvent } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { useAuth, type AuthModalMode } from "@/lib/auth-context";
 
@@ -32,6 +33,7 @@ export function AuthModal({
     login,
     register,
   } = useAuth();
+  const navigate = useNavigate();
 
   const show = isOpen !== undefined ? isOpen : contextOpen;
   const activeMode = initialMode || contextMode;
@@ -112,6 +114,12 @@ export function AuthModal({
         onSuccess();
       } else {
         closeAuthModal();
+        if (
+          typeof window !== "undefined" &&
+          (window.location.pathname === "/" || window.location.pathname === "")
+        ) {
+          navigate({ to: "/app" });
+        }
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Terjadi kesalahan saat autentikasi.";

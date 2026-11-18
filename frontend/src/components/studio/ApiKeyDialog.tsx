@@ -1,5 +1,6 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useState } from "react";
+import { useI18n } from "@/lib/i18n";
 
 /** Pop-up for setting or replacing a provider API key. The key is never prefilled. */
 export function ApiKeyDialog({
@@ -21,6 +22,7 @@ export function ApiKeyDialog({
   onSave: (key: string) => void;
   onRemove?: () => void;
 }) {
+  const { locale, t } = useI18n();
   const [value, setValue] = useState("");
   const [shown, setShown] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,7 +43,11 @@ export function ApiKeyDialog({
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!value.trim()) {
-      setError(`Paste your ${providerLabel} API key.`);
+      setError(
+        locale === "id"
+          ? `Tempel kunci API ${providerLabel} Anda.`
+          : `Paste your ${providerLabel} API key.`,
+      );
       return;
     }
     setSaving(true);
@@ -67,14 +73,18 @@ export function ApiKeyDialog({
                 </DialogPrimitive.Title>
                 <DialogPrimitive.Description className="font-body-sm text-body-sm text-on-surface-variant">
                   {hasKey
-                    ? `The new key replaces your saved ${providerLabel} key.`
-                    : `Used for hook detection with ${providerLabel}.`}
+                    ? locale === "id"
+                      ? `Kunci baru akan menggantikan kunci ${providerLabel} yang tersimpan.`
+                      : `The new key replaces your saved ${providerLabel} key.`
+                    : locale === "id"
+                      ? `Digunakan untuk deteksi hook klip dengan ${providerLabel}.`
+                      : `Used for hook detection with ${providerLabel}.`}
                 </DialogPrimitive.Description>
               </div>
             </div>
             <DialogPrimitive.Close
-              className="rounded-full p-1.5 text-outline transition-colors hover:bg-surface-container-high hover:text-on-surface"
-              aria-label="Close"
+              className="rounded-full p-1.5 text-outline transition-colors hover:bg-surface-container-high hover:text-on-surface cursor-pointer"
+              aria-label={t.common.close}
             >
               <span className="material-symbols-outlined text-[20px]">close</span>
             </DialogPrimitive.Close>
@@ -108,7 +118,7 @@ export function ApiKeyDialog({
                 />
                 <button
                   type="button"
-                  className="rounded-full p-1 text-outline hover:text-on-surface"
+                  className="rounded-full p-1 text-outline hover:text-on-surface cursor-pointer"
                   aria-label={shown ? "Hide key" : "Show key"}
                   onClick={() => setShown((s) => !s)}
                 >
@@ -127,7 +137,7 @@ export function ApiKeyDialog({
                 </span>
               ) : (
                 <span className="font-label-sm text-label-sm text-on-surface-variant">
-                  Stored encrypted. Only the last 4 characters are shown after saving.
+                  {t.dialogs.apiKey.storedEncrypted}
                 </span>
               )}
             </div>
@@ -135,13 +145,13 @@ export function ApiKeyDialog({
               {hasKey && onRemove ? (
                 <button
                   type="button"
-                  className="rounded-full px-space-sm py-2.5 font-label-lg text-label-lg text-error transition-colors hover:bg-error-container/40"
+                  className="rounded-full px-space-sm py-2.5 font-label-lg text-label-lg text-error transition-colors hover:bg-error-container/40 cursor-pointer"
                   onClick={() => {
                     onRemove();
                     close(false);
                   }}
                 >
-                  Remove key
+                  {t.dialogs.apiKey.removeKey}
                 </button>
               ) : (
                 <span />
@@ -149,21 +159,21 @@ export function ApiKeyDialog({
               <div className="flex items-center gap-space-sm">
                 <DialogPrimitive.Close
                   type="button"
-                  className="rounded-full px-space-md py-2.5 font-label-lg text-label-lg text-primary transition-colors hover:bg-primary-fixed/30"
+                  className="rounded-full px-space-md py-2.5 font-label-lg text-label-lg text-primary transition-colors hover:bg-primary-fixed/30 cursor-pointer"
                 >
-                  Cancel
+                  {t.common.cancel}
                 </DialogPrimitive.Close>
                 <button
                   type="submit"
                   disabled={saving}
-                  className="flex items-center gap-2 rounded-full bg-primary-container px-space-lg py-2.5 font-label-lg text-label-lg text-on-primary shadow-xs transition-all hover:bg-primary hover:shadow-md disabled:opacity-70"
+                  className="flex items-center gap-2 rounded-full bg-primary-container px-space-lg py-2.5 font-label-lg text-label-lg text-on-primary shadow-xs transition-all hover:bg-primary hover:shadow-md disabled:opacity-70 cursor-pointer"
                 >
                   <span
                     className={`material-symbols-outlined text-[18px] ${saving ? "animate-spin" : ""}`}
                   >
                     {saving ? "progress_activity" : "check"}
                   </span>
-                  {saving ? "Saving..." : "Save Key"}
+                  {saving ? t.dialogs.apiKey.saving : t.dialogs.apiKey.saveKey}
                 </button>
               </div>
             </div>

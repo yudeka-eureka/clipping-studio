@@ -6,6 +6,7 @@ import { Toggle } from "@/components/studio/Toggle";
 import { formatTimecode } from "@/lib/timecode";
 import { useJobs } from "@/lib/jobs-context";
 import { getMediaUrl, apiJobs, type Clip } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 
 type Filter = "all" | "viral" | "hook" | "broll";
 
@@ -38,6 +39,7 @@ const ANCHORS = [
 
 export function ClipsPage() {
   const navigate = useNavigate();
+  const { t, locale } = useI18n();
   const { jobs, activeJob, setActiveJobId, rerenderJob, updateClip, publishClip } = useJobs();
 
   const [playing, setPlaying] = useState(false);
@@ -209,11 +211,11 @@ export function ClipsPage() {
                   {activeJob.name || `Proyek #${activeJob.id.slice(-6)}`}
                 </span>
                 <span>/</span>
-                <span className="text-primary font-medium">Generated Clips</span>
+                <span className="text-primary font-medium">{t.clips.generatedClips}</span>
               </div>
               <div className="flex flex-wrap items-center gap-2.5">
                 <h1 className="font-headline-sm text-headline-sm text-on-surface tracking-tight">
-                  {"Clip Results & AI Output Monitor"}
+                  {t.clips.title}
                 </h1>
                 {isJobProcessing ? (
                   <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-secondary-container text-on-secondary-container font-label-md text-label-md font-medium shadow-xs">
@@ -224,12 +226,12 @@ export function ClipsPage() {
                 ) : activeJob.status === "error" ? (
                   <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-error-container text-on-error-container font-label-md text-label-md font-medium shadow-xs">
                     <span className="w-2 h-2 rounded-full bg-red-500"></span>
-                    Gagal: {activeJob.error || "Terjadi kesalahan"}
+                    {locale === "id" ? "Gagal" : "Failed"}: {activeJob.error || "Terjadi kesalahan"}
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-secondary-container text-on-secondary-container font-label-md text-label-md font-medium shadow-xs">
                     <span className="w-2 h-2 rounded-full bg-primary"></span>
-                    {clips.length} {clips.length === 1 ? "Clip" : "Clips"} Generated •{" "}
+                    {clips.length} {locale === "id" ? "Klip Dihasilkan" : clips.length === 1 ? "Clip Generated" : "Clips Generated"} •{" "}
                     {activeJob.options?.aspect || "9:16"} Vertical
                   </span>
                 )}
@@ -242,7 +244,7 @@ export function ClipsPage() {
                 onClick={() => navigate({ to: "/app" })}
               >
                 <span className="material-symbols-outlined text-[18px] text-primary">replay</span>
-                <span>New Project</span>
+                <span>{t.clips.newProject}</span>
               </button>
               <button
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-primary-fixed hover:bg-primary-fixed-dim text-on-primary-fixed font-label-md text-label-md transition-colors shadow-xs cursor-pointer disabled:opacity-50"
@@ -251,7 +253,7 @@ export function ClipsPage() {
                 onClick={handlePublish}
               >
                 <span className="material-symbols-outlined text-[18px]">share</span>
-                <span>{publishing ? "Publishing..." : "Publish to Socials"}</span>
+                <span>{publishing ? t.clips.processing : t.clips.publishSocials}</span>
               </button>
               <button
                 className="inline-flex items-center gap-1.5 px-5 py-2 rounded-full bg-primary hover:bg-primary/90 text-on-primary font-label-md text-label-md shadow-md hover:shadow-lg transition-all cursor-pointer disabled:opacity-50"
@@ -264,7 +266,7 @@ export function ClipsPage() {
                 >
                   {exporting ? "progress_activity" : "download_for_offline"}
                 </span>
-                <span>{exporting ? "Packaging..." : "Bulk Export (ZIP)"}</span>
+                <span>{exporting ? t.clips.processing : t.clips.downloadZip}</span>
               </button>
             </div>
           </div>
@@ -313,7 +315,7 @@ export function ClipsPage() {
                   smart_display
                 </span>
                 <span className="font-title-sm text-title-sm text-on-surface font-semibold">
-                  {"Master Player & Smart Reframe"}
+                  {t.clips.masterPlayer}
                 </span>
                 <span className="px-2 py-0.5 rounded-sm text-label-sm font-label-sm bg-surface-container-highest text-on-surface-variant font-mono">
                   {selectedClip
@@ -326,8 +328,10 @@ export function ClipsPage() {
                   <span className="w-2 h-2 rounded-full bg-primary"></span>
                   <span>
                     {selectedClip?.status === "ready"
-                      ? "Rendered Ready"
-                      : selectedClip?.status || "Analyzing"}
+                      ? locale === "id"
+                        ? "Siap Dipakai"
+                        : "Rendered Ready"
+                      : selectedClip?.status || (locale === "id" ? "Menganalisis" : "Analyzing")}
                   </span>
                 </div>
               </div>
@@ -374,29 +378,29 @@ export function ClipsPage() {
                       psychology
                     </span>
                     <span className="font-title-sm text-title-sm font-semibold text-on-surface">
-                      AI Hook &amp; Reason
+                      {locale === "id" ? "Hook AI & Alasan" : "AI Hook & Reason"}
                     </span>
                   </div>
                   {selectedClip?.score && (
                     <span className="px-2 py-0.5 rounded-full bg-primary-fixed text-on-primary-fixed text-xs font-bold">
-                      Score {Math.round(selectedClip.score)}/100
+                      {locale === "id" ? "Skor" : "Score"} {Math.round(selectedClip.score)}/100
                     </span>
                   )}
                 </div>
                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
                   <div>
                     <span className="text-xs uppercase font-bold text-on-surface-variant tracking-wider block mb-1">
-                      Clip Title
+                      {locale === "id" ? "Judul Klip" : "Clip Title"}
                     </span>
                     <p className="text-sm font-semibold text-on-surface">
-                      {selectedClip?.title || "Untitled Clip"}
+                      {selectedClip?.title || (locale === "id" ? "Klip Tanpa Judul" : "Untitled Clip")}
                     </p>
                   </div>
 
                   {selectedClip?.reason && (
                     <div>
                       <span className="text-xs uppercase font-bold text-on-surface-variant tracking-wider block mb-1">
-                        Virality Reason
+                        {locale === "id" ? "Alasan Viralitas" : "Virality Reason"}
                       </span>
                       <p className="text-xs text-on-surface-variant leading-relaxed bg-surface-container p-2.5 rounded-lg">
                         {selectedClip.reason}
@@ -430,32 +434,34 @@ export function ClipsPage() {
           <div className="flex flex-wrap items-center justify-between gap-3 bg-surface-container-low px-space-md py-3 rounded-xl shadow-xs">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-label-sm font-label-sm text-on-surface-variant font-medium mr-1">
-                Filter Clips:
+                {locale === "id" ? "Filter Klip:" : "Filter Clips:"}
               </span>
               <button
                 className={filter === "all" ? CHIP_ON : CHIP_OFF}
                 onClick={() => setFilter("all")}
                 type="button"
               >
-                All Clips ({clips.length})
+                {locale === "id" ? `Semua Klip (${clips.length})` : `All Clips (${clips.length})`}
               </button>
               <button
                 className={filter === "viral" ? CHIP_ON : CHIP_OFF}
                 onClick={() => setFilter("viral")}
                 type="button"
               >
-                High Virality (80%+)
+                {locale === "id" ? "Viralitas Tinggi (80%+)" : "High Virality (80%+)"}
               </button>
               <button
                 className={filter === "hook" ? CHIP_ON : CHIP_OFF}
                 onClick={() => setFilter("hook")}
                 type="button"
               >
-                Hook Highlights
+                {locale === "id" ? "Sorotan Hook" : "Hook Highlights"}
               </button>
             </div>
             <div className="text-xs text-on-surface-variant font-medium">
-              Showing {clips.filter(isVisible).length} of {clips.length} moments
+              {locale === "id"
+                ? `Menampilkan ${clips.filter(isVisible).length} dari ${clips.length} momen`
+                : `Showing ${clips.filter(isVisible).length} of ${clips.length} moments`}
             </div>
           </div>
 
@@ -652,7 +658,7 @@ export function ClipsPage() {
                 <div className="flex flex-col gap-2">
                   <div className="flex items-center justify-between">
                     <span className="text-label-sm font-label-sm font-medium text-on-surface-variant">
-                      {"Caption Typography & Motion"}
+                      {locale === "id" ? "Tipografi Subtitle & Gerakan" : "Caption Typography & Motion"}
                     </span>
                   </div>
                   <div className="grid grid-cols-3 gap-2">
@@ -686,34 +692,50 @@ export function ClipsPage() {
                   </div>
                   <div className="flex items-center justify-between p-2 rounded-lg bg-surface-container mt-1">
                     <span className="text-body-sm font-body-sm text-on-surface">
-                      Auto-Emoji Injection
+                      {locale === "id" ? "Sematkan Emoji Otomatis" : "Auto-Emoji Injection"}
                     </span>
                     <Toggle
                       size="sm"
                       checked={emoji}
                       onChange={setEmoji}
-                      label="Auto-Emoji Injection"
+                      label={locale === "id" ? "Sematkan Emoji Otomatis" : "Auto-Emoji Injection"}
                     />
                   </div>
                   <div className="flex items-center justify-between p-2 rounded-lg bg-surface-container">
                     <span className="text-body-sm font-body-sm text-on-surface">
-                      Highlight Active Spoken Word
+                      {locale === "id"
+                        ? "Sorot Kata yang Sedang Diucapkan"
+                        : "Highlight Active Spoken Word"}
                     </span>
                     <Toggle
                       size="sm"
                       checked={highlightWord}
                       onChange={setHighlightWord}
-                      label="Highlight Active Spoken Word"
+                      label={
+                        locale === "id"
+                          ? "Sorot Kata yang Sedang Diucapkan"
+                          : "Highlight Active Spoken Word"
+                      }
                     />
                   </div>
                 </div>
                 <div className="flex flex-col gap-2">
                   <span className="text-label-sm font-label-sm font-medium text-on-surface-variant">
-                    Smart Reframe Tracking Anchor
+                    {locale === "id"
+                      ? "Titik Fokus Tracking Reframe"
+                      : "Smart Reframe Tracking Anchor"}
                   </span>
                   <div className="flex flex-col gap-1.5" role="radiogroup">
                     {ANCHORS.map((a) => {
                       const active = anchor === a.id;
+                      const anchorLabel =
+                        locale === "id"
+                          ? a.id === "speaker1"
+                            ? "Pembicara 1: Pembicara Utama"
+                            : a.id === "speaker2"
+                              ? "Pembicara 2: Moderator"
+                              : "Auto-Pan Suara Aktif"
+                          : a.label;
                       return (
                         <button
                           key={a.id}
@@ -736,7 +758,7 @@ export function ClipsPage() {
                             <span
                               className={`text-label-sm font-label-sm ${active ? "font-bold text-on-primary-fixed" : "text-on-surface"}`}
                             >
-                              {a.label}
+                              {anchorLabel}
                             </span>
                           </div>
                           <span
@@ -751,12 +773,12 @@ export function ClipsPage() {
                 </div>
                 <div className="flex flex-col gap-2">
                   <span className="text-label-sm font-label-sm font-medium text-on-surface-variant">
-                    {"Trim Points & Millisecond Nudge"}
+                    {locale === "id" ? "Titik Potong & Geser Waktu" : "Trim Points & Millisecond Nudge"}
                   </span>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="flex flex-col gap-1 bg-surface-container p-2 rounded-lg">
                       <span className="text-[10px] text-on-surface-variant uppercase font-medium">
-                        In Point
+                        {t.clips.inPoint}
                       </span>
                       <div className="flex items-center justify-between">
                         <button
@@ -782,7 +804,7 @@ export function ClipsPage() {
                     </div>
                     <div className="flex flex-col gap-1 bg-surface-container p-2 rounded-lg">
                       <span className="text-[10px] text-on-surface-variant uppercase font-medium">
-                        Out Point
+                        {t.clips.outPoint}
                       </span>
                       <div className="flex items-center justify-between">
                         <button
@@ -820,15 +842,20 @@ export function ClipsPage() {
                     >
                       {rendering ? "progress_activity" : "movie_filter"}
                     </span>
-                    <span>{rendering ? "Rendering Clip..." : "Re-render Selected Clip"}</span>
+                    <span>
+                      {rendering
+                        ? locale === "id"
+                          ? "Merender Klip..."
+                          : "Rendering Clip..."
+                        : t.clips.rerenderBtn}
+                    </span>
                   </button>
                   <button
                     className="w-full py-2 rounded-full bg-surface-container hover:bg-surface-container-high text-on-surface text-label-sm font-label-sm font-medium transition-colors cursor-pointer"
                     type="button"
                     onClick={resetEdits}
                   >
-                    {" "}
-                    Reset Edits to AI Default{" "}
+                    {locale === "id" ? "Kembalikan ke Default AI" : "Reset Edits to AI Default"}
                   </button>
                 </div>
               </div>

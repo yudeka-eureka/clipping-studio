@@ -42,4 +42,6 @@ dist-ssr
 *.sln
 *.sw?
 
+## tools
+anti-slop/
 .impeccable

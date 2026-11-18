@@ -58,7 +58,7 @@ function NavItem({
 function Sidebar() {
   const { user, logout, openAuthModal } = useAuth();
   const { jobs, setActiveJobId } = useJobs();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const navigate = useNavigate();
 
   const displayName = user?.display_name || user?.username || "Guest User";
@@ -110,10 +110,19 @@ function Sidebar() {
               const clipCount = job.clips ? job.clips.length : 0;
               const subtitle =
                 job.status === "done"
-                  ? `${clipCount} ${clipCount === 1 ? "clip" : "clips"} ready`
+                  ? locale === "id"
+                    ? `${clipCount} klip siap`
+                    : `${clipCount} ${clipCount === 1 ? "clip" : "clips"} ready`
                   : job.status === "error"
-                    ? "Gagal diproses"
-                    : job.stage || (job.status === "queued" ? "Antrean..." : "Memproses...");
+                    ? locale === "id"
+                      ? "Gagal diproses"
+                      : "Processing failed"
+                    : job.stage ||
+                      (job.status === "queued"
+                        ? locale === "id"
+                          ? "Antrean..."
+                          : "Queued..."
+                        : t.common.processing);
 
               return (
                 <Button

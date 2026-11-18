@@ -9,6 +9,7 @@ import {
   type PasswordErrors,
 } from "@/lib/settings";
 import { useAuth } from "@/lib/auth-context";
+import { useI18n } from "@/lib/i18n";
 
 const FIELDS: { key: keyof PasswordChange; label: string; icon: string; autoComplete: string }[] = [
   { key: "current", label: "Old Password", icon: "lock", autoComplete: "current-password" },
@@ -31,6 +32,7 @@ export function ChangePasswordDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { updatePassword } = useAuth();
+  const { locale, t } = useI18n();
   const [values, setValues] = useState<PasswordChange>(EMPTY);
   const [shown, setShown] = useState<Partial<Record<keyof PasswordChange, boolean>>>({});
   const [errors, setErrors] = useState<PasswordErrors>({});
@@ -52,18 +54,40 @@ export function ChangePasswordDialog({
     setSaving(true);
     try {
       await updatePassword(values.current, values.next);
-      toast.success("Kata sandi berhasil diperbarui", {
-        description: "Gunakan kata sandi baru Anda saat masuk berikutnya.",
-      });
+      toast.success(
+        locale === "id" ? "Kata sandi berhasil diperbarui" : "Password updated successfully",
+        {
+          description:
+            locale === "id"
+              ? "Gunakan kata sandi baru Anda saat masuk berikutnya."
+              : "Use your new password on your next login.",
+        },
+      );
       onOpenChange(false);
       reset();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Gagal memperbarui kata sandi.";
+      const msg =
+        err instanceof Error
+          ? err.message
+          : locale === "id"
+            ? "Gagal memperbarui kata sandi."
+            : "Failed to update password.";
       setErrors({ current: msg });
       toast.error(msg);
     } finally {
       setSaving(false);
     }
+  };
+
+  const getFieldLabel = (key: keyof PasswordChange) => {
+    if (locale === "id") {
+      if (key === "current") return "Kata Sandi Lama";
+      if (key === "next") return "Kata Sandi Baru";
+      return "Konfirmasi Kata Sandi Baru";
+    }
+    if (key === "current") return "Old Password";
+    if (key === "next") return "New Password";
+    return "Confirm New Password";
   };
 
   return (
@@ -84,16 +108,18 @@ export function ChangePasswordDialog({
               </div>
               <div>
                 <DialogPrimitive.Title className="font-title-lg text-title-lg font-medium text-on-surface">
-                  Change Password
+                  {t.dialogs.changePassword.title}
                 </DialogPrimitive.Title>
                 <DialogPrimitive.Description className="font-body-sm text-body-sm text-on-surface-variant">
-                  At least {PASSWORD_MIN_LENGTH} characters with numbers &amp; symbols.
+                  {locale === "id"
+                    ? `Minimal ${PASSWORD_MIN_LENGTH} karakter dengan kombinasi angka & simbol.`
+                    : `At least ${PASSWORD_MIN_LENGTH} characters with numbers & symbols.`}
                 </DialogPrimitive.Description>
               </div>
             </div>
             <DialogPrimitive.Close
-              className="rounded-full p-1.5 text-outline transition-colors hover:bg-surface-container-high hover:text-on-surface"
-              aria-label="Close"
+              className="rounded-full p-1.5 text-outline transition-colors hover:bg-surface-container-high hover:text-on-surface cursor-pointer"
+              aria-label={t.common.close}
             >
               <span className="material-symbols-outlined text-[20px]">close</span>
             </DialogPrimitive.Close>
@@ -102,13 +128,14 @@ export function ChangePasswordDialog({
             {FIELDS.map((f) => {
               const id = `pw-${f.key}`;
               const err = errors[f.key];
+              const label = getFieldLabel(f.key);
               return (
                 <div key={f.key} className="flex flex-col gap-1.5">
                   <label
                     htmlFor={id}
                     className="font-label-md text-label-md font-medium text-on-surface-variant"
                   >
-                    {f.label}
+                    {label}
                   </label>
                   <div
                     className={`flex h-11 items-center rounded-lg bg-surface-container-lowest px-space-sm focus-within:ring-2 ${err ? "ring-2 ring-error focus-within:ring-error" : "focus-within:ring-primary"}`}
@@ -132,7 +159,7 @@ export function ChangePasswordDialog({
                     <button
                       type="button"
                       className="rounded-full p-1 text-outline hover:text-on-surface cursor-pointer"
-                      aria-label={shown[f.key] ? `Hide ${f.label}` : `Show ${f.label}`}
+                      aria-label={shown[f.key] ? `Hide ${label}` : `Show ${label}`}
                       onClick={() => setShown((s) => ({ ...s, [f.key]: !s[f.key] }))}
                     >
                       <span className="material-symbols-outlined text-[18px]">
@@ -157,7 +184,7 @@ export function ChangePasswordDialog({
                 type="button"
                 className="rounded-full px-space-md py-2.5 font-label-lg text-label-lg text-primary transition-colors hover:bg-primary-fixed/30 cursor-pointer"
               >
-                Cancel
+                {t.common.cancel}
               </DialogPrimitive.Close>
               <button
                 type="submit"
@@ -169,7 +196,7 @@ export function ChangePasswordDialog({
                 >
                   {saving ? "progress_activity" : "check"}
                 </span>
-                {saving ? "Updating..." : "Update Password"}
+                {saving ? t.dialogs.changePassword.submitting : t.dialogs.changePassword.submit}
               </button>
             </div>
           </form>

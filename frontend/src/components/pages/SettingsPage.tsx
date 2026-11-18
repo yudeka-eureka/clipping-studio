@@ -6,6 +6,7 @@ import { ApiKeyDialog } from "@/components/studio/ApiKeyDialog";
 import { ChangePasswordDialog } from "@/components/studio/ChangePasswordDialog";
 import { Dropdown } from "@/components/studio/Dropdown";
 import { useAuth } from "@/lib/auth-context";
+import { useI18n } from "@/lib/i18n";
 import { apiConfig, apiAuth, type StudioConfig } from "@/lib/api";
 import {
   HOOK_PROVIDERS,
@@ -205,10 +206,12 @@ function TestButton({
   status,
   disabled,
   onClick,
+  locale = "id",
 }: {
   status: TestStatus;
   disabled?: boolean;
   onClick: () => void;
+  locale?: string;
 }) {
   return (
     <button
@@ -221,7 +224,17 @@ function TestButton({
       disabled={disabled || status === "pinging"}
       onClick={onClick}
     >
-      {status === "pinging" ? "Testing..." : status === "ok" ? "Connected ✓" : "Test Connection"}
+      {status === "pinging"
+        ? locale === "id"
+          ? "Menguji..."
+          : "Testing..."
+        : status === "ok"
+          ? locale === "id"
+            ? "Terhubung ✓"
+            : "Connected ✓"
+          : locale === "id"
+            ? "Uji Koneksi"
+            : "Test Connection"}
     </button>
   );
 }
@@ -270,6 +283,7 @@ const DEFAULTS = {
 
 export function SettingsPage() {
   const { user, updateDisplayName, updatePhoto, refreshUser } = useAuth();
+  const { t, locale } = useI18n();
   const avatarInput = useRef<HTMLInputElement>(null);
 
   const [formKey, setFormKey] = useState(0);
@@ -590,20 +604,18 @@ export function SettingsPage() {
             <div className="flex flex-col gap-1 min-w-0">
               <div className="flex items-center gap-space-xs">
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-secondary-container text-on-secondary-container font-label-sm text-label-sm">
-                  <span className="material-symbols-outlined text-[14px]">tune</span> System
-                  Preferences{" "}
+                  <span className="material-symbols-outlined text-[14px]">tune</span>{" "}
+                  {t.settings.badge}
                 </span>
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container-high text-on-surface-variant font-label-sm text-label-sm">
-                  v3.4.2 Production{" "}
+                  {t.settings.version}
                 </span>
               </div>
               <h1 className="font-headline-lg text-headline-lg text-on-surface font-normal tracking-tight">
-                {"Studio Settings & Preferences"}
+                {t.settings.title}
               </h1>
               <p className="font-body-md text-body-md text-on-surface-variant max-w-3xl">
-                {" "}
-                Manage your creator profile, configure custom AI model API keys, and default
-                rendering engine preferences.{" "}
+                {t.settings.subtitle}
               </p>
             </div>
             <div className="flex items-center gap-space-sm self-start lg:self-center shrink-0">
@@ -612,7 +624,7 @@ export function SettingsPage() {
                 type="button"
                 onClick={discard}
               >
-                <span className="material-symbols-outlined text-[18px]">replay</span> Discard{" "}
+                <span className="material-symbols-outlined text-[18px]">replay</span> {t.settings.discard}
               </button>
               <button
                 className="px-space-lg py-2.5 rounded-full bg-primary hover:bg-primary/90 text-on-primary font-label-lg text-label-lg shadow-xs hover:shadow-md transition-all flex items-center gap-2 cursor-pointer"
@@ -621,7 +633,7 @@ export function SettingsPage() {
                 onClick={saveAll}
               >
                 <span className="material-symbols-outlined text-[18px]">check</span>
-                <span>Save Changes</span>
+                <span>{t.settings.save}</span>
               </button>
             </div>
           </section>
@@ -639,8 +651,7 @@ export function SettingsPage() {
                   check_circle
                 </span>
                 <span className="font-body-md text-body-md font-medium">
-                  All settings updated successfully. AI pipeline will use selected credentials on
-                  next job.
+                  {t.settings.saveSuccess}
                 </span>
               </div>
               <button
@@ -665,10 +676,10 @@ export function SettingsPage() {
                     </div>
                     <div>
                       <h2 className="font-title-lg text-title-lg text-on-surface font-medium">
-                        {"User Profile & Creator Identity"}
+                        {t.settings.profileTitle}
                       </h2>{" "}
                       <p className="font-body-sm text-body-sm text-on-surface-variant">
-                        Configure export branding, account details, and credential token.
+                        {t.settings.profileSubtitle}
                       </p>
                     </div>
                   </div>
@@ -698,7 +709,7 @@ export function SettingsPage() {
                       </span>
                     </div>
                     <p className="font-body-sm text-body-sm text-on-surface-variant">
-                      {user?.email || "JPG, PNG or WebP up to 5MB."}
+                      {user?.email || t.settings.avatarHint}
                     </p>
                     <div className="flex items-center justify-center sm:justify-start gap-space-xs pt-1">
                       <button
@@ -707,7 +718,7 @@ export function SettingsPage() {
                         onClick={() => avatarInput.current?.click()}
                       >
                         <span className="material-symbols-outlined text-[16px]">photo_camera</span>{" "}
-                        Change Avatar{" "}
+                        {t.settings.changeAvatar}{" "}
                       </button>
                       <input
                         ref={avatarInput}
@@ -723,7 +734,7 @@ export function SettingsPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-space-md pt-space-xs">
                   <div className="flex flex-col gap-1.5">
                     <label className="font-label-md text-label-md text-on-surface-variant font-medium">
-                      Display Name
+                      {t.settings.displayName}
                     </label>
                     <div className="relative flex items-center rounded-lg bg-surface-container px-space-sm py-2.5 transition-colors focus-within:ring-2 focus-within:ring-primary">
                       <span className="material-symbols-outlined text-outline text-[20px] mr-2">
@@ -739,7 +750,7 @@ export function SettingsPage() {
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <label className="font-label-md text-label-md text-on-surface-variant font-medium">
-                      Email Address
+                      {t.settings.email}
                     </label>
                     <div className="relative flex items-center rounded-lg bg-surface-container px-space-sm py-2.5 opacity-80">
                       <span className="material-symbols-outlined text-outline text-[20px] mr-2">
@@ -757,10 +768,12 @@ export function SettingsPage() {
                 <div className="flex flex-col sm:flex-row items-center justify-between gap-space-sm pt-space-xs border-t border-outline-variant/30">
                   <div className="flex flex-col">
                     <span className="font-label-md text-label-md text-on-surface font-medium">
-                      Security &amp; Password
+                      {t.settings.accountSecurity}
                     </span>
                     <span className="font-body-sm text-body-sm text-on-surface-variant">
-                      Update your account login password anytime.
+                      {locale === "id"
+                        ? "Perbarui kata sandi login akun Anda kapan saja."
+                        : "Update your account login password anytime."}
                     </span>
                   </div>
                   <button
@@ -768,7 +781,7 @@ export function SettingsPage() {
                     type="button"
                     onClick={() => setPasswordOpen(true)}
                   >
-                    Change Password
+                    {t.settings.changePassword}
                   </button>
                 </div>
 
@@ -776,14 +789,14 @@ export function SettingsPage() {
                   <div className="flex flex-col gap-1.5 pt-space-xs border-t border-outline-variant/30">
                     <div className="flex items-center justify-between">
                       <label className="font-label-md text-label-md text-on-surface font-medium">
-                        Account Credential Token
+                        {t.settings.credentialToken}
                       </label>
                       <button
                         type="button"
                         onClick={handleRegenerateToken}
                         className="text-xs text-primary font-medium hover:underline cursor-pointer"
                       >
-                        Regenerate Token
+                        {t.settings.regenerateToken}
                       </button>
                     </div>
                     <div className="relative flex items-center rounded-lg bg-surface-container px-space-sm py-2">
@@ -806,10 +819,10 @@ export function SettingsPage() {
                   </div>
                   <div>
                     <h2 className="font-title-lg text-title-lg text-on-surface font-medium">
-                      {"Default Pipeline Preferences"}
+                      {t.settings.pipelineTitle}
                     </h2>
                     <p className="font-body-sm text-body-sm text-on-surface-variant">
-                      Global defaults applied automatically when new video sources are ingested.
+                      {t.settings.pipelineSubtitle}
                     </p>
                   </div>
                 </div>
@@ -817,8 +830,12 @@ export function SettingsPage() {
                 <div className="flex flex-col gap-space-sm">
                   <RuleCard
                     icon="hd"
-                    title="Default Resolution & Export Quality"
-                    description="Standard canvas dimension for vertical & square exports."
+                    title={t.settings.defaultResolution}
+                    description={
+                      locale === "id"
+                        ? "Dimensi standar untuk ekspor klip vertikal & persegi."
+                        : "Standard canvas dimension for vertical & square exports."
+                    }
                   >
                     <div className="grid grid-cols-3 gap-2">
                       {RES_OPTIONS.map((r) => (
@@ -841,8 +858,8 @@ export function SettingsPage() {
 
                   <RuleCard
                     icon="mic"
-                    title="Whisper Speech-to-Text Model"
-                    description="Engine model tier utilized for audio transcription and karaoke subtitles."
+                    title={t.settings.whisperModel}
+                    description={t.settings.audioEngineSub}
                   >
                     <div className="grid grid-cols-3 gap-2">
                       {WHISPER_MODELS.map((m) => (
@@ -864,30 +881,32 @@ export function SettingsPage() {
 
                   <RuleCard
                     icon="subtitles"
-                    title="Automatic Subtitle Burning"
-                    description="Burn synchronized animated subtitles directly onto exported video renders."
+                    title={t.settings.autoCaptions}
+                    description={t.settings.autoCaptionsSub}
                     action={
                       <SettingSwitch
                         checked={captions}
                         onChange={setCaptions}
-                        label="Automatic Subtitles"
+                        label={t.settings.autoCaptions}
                       />
                     }
                   >
                     <span className="text-xs text-on-surface-variant">
-                      Uses word-level timestamp boundaries derived from Whisper transcripts.
+                      {locale === "id"
+                        ? "Menggunakan timestamp per kata hasil transkrip Whisper."
+                        : "Uses word-level timestamp boundaries derived from Whisper transcripts."}
                     </span>
                   </RuleCard>
 
                   <RuleCard
                     icon="send"
-                    title="Auto-Publish via Buffer"
-                    description="Automatically queue approved clips to your social channels."
+                    title={t.settings.socialBuffer}
+                    description={t.settings.socialBufferSub}
                     action={
                       <SettingSwitch
                         checked={publish}
                         onChange={setPublish}
-                        label="Auto-publish via Buffer"
+                        label={t.settings.socialBuffer}
                       />
                     }
                   >
@@ -895,7 +914,10 @@ export function SettingsPage() {
                       disabled={!publish}
                       className="grid grid-cols-1 sm:grid-cols-2 gap-space-sm disabled:opacity-50"
                     >
-                      <Field label="Buffer Account Name" htmlFor="buffer-account">
+                      <Field
+                        label={locale === "id" ? "Nama Akun Buffer" : "Buffer Account Name"}
+                        htmlFor="buffer-account"
+                      >
                         <TextBox
                           id="buffer-account"
                           icon="account_circle"
@@ -904,7 +926,10 @@ export function SettingsPage() {
                           onChange={(e) => setBufferAccount(e.target.value)}
                         />
                       </Field>
-                      <Field label="Buffer API Key *" htmlFor="buffer-key">
+                      <Field
+                        label={locale === "id" ? "Kunci API Buffer *" : "Buffer API Key *"}
+                        htmlFor="buffer-key"
+                      >
                         <SecretInput
                           id="buffer-key"
                           icon="key"
@@ -923,6 +948,7 @@ export function SettingsPage() {
                           status={keyStatus.buffer}
                           disabled={!apiKeys.buffer && !bufferAccount}
                           onClick={() => runTest("buffer")}
+                          locale={locale}
                         />
                       </div>
                     </fieldset>
@@ -930,13 +956,13 @@ export function SettingsPage() {
 
                   <RuleCard
                     icon="cloud_sync"
-                    title="Cloud Storage"
-                    description="Where source masters and rendered clips are kept."
+                    title={t.settings.cloudStorage}
+                    description={t.settings.cloudStorageSub}
                   >
                     <div
                       className="grid grid-cols-3 p-1 rounded-lg bg-surface-container-lowest gap-1"
                       role="radiogroup"
-                      aria-label="Storage provider"
+                      aria-label={t.settings.storageProvider}
                     >
                       {(Object.keys(STORAGE_PROVIDERS) as StorageProvider[]).map((p) => (
                         <button
@@ -954,7 +980,9 @@ export function SettingsPage() {
                           <span className="material-symbols-outlined text-[18px]">
                             {STORAGE_PROVIDERS[p].icon}
                           </span>
-                          <span className="truncate">{STORAGE_PROVIDERS[p].label}</span>
+                          <span className="truncate">
+                            {p === "standard" ? t.settings.localStorage : STORAGE_PROVIDERS[p].label}
+                          </span>
                         </button>
                       ))}
                     </div>
@@ -1004,9 +1032,13 @@ export function SettingsPage() {
                           })}
                         </div>
                         <Field
-                          label="Storage Retention"
+                          label={t.settings.retentionPeriod}
                           htmlFor="retention-value"
-                          hint={`Files older than this are deleted from your ${STORAGE_PROVIDERS[storage].label} storage.`}
+                          hint={
+                            locale === "id"
+                              ? `File yang lebih lama dari masa simpan ini akan dihapus dari ${STORAGE_PROVIDERS[storage].label} Anda.`
+                              : `Files older than this are deleted from your ${STORAGE_PROVIDERS[storage].label} storage.`
+                          }
                         >
                           <div className="flex items-center gap-space-xs">
                             <div className="w-28">
@@ -1025,7 +1057,19 @@ export function SettingsPage() {
                                 aria-label="Retention unit"
                                 value={retentionUnit}
                                 onValueChange={setRetentionUnit}
-                                options={RETENTION_UNITS}
+                                options={RETENTION_UNITS.map((u) => ({
+                                  value: u.value,
+                                  label:
+                                    locale === "id"
+                                      ? u.value === "hours"
+                                        ? "Jam"
+                                        : u.value === "days"
+                                          ? "Hari"
+                                          : u.value === "weeks"
+                                            ? "Minggu"
+                                            : "Bulan"
+                                      : u.label,
+                                }))}
                               />
                             </div>
                           </div>
@@ -1037,9 +1081,9 @@ export function SettingsPage() {
                           info
                         </span>
                         <span className="font-body-sm text-body-sm">
-                          Standard storage keeps files on server for {STANDARD_RETENTION_HOURS}{" "}
-                          hours, then deletes them. Download your clips before they expire, or
-                          connect Cloudinary or Cloudflare R2 to choose your own retention.
+                          {locale === "id"
+                            ? `Penyimpanan lokal standar menyimpan berkas klip di server selama ${STANDARD_RETENTION_HOURS} jam sebelum otomatis dibersihkan. Unduh klip Anda sebelum kedaluwarsa, atau hubungkan Cloudinary/Cloudflare R2 untuk masa simpan kustom.`
+                            : `Standard storage keeps files on server for ${STANDARD_RETENTION_HOURS} hours, then deletes them. Download your clips before they expire, or connect Cloudinary or Cloudflare R2 to choose your own retention.`}
                         </span>
                       </div>
                     )}
@@ -1058,22 +1102,23 @@ export function SettingsPage() {
                     </div>
                     <div>
                       <h2 className="font-title-lg text-title-lg text-on-surface font-medium">
-                        {"AI Model API Keys"}
+                        {t.settings.aiModelsTitle}
                       </h2>
                       <p className="font-body-sm text-body-sm text-on-surface-variant">
-                        Bring Your Own Key (BYOK) for LLM reasoning and hook analysis.
+                        {t.settings.aiModelsSubtitle}
                       </p>
                     </div>
                   </div>
                 </div>
 
                 <div className="p-space-sm rounded-xl bg-surface-container text-on-surface-variant font-body-sm text-body-sm relative">
-                  Connect your own Gemini, OpenAI, or Anthropic API key to unlock custom models with
-                  zero data retention.
+                  {locale === "id"
+                    ? "Hubungkan kunci API Gemini, OpenAI, atau Anthropic Anda untuk menggunakan model cerdas tanpa penyimpanan data pihak ketiga."
+                    : "Connect your own Gemini, OpenAI, or Anthropic API key to unlock custom models with zero data retention."}
                 </div>
 
                 <div className="flex flex-col gap-space-sm pt-space-xs">
-                  <Field label="Preferred Hook Detection Model" htmlFor="hook-provider">
+                  <Field label={t.settings.provider} htmlFor="hook-provider">
                     <Dropdown
                       id="hook-provider"
                       icon={providerInfo.icon}
@@ -1087,13 +1132,17 @@ export function SettingsPage() {
                         label: HOOK_PROVIDERS[id].label,
                         icon: HOOK_PROVIDERS[id].icon,
                         description: HOOK_PROVIDERS[id].keyProvider
-                          ? "Uses your own API key"
-                          : "Runs on Clipping Studio GPUs",
+                          ? locale === "id"
+                            ? "Menggunakan kunci API Anda sendiri"
+                            : "Uses your own API key"
+                          : locale === "id"
+                            ? "Berjalan di mesin lokal Clipping Studio"
+                            : "Runs on Clipping Studio GPUs",
                       }))}
                     />
                   </Field>
 
-                  <Field label="Version" htmlFor="hook-version">
+                  <Field label={t.settings.modelVersion} htmlFor="hook-version">
                     <div className="flex items-center gap-space-xs">
                       <div className="flex-1 min-w-0">
                         <Dropdown
@@ -1116,7 +1165,8 @@ export function SettingsPage() {
                         type="button"
                         onClick={refreshVersions}
                         disabled={refreshing}
-                        aria-label="Check available versions"
+                        aria-label={t.settings.refreshModels}
+                        title={t.settings.refreshModels}
                         className="shrink-0 h-11 w-11 rounded-lg bg-secondary-container text-on-secondary-container flex items-center justify-center transition-colors hover:bg-secondary-fixed cursor-pointer disabled:opacity-50"
                       >
                         <span
@@ -1144,11 +1194,13 @@ export function SettingsPage() {
                       </label>
                       {keyStatus[keyProvider] === "ok" ? (
                         <span className="inline-flex items-center gap-1 font-label-sm text-label-sm text-primary font-medium">
-                          <span className="w-1.5 h-1.5 rounded-full bg-primary"></span> Connected
+                          <span className="w-1.5 h-1.5 rounded-full bg-primary"></span>{" "}
+                          {locale === "id" ? "Terhubung" : "Connected"}
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1 font-label-sm text-label-sm text-outline font-medium">
-                          <span className="w-1.5 h-1.5 rounded-full bg-outline"></span> Unchecked
+                          <span className="w-1.5 h-1.5 rounded-full bg-outline"></span>{" "}
+                          {locale === "id" ? "Belum Diuji" : "Unchecked"}
                         </span>
                       )}
                     </div>
@@ -1163,7 +1215,11 @@ export function SettingsPage() {
                         <span
                           className={`truncate font-body-sm text-body-sm ${providerKey ? "text-on-surface tracking-wider" : "text-outline"}`}
                         >
-                          {providerKey ? maskApiKey(providerKey) : "No key set"}
+                          {providerKey
+                            ? maskApiKey(providerKey)
+                            : locale === "id"
+                              ? "Kunci belum diatur"
+                              : "No key set"}
                         </span>
                       </div>
                       <button
@@ -1174,15 +1230,26 @@ export function SettingsPage() {
                         <span className="material-symbols-outlined text-[18px]">
                           {providerKey ? "edit" : "add"}
                         </span>
-                        {providerKey ? "Change Key" : "Set API Key"}
+                        {providerKey
+                          ? locale === "id"
+                            ? "Ubah Kunci"
+                            : "Change Key"
+                          : locale === "id"
+                            ? "Atur Kunci"
+                            : "Set API Key"}
                       </button>
                     </div>
                     <div className="flex items-center justify-between text-on-surface-variant font-label-sm text-label-sm">
-                      <span>Required for {versionInfo.label}</span>
+                      <span>
+                        {locale === "id"
+                          ? `Wajib untuk ${versionInfo.label}`
+                          : `Required for ${versionInfo.label}`}
+                      </span>
                       <TestButton
                         status={keyStatus[keyProvider]}
                         disabled={!providerKey}
                         onClick={() => runTest(keyProvider)}
+                        locale={locale}
                       />
                     </div>
                   </div>
@@ -1194,11 +1261,12 @@ export function SettingsPage() {
                   </span>
                   <div className="flex flex-col gap-1">
                     <span className="font-title-sm text-title-sm text-on-surface font-medium">
-                      Zero Data Training Guarantee
+                      {locale === "id" ? "Jaminan Privasi Data 100%" : "Zero Data Training Guarantee"}
                     </span>
                     <p className="font-body-sm text-body-sm text-on-surface-variant">
-                      When using your own API credentials, all video frames and transcript moments
-                      are strictly evaluated with zero retention by AI providers.
+                      {locale === "id"
+                        ? "Saat menggunakan kredensial API Anda sendiri, seluruh frame video dan momen transkrip dievaluasi langsung tanpa penyimpanan data oleh penyedia AI."
+                        : "When using your own API credentials, all video frames and transcript moments are strictly evaluated with zero retention by AI providers."}
                     </p>
                   </div>
                 </div>
@@ -1214,7 +1282,15 @@ export function SettingsPage() {
         <ApiKeyDialog
           open={keyDialogOpen}
           onOpenChange={setKeyDialogOpen}
-          title={providerKey ? "Change API Key" : "Set API Key"}
+          title={
+            providerKey
+              ? locale === "id"
+                ? `Ubah Kunci API ${providerInfo.label}`
+                : "Change API Key"
+              : locale === "id"
+                ? `Atur Kunci API ${providerInfo.label}`
+                : "Set API Key"
+          }
           providerLabel={providerInfo.label}
           placeholder={PROVIDER_KEYS[keyProvider].placeholder}
           hasKey={!!providerKey}

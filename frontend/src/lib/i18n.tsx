@@ -64,6 +64,7 @@ export interface Translations {
     optimalShorts: string;
     optimalReels: string;
     extendedClip: string;
+    durationMax: string;
     targetClips: string;
     targetClipsDesc: string;
     decrease5: string;
@@ -82,15 +83,25 @@ export interface Translations {
     smartFaceDesc: string;
     centerCrop: string;
     centerCropDesc: string;
+    bRoll: string;
+    bRollDesc: string;
     audioPacing: string;
     removeSilence: string;
     removeSilenceDesc: string;
     viralityThreshold: string;
     viralityDesc: string;
+    viralityLoose: string;
+    viralityRecommended: string;
+    viralityStrict: string;
+    targetPlatform: string;
+    smartReframe: string;
     step3: string;
     step3Title: string;
     clipObjective: string;
     pacingHeuristic: string;
+    strategyTitle: string;
+    captionStyleTitle: string;
+    instructionsTitle: string;
     instructionsLabel: string;
     instructionsPlaceholder: string;
     captionStyling: string;
@@ -112,16 +123,94 @@ export interface Translations {
     downloadClip: string;
     downloadZip: string;
     captionsSync: string;
+    all: string;
+    viral: string;
+    hook: string;
+    broll: string;
+    masterPlayer: string;
+    clipTimeline: string;
+    captionStyle: string;
+    faceTracking: string;
+    exportZip: string;
+    generatedClips: string;
+    ready: string;
+    processing: string;
+    rerenderBtn: string;
+    resetBtn: string;
   };
   settings: {
+    badge: string;
+    version: string;
     title: string;
     subtitle: string;
+    discard: string;
+    save: string;
+    saveSuccess: string;
     profile: string;
-    aiModels: string;
-    pipeline: string;
+    profileTitle: string;
+    profileSubtitle: string;
+    changeAvatar: string;
+    avatarHint: string;
     displayName: string;
+    email: string;
+    accountSecurity: string;
+    password: string;
     changePassword: string;
-    saveChanges: string;
+    credentialToken: string;
+    credentialTokenHint: string;
+    regenerateToken: string;
+    copyToken: string;
+    copied: string;
+    aiModels: string;
+    aiModelsTitle: string;
+    aiModelsSubtitle: string;
+    provider: string;
+    modelVersion: string;
+    refreshModels: string;
+    apiKey: string;
+    configureKey: string;
+    testConnection: string;
+    testing: string;
+    connected: string;
+    pipeline: string;
+    pipelineTitle: string;
+    pipelineSubtitle: string;
+    defaultResolution: string;
+    audioEngine: string;
+    audioEngineSub: string;
+    whisperModel: string;
+    autoCaptions: string;
+    autoCaptionsSub: string;
+    cloudStorage: string;
+    cloudStorageSub: string;
+    storageProvider: string;
+    localStorage: string;
+    retentionPeriod: string;
+    retentionSub: string;
+    socialBuffer: string;
+    socialBufferSub: string;
+    bufferAccount: string;
+    connectBuffer: string;
+  };
+  dialogs: {
+    apiKey: {
+      saveKey: string;
+      saving: string;
+      removeKey: string;
+      replaceKey: string;
+      detectKey: string;
+      storedEncrypted: string;
+      pastePrompt: string;
+    };
+    changePassword: {
+      title: string;
+      desc: string;
+      oldPassword: string;
+      newPassword: string;
+      confirmPassword: string;
+      submit: string;
+      submitting: string;
+    };
   };
 }
 
@@ -145,7 +234,7 @@ const translations: Record<Locale, Translations> = {
     header: {
       studio: "Studio",
       pipelineSubtitle: "Pipeline Pemrosesan & Klip Video",
-      exportPresets: "Preset Ekspor",
+      exportPresets: "Expor Preset",
       personalWorkspace: "Workspace Pribadi",
       notifications: "Notifikasi",
       appearance: "Tampilan",
@@ -181,6 +270,7 @@ const translations: Record<Locale, Translations> = {
       optimalShorts: "Sangat singkat & to the point",
       optimalReels: "Optimal untuk Shorts & Reels",
       extendedClip: "Pembahasan mendalam & lengkap",
+      durationMax: "Maks",
       targetClips: "Jumlah Target Klip",
       targetClipsDesc: "Jumlah klip yang diekstrak AI dari sumber ini (1 — 30 klip)",
       decrease5: "Kurangi 5 klip",
@@ -199,15 +289,25 @@ const translations: Record<Locale, Translations> = {
       smartFaceDesc: "Kamera bergerak halus memusatkan wajah pembicara secara otomatis",
       centerCrop: "Center Fixed Crop",
       centerCropDesc: "Memotong bagian tengah tanpa pergerakan kamera",
+      bRoll: "Sisipkan B-Roll Kontekstual Otomatis",
+      bRollDesc: "Menghasilkan overlay visual relevan berdasarkan kata kunci topik pembicaraan",
       audioPacing: "Optimasi Audio & Dialog",
-      removeSilence: "Potong Otomatis Hening & Jeda Kosong",
-      removeSilenceDesc: "Mendeteksi momen tanpa suara > 0.4 detik agar ritme lebih dinamis",
+      removeSilence: "Pemotongan Jeda Hening & Kata Pengisi",
+      removeSilenceDesc: "Memotong jeda diam > 0.4 detik dan membersihkan keraguan vokal ('uh', 'um')",
       viralityThreshold: "Ambang Batas Keyakinan Viralitas AI",
       viralityDesc: "Hanya mengekstrak segmen dengan skor hook di persentil {pct}% teratas.",
+      viralityLoose: "Longgar",
+      viralityRecommended: "Disarankan",
+      viralityStrict: "Ketat",
+      targetPlatform: "Platform Target & Rasio Aspek",
+      smartReframe: "Smart Reframe",
       step3: "3",
       step3Title: "Tujuan Klip & Instruksi Khusus",
       clipObjective: "Pacing & Gaya Konten",
       pacingHeuristic: "Heuristik Pacing",
+      strategyTitle: "Strategi Prompt Klip",
+      captionStyleTitle: "Gaya Teks Subtitle Dinamis",
+      instructionsTitle: "Instruksi Tambahan untuk AI",
       instructionsLabel: "Instruksi Khusus untuk AI (Opsional)",
       instructionsPlaceholder:
         "Contoh: Cari bagian yang membahas AI agents, utamakan punchline di awal, abaikan perkenalan sponsor...",
@@ -231,16 +331,105 @@ const translations: Record<Locale, Translations> = {
       downloadClip: "Unduh Klip",
       downloadZip: "Unduh Semua (.ZIP)",
       captionsSync: "Subtitle & Transkrip Terpasang",
+      all: "Semua",
+      viral: "Viral (>80)",
+      hook: "Hook Kuat",
+      broll: "B-Roll",
+      masterPlayer: "Master Player & Smart Reframe",
+      clipTimeline: "Timeline Klip & Pemangkas",
+      captionStyle: "Gaya Teks Subtitle",
+      faceTracking: "Fokus Pembicara",
+      exportZip: "Ekspor Semua (.ZIP)",
+      generatedClips: "Klip Dihasilkan",
+      ready: "Siap Dipakai",
+      processing: "Memproses...",
+      rerenderBtn: "Render Ulang Klip",
+      resetBtn: "Atur Ulang",
     },
     settings: {
+      badge: "Preferensi Sistem",
+      version: "v3.4.2 Production",
       title: "Pengaturan Studio & Preferensi",
-      subtitle: "Kelola profil pembuat konten, kunci API model AI, dan pipeline default.",
+      subtitle:
+        "Kelola profil pembuat konten, kunci API model AI, dan preferensi mesin rendering default.",
+      discard: "Buang Perubahan",
+      save: "Simpan Perubahan",
+      saveSuccess:
+        "Semua pengaturan berhasil diperbarui. Pipeline AI akan menggunakan kredensial yang dipilih pada tugas berikutnya.",
       profile: "Profil Pengguna",
-      aiModels: "Kunci API Model AI",
-      pipeline: "Pengaturan Pipeline",
+      profileTitle: "Profil Pengguna & Identitas Kreator",
+      profileSubtitle: "Atur identitas ekspor, detail akun, dan token kredensial.",
+      changeAvatar: "Ganti Foto Profil",
+      avatarHint: "JPG, PNG, atau WebP hingga 5MB.",
       displayName: "Nama Tampilan",
+      email: "Alamat Email",
+      accountSecurity: "Keamanan Akun",
+      password: "Kata Sandi",
       changePassword: "Ubah Kata Sandi",
-      saveChanges: "Simpan Perubahan",
+      credentialToken: "Token Kredensial (Akses CLI & API)",
+      credentialTokenHint:
+        "Token autentikasi lokal untuk integrasi baris perintah CLI dan bot worker.",
+      regenerateToken: "Buat Ulang Token",
+      copyToken: "Salin Token",
+      copied: "Tersalin!",
+      aiModels: "Kunci API Model AI",
+      aiModelsTitle: "Model AI & Deteksi Hook",
+      aiModelsSubtitle:
+        "Pilih model visi/bahasa untuk ekstraksi klip viral dan heuristik reframing.",
+      provider: "Penyedia Model",
+      modelVersion: "Versi Model",
+      refreshModels: "Perbarui Daftar Model",
+      apiKey: "Kunci API",
+      configureKey: "Atur Kunci API",
+      testConnection: "Uji Koneksi",
+      testing: "Menguji...",
+      connected: "Terhubung ✓",
+      pipeline: "Pengaturan Pipeline",
+      pipelineTitle: "Aturan Pipeline & Default Render",
+      pipelineSubtitle:
+        "Konfigurasi resolusi default, transkripsi audio, dan subtitle otomatis.",
+      defaultResolution: "Resolusi Default",
+      audioEngine: "Mesin Audio & Transkripsi",
+      audioEngineSub:
+        "Model Whisper lokal untuk mendeteksi kata dan menghasilkan subtitle otomatis.",
+      whisperModel: "Model Whisper",
+      autoCaptions: "Subtitle Otomatis (Gaya Hormozi)",
+      autoCaptionsSub:
+        "Sematkan subtitle beranimasi dengan penyorotan kata aktif pada setiap klip.",
+      cloudStorage: "Penyimpanan Media Cloud",
+      cloudStorageSub:
+        "Simpan file klip sementara untuk dibagikan atau dikirim ke media sosial.",
+      storageProvider: "Penyedia Penyimpanan",
+      localStorage: "Penyimpanan Lokal (Default)",
+      retentionPeriod: "Masa Simpan File Klip",
+      retentionSub:
+        "Batas waktu penyimpanan sebelum berkas render klip otomatis dibersihkan.",
+      socialBuffer: "Penerbitan Media Sosial (Buffer)",
+      socialBufferSub:
+        "Jadwalkan atau unggah klip langsung ke Instagram Reels, TikTok, YouTube Shorts.",
+      bufferAccount: "Akun Buffer",
+      connectBuffer: "Hubungkan Akun Buffer",
+    },
+    dialogs: {
+      apiKey: {
+        saveKey: "Simpan Kunci",
+        saving: "Menyimpan...",
+        removeKey: "Hapus Kunci",
+        replaceKey: "Kunci baru akan menggantikan kunci tersimpan.",
+        detectKey: "Digunakan untuk deteksi hook klip dengan AI.",
+        storedEncrypted:
+          "Disimpan terenkripsi. Hanya 4 karakter terakhir yang ditampilkan.",
+        pastePrompt: "Tempel kunci API Anda.",
+      },
+      changePassword: {
+        title: "Ubah Kata Sandi",
+        desc: "Minimal 8 karakter dengan kombinasi angka & simbol.",
+        oldPassword: "Kata Sandi Lama",
+        newPassword: "Kata Sandi Baru",
+        confirmPassword: "Konfirmasi Kata Sandi Baru",
+        submit: "Simpan Kata Sandi",
+        submitting: "Menyimpan...",
+      },
     },
   },
   en: {
@@ -298,6 +487,7 @@ const translations: Record<Locale, Translations> = {
       optimalShorts: "Snappy & to the point",
       optimalReels: "Optimal for Shorts & Reels",
       extendedClip: "In-depth & comprehensive breakdown",
+      durationMax: "Max",
       targetClips: "Target Clips Count",
       targetClipsDesc: "Number of clips AI will extract from this source (1 — 30 clips)",
       decrease5: "Decrease 5 clips",
@@ -316,15 +506,25 @@ const translations: Record<Locale, Translations> = {
       smartFaceDesc: "Smooth camera drift centering speaker face automatically",
       centerCrop: "Center Fixed Crop",
       centerCropDesc: "Static center framing without camera movement",
+      bRoll: "Auto-Insert Contextual B-Roll",
+      bRollDesc: "Synthesizes relevant visual overlays based on speech noun keywords",
       audioPacing: "Audio & Speech Optimization",
-      removeSilence: "Auto-Trim Silence & Dead Air",
-      removeSilenceDesc: "Detects silence gaps > 0.4s to maintain high viewer retention",
+      removeSilence: "Silence & Filler Word Elimination",
+      removeSilenceDesc: "Cuts dead pauses > 0.4s and removes vocal hesitations ('uh', 'um')",
       viralityThreshold: "AI Virality Confidence Threshold",
       viralityDesc: "Extracts only segments scored in the top {pct}% percentile of hook strength.",
+      viralityLoose: "Loose",
+      viralityRecommended: "Recommended",
+      viralityStrict: "Strict",
+      targetPlatform: "Target Platform & Aspect Ratio",
+      smartReframe: "Smart Reframe",
       step3: "3",
       step3Title: "Clip Objective & Custom Tone",
       clipObjective: "Pacing & Content Objective",
       pacingHeuristic: "Pacing Heuristic",
+      strategyTitle: "Clipping Prompt Strategy",
+      captionStyleTitle: "Kinetic Captioning Style",
+      instructionsTitle: "Additional Instructions",
       instructionsLabel: "Custom AI Directives (Optional)",
       instructionsPlaceholder:
         "Example: Focus on AI agent debate, hook within first 3 seconds, omit sponsor shoutouts...",
@@ -348,16 +548,105 @@ const translations: Record<Locale, Translations> = {
       downloadClip: "Download Clip",
       downloadZip: "Download All (.ZIP)",
       captionsSync: "Synced Subtitles & Transcript Included",
+      all: "All",
+      viral: "Viral (>80)",
+      hook: "Strong Hook",
+      broll: "B-Roll",
+      masterPlayer: "Master Player & Smart Reframe",
+      clipTimeline: "Clip Timeline & Trimmer",
+      captionStyle: "Caption Style",
+      faceTracking: "Speaker Focus",
+      exportZip: "Bulk Export (ZIP)",
+      generatedClips: "Generated Clips",
+      ready: "Ready",
+      processing: "Processing...",
+      rerenderBtn: "Rerender Clip",
+      resetBtn: "Reset",
     },
     settings: {
+      badge: "System Preferences",
+      version: "v3.4.2 Production",
       title: "Studio Settings & Preferences",
-      subtitle: "Manage your creator profile, AI model keys, and pipeline configurations.",
+      subtitle:
+        "Manage your creator profile, configure custom AI model API keys, and default rendering engine preferences.",
+      discard: "Discard",
+      save: "Save Changes",
+      saveSuccess:
+        "All settings updated successfully. AI pipeline will use selected credentials on next job.",
       profile: "User Profile",
-      aiModels: "AI Model Keys",
-      pipeline: "Pipeline Preferences",
+      profileTitle: "User Profile & Creator Identity",
+      profileSubtitle: "Configure export branding, account details, and credential token.",
+      changeAvatar: "Change Avatar",
+      avatarHint: "JPG, PNG or WebP up to 5MB.",
       displayName: "Display Name",
+      email: "Email Address",
+      accountSecurity: "Account Security",
+      password: "Password",
       changePassword: "Change Password",
-      saveChanges: "Save Changes",
+      credentialToken: "Credential Token (CLI & API Access)",
+      credentialTokenHint:
+        "Local authentication token for command-line CLI integrations and worker bots.",
+      regenerateToken: "Regenerate Token",
+      copyToken: "Copy Token",
+      copied: "Copied!",
+      aiModels: "AI Model Keys",
+      aiModelsTitle: "AI Models & Hook Detection",
+      aiModelsSubtitle:
+        "Configure which vision/language model handles viral clip extraction and framing heuristics.",
+      provider: "AI Provider",
+      modelVersion: "Model Version",
+      refreshModels: "Refresh Models",
+      apiKey: "API Key",
+      configureKey: "Configure Key",
+      testConnection: "Test Connection",
+      testing: "Testing...",
+      connected: "Connected ✓",
+      pipeline: "Pipeline Preferences",
+      pipelineTitle: "Pipeline Rules & Rendering Defaults",
+      pipelineSubtitle:
+        "Configure default resolution, audio transcription, and auto-caption defaults.",
+      defaultResolution: "Default Resolution",
+      audioEngine: "Audio & Transcription Engine",
+      audioEngineSub:
+        "Local Whisper model to detect speech and generate timed subtitles.",
+      whisperModel: "Whisper Model",
+      autoCaptions: "Auto-Captions (Hormozi Style)",
+      autoCaptionsSub:
+        "Burn animated word-by-word highlighted captions onto each clip.",
+      cloudStorage: "Cloud Media Storage",
+      cloudStorageSub:
+        "Store temporary clip assets for sharing or social publishing.",
+      storageProvider: "Storage Provider",
+      localStorage: "Local Storage (Default)",
+      retentionPeriod: "Clip Retention Period",
+      retentionSub:
+        "How long generated clips remain before automatic cleanup.",
+      socialBuffer: "Social Publishing (Buffer)",
+      socialBufferSub:
+        "Schedule or publish clips directly to Instagram Reels, TikTok, YouTube Shorts.",
+      bufferAccount: "Buffer Account",
+      connectBuffer: "Connect Buffer Account",
+    },
+    dialogs: {
+      apiKey: {
+        saveKey: "Save Key",
+        saving: "Saving...",
+        removeKey: "Remove key",
+        replaceKey: "The new key replaces your saved key.",
+        detectKey: "Used for hook detection with AI.",
+        storedEncrypted:
+          "Stored encrypted. Only the last 4 characters are shown after saving.",
+        pastePrompt: "Paste your API key.",
+      },
+      changePassword: {
+        title: "Change Password",
+        desc: "At least 8 characters with numbers & symbols.",
+        oldPassword: "Old Password",
+        newPassword: "New Password",
+        confirmPassword: "Confirm New Password",
+        submit: "Update Password",
+        submitting: "Updating...",
+      },
     },
   },
 };

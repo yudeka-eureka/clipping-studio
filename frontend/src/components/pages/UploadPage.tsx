@@ -109,6 +109,29 @@ const MIN_CLIPS = 1;
 const MAX_CLIPS = 30;
 const MAX_INSTRUCTIONS = 500;
 
+const DURATION_STEPS = [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 70, 80, 90, 100, 110, 120];
+const VIRALITY_STEPS = [50, 60, 70, 80, 85, 90, 95];
+
+function getDurationIndex(sec: number) {
+  const idx = DURATION_STEPS.indexOf(sec);
+  if (idx !== -1) return idx;
+  return DURATION_STEPS.reduce(
+    (prev, curr, i) =>
+      Math.abs(curr - sec) < Math.abs(DURATION_STEPS[prev] - sec) ? i : prev,
+    0,
+  );
+}
+
+function getViralityIndex(pct: number) {
+  const idx = VIRALITY_STEPS.indexOf(pct);
+  if (idx !== -1) return idx;
+  return VIRALITY_STEPS.reduce(
+    (prev, curr, i) =>
+      Math.abs(curr - pct) < Math.abs(VIRALITY_STEPS[prev] - pct) ? i : prev,
+    0,
+  );
+}
+
 function clampClips(n: number) {
   if (!Number.isFinite(n)) return MIN_CLIPS;
   return Math.min(MAX_CLIPS, Math.max(MIN_CLIPS, Math.round(n)));
@@ -170,6 +193,11 @@ export function UploadPage() {
   const [customWidthPx, setCustomWidthPx] = useState(1080);
   const [customHeightPx, setCustomHeightPx] = useState(1920);
   const [durationRange, setDurationRange] = useState<[number, number]>([20, 60]);
+  const durationIndices: [number, number] = [
+    getDurationIndex(durationRange[0]),
+    getDurationIndex(durationRange[1]),
+  ];
+  const viralityIndex = getViralityIndex(viralityThreshold);
   const [layoutMode, setLayoutMode] = useState<"face" | "crop">("face");
   const [strategy, setStrategy] = useState<(typeof STRATEGIES)[number]["id"]>("viral");
   const [processState, setProcessState] = useState<ProcessState>("idle");
@@ -509,24 +537,39 @@ export function UploadPage() {
                   </div>
                   <div className="py-2 px-1">
                     <Slider
-                      value={durationRange}
+                      value={durationIndices}
                       onValueChange={(val) => {
                         if (Array.isArray(val) && val.length === 2) {
-                          setDurationRange([val[0], val[1]]);
+                          const minSec = DURATION_STEPS[val[0]] ?? 10;
+                          const maxSec = DURATION_STEPS[val[1]] ?? 60;
+                          setDurationRange([minSec, maxSec]);
                         }
                       }}
-                      min={10}
-                      max={120}
-                      step={5}
+                      min={0}
+                      max={DURATION_STEPS.length - 1}
+                      step={1}
                       minStepsBetweenThumbs={1}
+                      aria-label={t.upload.targetDuration}
                       className="w-full cursor-pointer"
                     />
                   </div>
-                  <div className="flex items-center justify-between font-label-sm text-[11px] text-outline px-1">
-                    <span>10s (Min)</span>
-                    <span>30s (Shorts)</span>
-                    <span>60s (Reels)</span>
-                    <span>120s (Max)</span>
+                  <div className="relative w-full h-5 font-label-sm text-[11px] text-outline px-1">
+                    <span className="absolute left-1">10s (Min)</span>
+                    <span
+                      className="absolute -translate-x-1/2 text-center whitespace-nowrap"
+                      style={{ left: "25%" }}
+                    >
+                      30s (Shorts)
+                    </span>
+                    <span
+                      className="absolute -translate-x-1/2 text-center whitespace-nowrap"
+                      style={{ left: "62.5%" }}
+                    >
+                      60s (Reels)
+                    </span>
+                    <span className="absolute right-1">
+                      120s ({t.upload.durationMax})
+                    </span>
                   </div>
                 </div>
 
@@ -598,7 +641,7 @@ export function UploadPage() {
                   >
                     <div className="flex flex-col gap-2">
                       <label className="font-label-sm text-label-sm font-medium text-on-surface-variant">
-                        Speaker Auto-Reframe Mechanics
+                        {t.upload.speakerTracking}
                       </label>
                       <div className="grid grid-cols-1 gap-2">
                         <label
@@ -615,10 +658,10 @@ export function UploadPage() {
                             />
                             <div className="flex flex-col">
                               <span className="font-label-md text-label-md font-semibold text-on-surface">
-                                {"Smart AI Face Tracking & Dynamic Pan"}
+                                {t.upload.smartFaceTracking}
                               </span>
                               <span className="font-body-sm text-body-sm text-on-surface-variant">
-                                Smooth camera drift centering speaker face automatically
+                                {t.upload.smartFaceDesc}
                               </span>
                             </div>
                           </div>
@@ -640,10 +683,10 @@ export function UploadPage() {
                             />
                             <div className="flex flex-col">
                               <span className="font-label-md text-label-md font-medium text-on-surface">
-                                Static Center Crop
+                                {t.upload.centerCrop}
                               </span>
                               <span className="font-body-sm text-body-sm text-on-surface-variant">
-                                Fixed focal point without digital panning
+                                {t.upload.centerCropDesc}
                               </span>
                             </div>
                           </div>
@@ -657,31 +700,31 @@ export function UploadPage() {
                       <div className="flex items-center justify-between">
                         <div className="flex flex-col max-w-[80%]">
                           <span className="font-label-md text-label-md font-semibold text-on-surface">
-                            Auto-Insert Contextual B-Roll
+                            {t.upload.bRoll}
                           </span>
                           <span className="font-body-sm text-body-sm text-on-surface-variant">
-                            Synthesizes relevant visual overlays based on speech noun keywords
+                            {t.upload.bRollDesc}
                           </span>
                         </div>
                         <Toggle
                           checked={bRoll}
                           onChange={setBRoll}
-                          label="Auto-Insert Contextual B-Roll"
+                          label={t.upload.bRoll}
                         />
                       </div>
                       <div className="flex items-center justify-between">
                         <div className="flex flex-col max-w-[80%]">
                           <span className="font-label-md text-label-md font-semibold text-on-surface">
-                            {"Silence & Filler Word Elimination"}
+                            {t.upload.removeSilence}
                           </span>
                           <span className="font-body-sm text-body-sm text-on-surface-variant">
-                            {"Cuts dead pauses > 0.4s and removes vocal hesitations ('uh', 'um')"}
+                            {t.upload.removeSilenceDesc}
                           </span>
                         </div>
                         <Toggle
                           checked={silenceTrim}
                           onChange={setSilenceTrim}
-                          label="Silence & Filler Word Elimination"
+                          label={t.upload.removeSilence}
                         />
                       </div>
                       <div className="flex flex-col gap-2 pt-2">
@@ -694,18 +737,27 @@ export function UploadPage() {
                           </span>
                         </div>
                         <Slider
-                          min={50}
-                          max={95}
-                          step={5}
-                          value={[viralityThreshold]}
-                          onValueChange={([val]) => setViralityThreshold(val)}
+                          min={0}
+                          max={VIRALITY_STEPS.length - 1}
+                          step={1}
+                          value={[viralityIndex]}
+                          onValueChange={([idx]) => {
+                            const val = VIRALITY_STEPS[idx] ?? 80;
+                            setViralityThreshold(val);
+                          }}
                           aria-label={t.upload.viralityThreshold}
                           className="w-full cursor-pointer py-1"
                         />
-                        <div className="flex items-center justify-between text-xs text-on-surface-variant font-medium">
-                          <span>50% (Loose)</span>
-                          <span>80% (Recommended)</span>
-                          <span>95% (Strict)</span>
+                        <div className="relative w-full h-5 text-xs text-on-surface-variant font-medium px-1">
+                          <span className="absolute left-1">
+                            50% ({t.upload.viralityLoose})
+                          </span>
+                          <span className="absolute left-1/2 -translate-x-1/2 text-center whitespace-nowrap">
+                            80% ({t.upload.viralityRecommended})
+                          </span>
+                          <span className="absolute right-1">
+                            95% ({t.upload.viralityStrict})
+                          </span>
                         </div>
                         <p className="font-body-sm text-body-sm text-on-surface-variant">
                           {t.upload.viralityDesc.replace("{pct}", String(100 - viralityThreshold))}
@@ -724,11 +776,11 @@ export function UploadPage() {
                       1
                     </span>
                     <h3 className="font-title-md text-title-md font-medium text-on-surface">
-                      {"Target Platform & Aspect Ratio"}
+                      {t.upload.targetPlatform}
                     </h3>
                   </div>
                   <span className="text-primary font-label-sm text-label-sm font-semibold uppercase">
-                    Smart Reframe
+                    {t.upload.smartReframe}
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-space-xs" role="radiogroup">
@@ -905,14 +957,14 @@ export function UploadPage() {
                       3
                     </span>
                     <h3 className="font-title-md text-title-md font-medium text-on-surface">
-                      {"Clip Objective & Tone"}
+                      {t.upload.clipObjectiveTitle}
                     </h3>
                   </div>
-                  <span className="font-label-sm text-label-sm text-outline">Pacing Heuristic</span>
+                  <span className="font-label-sm text-label-sm text-outline">{t.upload.pacingHeuristic}</span>
                 </div>
                 <div className="flex flex-col gap-2">
                   <label className="font-label-sm text-label-sm font-medium text-on-surface-variant">
-                    Clipping Prompt Strategy
+                    {t.upload.strategyTitle}
                   </label>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {STRATEGIES.map((s) => {
@@ -954,10 +1006,10 @@ export function UploadPage() {
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <label className="font-label-sm text-label-sm font-medium text-on-surface-variant">
-                    Kinetic Captioning Style
+                    {t.upload.captionStyleTitle}
                   </label>
                   <Dropdown
-                    aria-label="Kinetic Captioning Style"
+                    aria-label={t.upload.captionStyleTitle}
                     tone="container"
                     size="md"
                     className="p-2.5"
@@ -987,7 +1039,7 @@ export function UploadPage() {
                       htmlFor="clip-instructions"
                       className="font-label-sm text-label-sm font-medium text-on-surface-variant"
                     >
-                      Additional Instructions
+                      {t.upload.instructionsTitle}
                     </label>
                     <span className="font-label-sm text-label-sm text-outline">
                       {instructions.length}/{MAX_INSTRUCTIONS}
