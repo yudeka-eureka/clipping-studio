@@ -26,14 +26,7 @@ export function LandingPage() {
     <div className="landing-page">
       <header className="site-header">
         <Link className="wordmark" to="/" aria-label="Clipping Studio beranda">
-          <span className="wordmark-mark" aria-hidden="true">
-            <span></span>
-            <span></span>
-            <span></span>
-          </span>
-          <span>
-            Clipping <em>Studio</em>
-          </span>
+          <img className="landing-logo" src="/landing/logo.jpeg" alt="Clipping Studio" />
         </Link>
 
         <nav className="desktop-nav" aria-label="Navigasi utama">
@@ -45,7 +38,7 @@ export function LandingPage() {
         <div className="header-actions">
           <button
             onClick={toggleLocale}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-white/20 bg-white/5 hover:bg-white/10 text-white text-xs font-semibold cursor-pointer transition-colors"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-outline-variant/60 bg-surface-container-low hover:bg-surface-container text-on-surface text-xs font-semibold cursor-pointer transition-colors"
             type="button"
             title={locale === "id" ? "Switch to English" : "Ganti ke Bahasa Indonesia"}
           >
@@ -128,20 +121,20 @@ export function LandingPage() {
         <section className="hero shell">
           <div className="hero-copy">
             <p className="eyebrow">
-              <span className="eyebrow-dot"></span> LOCAL WORKSPACE UNTUK KREATOR VIDEO
+              <span className="eyebrow-dot"></span> WORKSPACE UNTUK KLIP VIDEO
             </p>
             <h1>
-              Satu video panjang.
+              Dari video panjang,
               <br />
-              <span>Banyak konten</span> siap posting.
+              <span>jadi klip</span> untuk ditinjau.
             </h1>
             <p className="hero-lede">
-              Ubah video panjang menjadi klip pendek untuk TikTok, Instagram Reels, dan YouTube
-              Shorts dengan workflow yang lebih praktis—langsung dari komputer kamu.
+              Berjalan lokal di komputer kamu. Pilih Gemini, Claude, atau ChatGPT untuk membantu
+              menemukan momen terbaik, lalu tinjau dan render klip sesuai kebutuhanmu.
             </p>
             <div className="hero-actions">
               <button className="button button-large" type="button" onClick={handleStartClipping}>
-                Coba clipping sekarang <span aria-hidden="true">↗</span>
+                Mulai clipping <span aria-hidden="true">↗</span>
               </button>
               <a className="watch-link" href="#cara-kerja">
                 <span className="play-icon" aria-hidden="true">
@@ -151,11 +144,18 @@ export function LandingPage() {
               </a>
             </div>
             <p className="hero-note">
-              <span aria-hidden="true">⌁</span> Proses lokal · Gemini API · progres realtime.
+              <span aria-hidden="true">⌁</span> Upload · pilih opsi · tinjau hasil.
             </p>
           </div>
 
           <div className="hero-visual" aria-label="Preview workflow Clipping Studio" role="img">
+            <picture className="hero-screenshot">
+              <source media="(max-width: 650px)" srcSet="/landing/workspace-mobile.png" />
+              <img
+                src="/landing/workspace-desktop.png"
+                alt="Workspace Clipping Studio untuk mengunggah video dan mengatur opsi klip"
+              />
+            </picture>
             <div className="visual-glow"></div>
             <div className="window-card">
               <div className="window-topbar">
@@ -186,10 +186,10 @@ export function LandingPage() {
                 <div className="mini-main">
                   <div className="mini-heading">
                     <div>
-                      <small>PROJECT / PODCAST EP. 24</small>
-                      <strong>Temukan momen terbaikmu.</strong>
+                      <small>PROYEK / PODCAST EP. 24</small>
+                      <strong>Beberapa kandidat klip.</strong>
                     </div>
-                    <span className="mini-pill">3 klip siap</span>
+                    <span className="mini-pill">3 untuk ditinjau</span>
                   </div>
                   <div className="source-preview">
                     <div className="source-overlay">
@@ -233,27 +233,27 @@ export function LandingPage() {
                       <div className="result-card purple">
                         <span className="result-number">01</span>
                         <span className="result-caption">
-                          The hook that
+                          Pembuka yang
                           <br />
-                          <b>changes everything</b>
+                          <b>langsung ke inti</b>
                         </span>
                         <span className="result-duration">00:42</span>
                       </div>
                       <div className="result-card blue">
                         <span className="result-number">02</span>
                         <span className="result-caption">
-                          A better way
+                          Penjelasan
                           <br />
-                          <b>to start</b>
+                          <b>lebih ringkas</b>
                         </span>
                         <span className="result-duration">00:38</span>
                       </div>
                       <div className="result-card peach">
                         <span className="result-number">03</span>
                         <span className="result-caption">
-                          Make it
+                          Bagian yang
                           <br />
-                          <b>memorable</b>
+                          <b>layak ditinjau</b>
                         </span>
                         <span className="result-duration">00:51</span>
                       </div>
@@ -265,15 +265,15 @@ export function LandingPage() {
             <div className="floating-chip chip-top">
               <span className="chip-check">✓</span>
               <span>
-                <b>Subtitle otomatis</b>
-                <small>Siap ditinjau</small>
+                <b>Subtitle</b>
+                <small>Dapat diaktifkan</small>
               </span>
             </div>
             <div className="floating-chip chip-bottom">
               <span className="chip-spark">✦</span>
               <span>
-                <b>AI menemukan momen</b>
-                <small>3 klip · 01:42 total</small>
+                <b>Kandidat klip</b>
+                <small>3 momen untuk ditinjau</small>
               </span>
             </div>
           </div>
@@ -289,15 +289,15 @@ export function LandingPage() {
 
         <section id="fitur" className="section shell">
           <div className="section-intro">
-            <p className="eyebrow">BUKAN SEKADAR POTONG VIDEO</p>
+            <p className="eyebrow">FITUR YANG TERSEDIA</p>
             <h2>
-              Lebih banyak momen.
+              Dari sumber yang sama,
               <br />
-              <span>Lebih sedikit pekerjaan repetitif.</span>
+              <span>lebih mudah ditinjau.</span>
             </h2>
             <p>
-              Clipping Studio membantu kamu berpindah dari video mentah ke beberapa opsi klip tanpa
-              bolak-balik antar tools.
+              Clipping Studio merapikan langkah dari video mentah ke beberapa opsi klip dalam satu
+              workspace.
             </p>
           </div>
           <div className="feature-grid">
@@ -309,8 +309,11 @@ export function LandingPage() {
                 </svg>
               </div>
               <div>
-                <h3>Temukan momen yang layak dibagikan</h3>
-                <p>AI menganalisis video dan memberi beberapa kandidat klip untuk kamu tinjau.</p>
+                <h3>Dapatkan kandidat momen</h3>
+                <p>
+                  Pilih Gemini, Claude, atau ChatGPT. Lihat estimasi biaya token dalam USD/IDR dan
+                  pantau pemakaian tiap proyek.
+                </p>
               </div>
               <span className="feature-index">01</span>
             </article>
@@ -323,7 +326,10 @@ export function LandingPage() {
               </div>
               <div>
                 <h3>Atur format untuk tiap channel</h3>
-                <p>Pilih rasio 9:16, 1:1, 4:5, 16:9, atau pertahankan format asli.</p>
+                <p>
+                  Pilih 9:16, 1:1, 4:5, 16:9, atau asli. Gunakan fokus wajah, crop tengah, atau
+                  video utuh dengan latar blur.
+                </p>
               </div>
               <span className="feature-index">02</span>
             </article>
@@ -335,12 +341,29 @@ export function LandingPage() {
                 </svg>
               </div>
               <div>
-                <h3>Subtitle dan judul lebih siap</h3>
+                <h3>Tambahkan subtitle dan judul</h3>
                 <p>
-                  Aktifkan subtitle, judul di atas video, dan penghapusan jeda sesuai kebutuhan.
+                  Subtitle per kata dari Whisper lokal dengan file .srt, judul di atas video,
+                  penghapusan jeda, serta logo dan bumper per proyek.
                 </p>
               </div>
               <span className="feature-index">03</span>
+            </article>
+            <article className="feature-card">
+              <div className="feature-icon icon-green">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 7.5h14M5 12h14M5 16.5h9" />
+                  <path d="m16 15 3 3 3-3M19 18v-6" />
+                </svg>
+              </div>
+              <div>
+                <h3>Jadwalkan lewat Buffer</h3>
+                <p>
+                  Hubungkan satu atau beberapa akun untuk mengantre atau menjadwalkan klip ke
+                  Instagram, TikTok, Shorts, LinkedIn, X, dan Threads.
+                </p>
+              </div>
+              <span className="feature-index">04</span>
             </article>
           </div>
         </section>
@@ -350,11 +373,11 @@ export function LandingPage() {
             <div className="section-intro centered">
               <p className="eyebrow">DARI SATU SUMBER</p>
               <h2>
-                Satu rekaman, <span>beberapa pintu masuk.</span>
+                Satu rekaman, <span>beberapa opsi klip.</span>
               </h2>
               <p>
-                Mulai dari file video lokal atau link video, lalu siapkan output sesuai format yang
-                kamu butuhkan.
+                Mulai dari file lokal atau link yang didukung, lalu pilih format dan opsi render yang
+                kamu perlukan.
               </p>
             </div>
             <div className="transform-flow">
@@ -378,8 +401,8 @@ export function LandingPage() {
               <div className="flow-arrow">
                 <span></span>
                 <b>
-                  AI +<br />
-                  workflow
+                  PILIHAN +<br />
+                  RENDER
                 </b>
                 <span></span>
               </div>
@@ -402,7 +425,7 @@ export function LandingPage() {
                     <em>9:16</em>
                   </div>
                 </div>
-                <b>Siap ditinjau dan dirender</b>
+                <b>Ditinjau sebelum diunduh</b>
               </div>
             </div>
           </div>
@@ -412,9 +435,9 @@ export function LandingPage() {
           <div className="section-intro">
             <p className="eyebrow">CARA KERJA</p>
             <h2>
-              Tiga langkah untuk kembali
+              Tiga langkah dari video
               <br />
-              <span>fokus pada ceritamu.</span>
+              <span>ke klip yang bisa kamu tinjau.</span>
             </h2>
           </div>
           <div className="steps-grid">
@@ -434,7 +457,7 @@ export function LandingPage() {
               <span className="step-number">03</span>
               <div className="step-line"></div>
               <h3>Tinjau hasilnya</h3>
-              <p>Pantau progres realtime, cek setiap klip, lalu unduh hasil yang paling pas.</p>
+                <p>Pantau progres realtime, cek setiap klip, lalu unduh hasil yang sesuai.</p>
             </article>
           </div>
         </section>
@@ -442,26 +465,32 @@ export function LandingPage() {
         <section className="product-section">
           <div className="shell product-grid">
             <div className="product-copy">
-              <p className="eyebrow">WORKSPACE YANG SUDAH KAMU KENAL</p>
+              <p className="eyebrow">WORKSPACE UNTUK PROSES BERULANG</p>
               <h2>
-                Semua yang kamu butuhkan
+                Satu tempat untuk
                 <br />
-                <span>ada di satu tempat.</span>
+                <span>mengelola klip.</span>
               </h2>
               <p>
-                Dashboard Clipping Studio dibuat untuk proses yang berulang: mulai proyek, lihat
-                progres, edit opsi, dan kelola hasil tanpa kehilangan konteks.
+                Mulai proyek, lihat progres, ubah opsi, dan kelola hasil tanpa berpindah-pindah
+                konteks.
               </p>
               <button className="button" type="button" onClick={handleStartClipping}>
                 Buka workspace <span aria-hidden="true">↗</span>
               </button>
               <div className="product-list">
                 <span>✓ Upload file atau link video</span>
-                <span>✓ Progres pemrosesan realtime</span>
-                <span>✓ Editor klip dan render ulang</span>
+                <span>✓ Progres render &amp; analisis realtime</span>
+                <span>✓ Editor I/O, render ulang, &amp; integrasi Buffer</span>
               </div>
             </div>
             <div className="product-window">
+              <picture className="product-screenshot">
+                <img
+                  src="/landing/target-platform-aspect-ratio.png"
+                  alt="Pengaturan target platform dan aspect ratio di Clipping Studio"
+                />
+              </picture>
               <div className="product-top">
                 <span className="product-brand">
                   <i></i> Clipping Studio <em>· Gemini API</em>
@@ -480,8 +509,8 @@ export function LandingPage() {
                   <small>PROYEK BARU</small>
                   <h3>Buat klip dari video panjang</h3>
                   <p>
-                    AI memilih momen terbaik, lalu klip dirender di komputer ini. Progres tampil
-                    realtime.
+                    AI membantu memilih kandidat momen, lalu klip dirender sesuai opsi proyek. Progres
+                    tampil realtime.
                   </p>
                   <div className="drop-preview">
                     <strong>↑</strong>
@@ -499,7 +528,7 @@ export function LandingPage() {
                       Subtitle <b className="toggle-on">ON</b>
                     </span>
                   </div>
-                  <div className="preview-button">✦ Mulai proses</div>
+                  <div className="preview-button">✦ Buat kandidat klip</div>
                 </div>
               </div>
             </div>
@@ -558,8 +587,20 @@ export function LandingPage() {
                 Apakah saya harus mengirim video ke layanan lain?<span>+</span>
               </summary>
               <p>
-                Untuk workflow lokal, pemrosesan dilakukan di komputer yang menjalankan Clipping
-                Studio. Konfigurasi penyedia AI tetap mengikuti pengaturan aplikasi.
+                Deteksi wajah, transkripsi subtitle, penghapusan jeda, dan render ffmpeg berjalan
+                lokal di komputer kamu. Hanya data analisis video atau transkrip yang dikirim ke
+                penyedia AI pilihanmu—Gemini, Claude, atau ChatGPT—menggunakan API key milikmu
+                sendiri.
+              </p>
+            </details>
+            <details>
+              <summary>
+                Apakah klip bisa langsung diposting ke media sosial?<span>+</span>
+              </summary>
+              <p>
+                Bisa. Hubungkan satu atau beberapa akun Buffer untuk mengantre, menjadwalkan, atau
+                memposting klip setelah selesai dirender ke Instagram Reels, TikTok, YouTube Shorts,
+                LinkedIn, X, Threads, dan channel lain yang didukung Buffer.
               </p>
             </details>
           </div>
@@ -569,9 +610,9 @@ export function LandingPage() {
           <div>
             <p className="eyebrow">WAKTUNYA MEMBUAT LEBIH BANYAK</p>
             <h2>
-              Jangan biarkan momen bagus
+              Siapkan klip dari
               <br />
-              <span>berhenti di timeline.</span>
+              <span>video yang sudah kamu punya.</span>
             </h2>
             <p>Mulai dari satu video yang sudah kamu punya.</p>
           </div>
@@ -583,16 +624,9 @@ export function LandingPage() {
 
       <footer className="site-footer shell">
         <Link className="wordmark" to="/">
-          <span className="wordmark-mark" aria-hidden="true">
-            <span></span>
-            <span></span>
-            <span></span>
-          </span>
-          <span>
-            Clipping <em>Studio</em>
-          </span>
+          <img className="landing-logo" src="/landing/logo.jpeg" alt="Clipping Studio" />
         </Link>
-        <p>Workflow yang lebih praktis untuk membuat konten pendek.</p>
+        <p>Workspace untuk menemukan, merender, dan meninjau klip video.</p>
         <div>
           <a href="#fitur">Fitur</a>
           <a href="#cara-kerja">Cara kerja</a>
